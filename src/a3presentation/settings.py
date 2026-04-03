@@ -11,6 +11,7 @@ class Settings:
     storage_dir: Path
     templates_dir: Path
     outputs_dir: Path
+    bundled_templates_dir: Path
     cors_origins: tuple[str, ...]
 
 
@@ -30,12 +31,13 @@ def _parse_cors_origins() -> tuple[str, ...]:
 def get_settings() -> Settings:
     project_root = Path(__file__).resolve().parents[2]
     storage_dir = Path(os.getenv("STORAGE_DIR", project_root / "storage")).resolve()
-    templates_dir = storage_dir / "templates"
-    outputs_dir = storage_dir / "outputs"
+    templates_dir = Path(os.getenv("TEMPLATES_DIR", storage_dir / "templates")).resolve()
+    outputs_dir = Path(os.getenv("OUTPUTS_DIR", storage_dir / "outputs")).resolve()
     return Settings(
         project_root=project_root,
         storage_dir=storage_dir,
         templates_dir=templates_dir,
         outputs_dir=outputs_dir,
+        bundled_templates_dir=(project_root / "storage" / "templates").resolve(),
         cors_origins=_parse_cors_origins(),
     )

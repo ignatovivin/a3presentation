@@ -91,14 +91,15 @@ Deployment guide:
 Important production variables:
 
 ```bash
-STORAGE_DIR=/app/storage
+TEMPLATES_DIR=/data/templates
+OUTPUTS_DIR=/data/outputs
 CORS_ORIGINS=https://your-frontend-domain.up.railway.app
 VITE_API_BASE_URL=https://your-backend-domain.up.railway.app
 ```
 
 Railway-specific notes:
 
-- attach a persistent volume to the backend at `/app/storage`
+- attach a persistent volume to the backend at `/data`
 - keep frontend and backend as separate Railway services
 - this is the cleanest way to keep the whole product in one Railway project with persistent file storage
 

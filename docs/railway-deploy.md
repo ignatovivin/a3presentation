@@ -24,21 +24,13 @@ Repository root:
 Suggested settings:
 
 - Root Directory: `/`
-- Watch Paths:
-  - `/src/**`
-  - `/tests/**`
-  - `/storage/templates/**`
-  - `/pyproject.toml`
-- Start Command:
-
-```bash
-uvicorn a3presentation.main:app --host 0.0.0.0 --port $PORT
-```
+- Railway will use [Dockerfile](/C:/Project/a3presentation/Dockerfile)
 
 Environment variables:
 
 ```bash
-STORAGE_DIR=/app/storage
+TEMPLATES_DIR=/data/templates
+OUTPUTS_DIR=/data/outputs
 ```
 
 Optional:
@@ -52,10 +44,10 @@ CORS_ORIGINS=https://your-frontend-domain.up.railway.app
 Attach a Railway Volume to the backend service and mount it to:
 
 ```text
-/app/storage
+/data
 ```
 
-This matches Railway's documented guidance for apps that write to a relative project path and need persistence.
+The application seeds bundled repository templates into `/data/templates` on startup if the mounted volume is empty.
 
 The backend will then persist:
 
@@ -73,19 +65,7 @@ Repository root:
 Suggested settings:
 
 - Root Directory: `/frontend`
-- Watch Paths:
-  - `/frontend/**`
-- Build Command:
-
-```bash
-yarn install --frozen-lockfile && yarn build
-```
-
-- Start Command:
-
-```bash
-yarn vite preview --host 0.0.0.0 --port $PORT
-```
+- Railway will use [frontend/Dockerfile](/C:/Project/a3presentation/frontend/Dockerfile)
 
 Environment variables:
 
@@ -97,11 +77,12 @@ VITE_API_BASE_URL=https://your-backend-domain.up.railway.app
 
 1. Create a new Railway project from this GitHub repository
 2. Create the backend service from the repo root
-3. Attach a volume to the backend service at `/app/storage`
-4. Create the frontend service from `/frontend`
-5. Set `VITE_API_BASE_URL` on the frontend to the backend public URL
-6. Set `CORS_ORIGINS` on the backend to the frontend public URL
-7. Deploy both services
+3. Attach a volume to the backend service at `/data`
+4. Set `TEMPLATES_DIR=/data/templates` and `OUTPUTS_DIR=/data/outputs` on the backend
+5. Create the frontend service from `/frontend`
+6. Set `VITE_API_BASE_URL` on the frontend to the backend public URL
+7. Set `CORS_ORIGINS` on the backend to the frontend public URL
+8. Deploy both services
 
 ## Notes
 
