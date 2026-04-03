@@ -75,27 +75,32 @@ yarn verify
 - Node.js 20.19+ or 22.12+
 - Yarn 1.x
 
-## Vercel deployment
+## Railway deployment
 
-This repository is prepared for deploying the frontend to Vercel from the repo root.
+Recommended production target: Railway.
 
-Required Vercel environment variable:
+Deploy the project as two services inside one Railway project:
+
+- backend service from repo root `/`
+- frontend service from `/frontend`
+
+Deployment guide:
+
+- [docs/railway-deploy.md](/C:/Project/a3presentation/docs/railway-deploy.md)
+
+Important production variables:
 
 ```bash
-VITE_API_BASE_URL=https://your-backend-host.example.com
+STORAGE_DIR=/app/storage
+CORS_ORIGINS=https://your-frontend-domain.up.railway.app
+VITE_API_BASE_URL=https://your-backend-domain.up.railway.app
 ```
 
-Important:
+Railway-specific notes:
 
-- the current FastAPI backend is not Vercel-ready as-is
-- backend code writes templates and generated files to local `storage/`
-- for production, host the backend separately on a VM, container, or another platform with persistent filesystem access
-- Vercel should be used for the frontend in the current architecture
-
-Files added for Vercel:
-
-- [vercel.json](/C:/Project/a3presentation/vercel.json)
-- [frontend/.env.example](/C:/Project/a3presentation/frontend/.env.example)
+- attach a persistent volume to the backend at `/app/storage`
+- keep frontend and backend as separate Railway services
+- this is the cleanest way to keep the whole product in one Railway project with persistent file storage
 
 ## Test and verification
 
