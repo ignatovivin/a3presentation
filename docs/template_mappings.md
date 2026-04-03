@@ -1,0 +1,89 @@
+# Template Mappings
+
+## razmeshchenie_soglasiy
+
+- `cover`
+  - `cover_title` -> `Заголовок 1`
+  - `cover_meta` -> `Текст 3`
+- `table`
+  - `title` -> `Заголовок 1`
+  - `subtitle` -> `Текст 4`
+  - `table` -> `Таблица 5`
+  - `left_note` -> `Текст 2`
+  - `right_note` -> `Текст 3`
+  - `presentation_name` -> `TextBox 24`
+- `image_text`
+  - `title` -> `Заголовок 1`
+  - `subtitle` -> `Текст 2`
+  - `main_text` -> `Текст 3`
+  - `secondary_text` -> `Текст 4`
+  - `image` -> `Рисунок 8`
+  - `presentation_name` -> `Текст 11`
+- `list_with_icons`
+  - `title` -> `Заголовок 1`
+  - `subtitle` -> `Текст 4`
+  - `left_text` -> `Текст 3`
+  - `right_list` -> `Текст 5`
+  - `presentation_name` -> `Текст 14`
+- `cards_3`
+  - `title` -> `Заголовок 12`
+  - `card_1` -> `Текст 14`
+  - `card_2` -> `Текст 29`
+  - `card_3` -> `Текст 30`
+  - `presentation_name` -> `Текст 31`
+- `contacts`
+  - `presentation_name` -> `TextBox 24`
+  - `contact_title` -> `Текст 10`
+  - `contact_role` -> `Текст 11`
+  - `contact_phone` -> `Текст 12`
+  - `contact_email` -> `Текст 13`
+
+## kopiya_shablon_osnovnoy
+
+- `cover`
+  - `cover_title` -> `Google Shape;95;p13`
+  - `cover_meta` -> `Google Shape;96;p13`
+- `table`
+  - `title` -> `Google Shape;102;p14`
+  - `subtitle` -> `Google Shape;105;p14`
+  - `table` -> `Google Shape;104;p14`
+  - `left_note` -> `Google Shape;112;p14`
+  - `right_note` -> `Google Shape;110;p14`
+  - `presentation_name` -> `Google Shape;111;p14`
+- `chart`
+  - `title` -> `Google Shape;121;p15`
+  - `subtitle` -> `Google Shape;120;p15`
+  - `main_text` -> `Google Shape;126;p15`
+  - `secondary_text` -> `Google Shape;127;p15`
+  - `chart_image` -> `Google Shape;118;p15`
+  - `presentation_name` -> `Google Shape;128;p15`
+- `image_text`
+  - `title` -> `Google Shape;137;p16`
+  - `subtitle` -> `Google Shape;136;p16`
+  - `main_text` -> `Google Shape;142;p16`
+  - `secondary_text` -> `Google Shape;143;p16`
+  - `image` -> `Google Shape;134;p16`
+  - `presentation_name` -> `Google Shape;144;p16`
+- `cards_3`
+  - `title` -> `Google Shape;188;p17`
+  - `card_1` -> `Google Shape;153;p17`
+  - `card_2` -> `Google Shape;156;p17`
+  - `card_3` -> `Google Shape;155;p17`
+  - `presentation_name` -> `Google Shape;193;p17`
+- `feature_list`
+  - `title` -> `Google Shape;259;p19`
+  - `subtitle` -> `Google Shape;260;p19`
+  - `left_text` -> `Google Shape;251;p19`
+  - `right_list` -> `Google Shape;250;p19`
+  - `presentation_name` -> `Google Shape;265;p19`
+- `feature_list_alt`
+  - `title` -> `Google Shape;291;p20`
+  - `subtitle` -> `Google Shape;292;p20`
+  - `left_text` -> `Google Shape;289;p20`
+  - `right_list` -> `Google Shape;293;p20`
+  - `presentation_name` -> `Google Shape;298;p20`
+- `contacts`
+  - `address` -> `Google Shape;303;p21`
+  - `phone` -> `Google Shape;304;p21`
+  - `email` -> `Google Shape;305;p21`
+  - `website` -> `Google Shape;306;p21`

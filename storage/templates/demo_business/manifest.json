@@ -1,0 +1,29 @@
+{
+  "template_id": "demo_business",
+  "display_name": "Demo Business Template",
+  "description": "Example manifest for the first MVP iteration",
+  "source_pptx": "template.pptx",
+  "default_layout_key": "content",
+  "layouts": [
+    {
+      "key": "title",
+      "name": "Title Slide",
+      "slide_layout_index": 0,
+      "supported_slide_kinds": ["title"],
+      "placeholders": [
+        {"name": "title", "kind": "title", "idx": 0},
+        {"name": "subtitle", "kind": "subtitle", "idx": 1}
+      ]
+    },
+    {
+      "key": "content",
+      "name": "Title and Content",
+      "slide_layout_index": 1,
+      "supported_slide_kinds": ["bullets", "text", "table"],
+      "placeholders": [
+        {"name": "title", "kind": "title", "idx": 0},
+        {"name": "content", "kind": "body", "idx": 1}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "template_id": "demo_business",
+  "title": "Sales Strategy 2026",
+  "author": "A3 Presentation",
+  "subject": "Quarterly plan",
+  "slides": [
+    {
+      "kind": "title",
+      "title": "Sales Strategy 2026",
+      "subtitle": "Q2 planning"
+    },
+    {
+      "kind": "bullets",
+      "title": "Priority Areas",
+      "bullets": [
+        "Increase conversion in inbound funnel",
+        "Reduce sales cycle for mid-market",
+        "Standardize proposal content"
+      ]
+    },
+    {
+      "kind": "text",
+      "title": "Key Message",
+      "text": "The core objective is to make presentations consistent with the approved corporate template."
+    }
+  ]
+}

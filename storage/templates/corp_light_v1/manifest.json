@@ -1,0 +1,348 @@
+{
+  "template_id": "corp_light_v1",
+  "display_name": "Light Theme",
+  "source_pptx": "template.pptx",
+  "description": "Системный корпоративный стиль для генерации презентаций",
+  "generation_mode": "layout",
+  "default_layout_key": "text_full_width",
+  "layouts": [
+    {
+      "key": "cover",
+      "name": "Титульный слайд",
+      "slide_master_index": 1,
+      "slide_layout_index": 0,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "title"
+      ],
+      "placeholders": [
+        {
+          "name": "Title 1",
+          "kind": "title",
+          "idx": 0,
+          "binding": "cover_title"
+        },
+        {
+          "name": "Text Placeholder 2",
+          "kind": "body",
+          "idx": 15,
+          "binding": "cover_meta"
+        }
+      ]
+    },
+    {
+      "key": "table",
+      "name": "Слайд с таблицей",
+      "slide_master_index": 0,
+      "slide_layout_index": 0,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Title 1",
+          "kind": "title",
+          "idx": 0,
+          "binding": "title"
+        },
+        {
+          "name": "Text Placeholder 2",
+          "kind": "body",
+          "idx": 13,
+          "binding": "subtitle"
+        },
+        {
+          "name": "Table Placeholder 3",
+          "kind": "table",
+          "idx": 14,
+          "binding": "table"
+        },
+        {
+          "name": "Text Placeholder 4",
+          "kind": "body",
+          "idx": 11,
+          "binding": "left_note"
+        },
+        {
+          "name": "Text Placeholder 5",
+          "kind": "body",
+          "idx": 12,
+          "binding": "right_note"
+        },
+        {
+          "name": "Text Placeholder 6",
+          "kind": "body",
+          "idx": 15,
+          "binding": "presentation_name"
+        }
+      ]
+    },
+    {
+      "key": "image_text",
+      "name": "Слайд с рисунком",
+      "slide_master_index": 0,
+      "slide_layout_index": 1,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "text",
+        "image"
+      ],
+      "placeholders": [
+        {
+          "name": "Title 1",
+          "kind": "title",
+          "idx": 0,
+          "binding": "title"
+        },
+        {
+          "name": "Text Placeholder 2",
+          "kind": "body",
+          "idx": 13,
+          "binding": "subtitle"
+        },
+        {
+          "name": "Text Placeholder 3",
+          "kind": "body",
+          "idx": 14,
+          "binding": "main_text"
+        },
+        {
+          "name": "Text Placeholder 4",
+          "kind": "body",
+          "idx": 15,
+          "binding": "secondary_text"
+        },
+        {
+          "name": "Picture Placeholder 5",
+          "kind": "image",
+          "idx": 16,
+          "binding": "image"
+        },
+        {
+          "name": "Text Placeholder 6",
+          "kind": "body",
+          "idx": 17,
+          "binding": "presentation_name"
+        }
+      ]
+    },
+    {
+      "key": "text_full_width",
+      "name": "Текстовый слайд",
+      "slide_master_index": 0,
+      "slide_layout_index": 1,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "text"
+      ],
+      "placeholders": [
+        {
+          "name": "Title 1",
+          "kind": "title",
+          "idx": 0,
+          "binding": "title"
+        },
+        {
+          "name": "Text Placeholder 2",
+          "kind": "body",
+          "idx": 13,
+          "binding": "subtitle"
+        },
+        {
+          "name": "Text Placeholder 3",
+          "kind": "body",
+          "idx": 14,
+          "binding": "main_text"
+        },
+        {
+          "name": "Text Placeholder 4",
+          "kind": "body",
+          "idx": 15,
+          "binding": "secondary_text"
+        },
+        {
+          "name": "Picture Placeholder 5",
+          "kind": "image",
+          "idx": 16,
+          "binding": "image"
+        },
+        {
+          "name": "Text Placeholder 6",
+          "kind": "body",
+          "idx": 17,
+          "binding": "presentation_name"
+        }
+      ]
+    },
+    {
+      "key": "list_full_width",
+      "name": "Список на всю ширину",
+      "slide_master_index": 0,
+      "slide_layout_index": 1,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets"
+      ],
+      "placeholders": [
+        {
+          "name": "Title 1",
+          "kind": "title",
+          "idx": 0,
+          "binding": "title"
+        },
+        {
+          "name": "Text Placeholder 2",
+          "kind": "body",
+          "idx": 13,
+          "binding": "subtitle"
+        },
+        {
+          "name": "Text Placeholder 3",
+          "kind": "body",
+          "idx": 14,
+          "binding": "bullets"
+        },
+        {
+          "name": "Text Placeholder 4",
+          "kind": "body",
+          "idx": 15,
+          "binding": "secondary_text"
+        },
+        {
+          "name": "Picture Placeholder 5",
+          "kind": "image",
+          "idx": 16,
+          "binding": "image"
+        },
+        {
+          "name": "Text Placeholder 6",
+          "kind": "body",
+          "idx": 17,
+          "binding": "presentation_name"
+        }
+      ]
+    },
+    {
+      "key": "cards_3",
+      "name": "Слайд с карточками",
+      "slide_master_index": 0,
+      "slide_layout_index": 2,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets"
+      ],
+      "placeholders": [
+        {
+          "name": "Title 1",
+          "kind": "title",
+          "idx": 0,
+          "binding": "title"
+        },
+        {
+          "name": "Text Placeholder 2",
+          "kind": "body",
+          "idx": 11,
+          "binding": "card_1"
+        },
+        {
+          "name": "Text Placeholder 3",
+          "kind": "body",
+          "idx": 12,
+          "binding": "card_2"
+        },
+        {
+          "name": "Text Placeholder 4",
+          "kind": "body",
+          "idx": 13,
+          "binding": "card_3"
+        },
+        {
+          "name": "Text Placeholder 5",
+          "kind": "body",
+          "idx": 15,
+          "binding": "presentation_name"
+        }
+      ]
+    },
+    {
+      "key": "list_with_icons",
+      "name": "Слайд с перечислением",
+      "slide_master_index": 0,
+      "slide_layout_index": 3,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "two_column"
+      ],
+      "placeholders": [
+        {
+          "name": "Title 1",
+          "kind": "title",
+          "idx": 0,
+          "binding": "title"
+        },
+        {
+          "name": "Text Placeholder 2",
+          "kind": "body",
+          "idx": 13,
+          "binding": "subtitle"
+        },
+        {
+          "name": "Text Placeholder 3",
+          "kind": "body",
+          "idx": 12,
+          "binding": "left_text"
+        },
+        {
+          "name": "Text Placeholder 4",
+          "kind": "body",
+          "idx": 14,
+          "binding": "right_list"
+        },
+        {
+          "name": "Text Placeholder 11",
+          "kind": "body",
+          "idx": 21,
+          "binding": "presentation_name"
+        }
+      ]
+    },
+    {
+      "key": "contacts",
+      "name": "Контакты",
+      "slide_master_index": 1,
+      "slide_layout_index": 4,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "text"
+      ],
+      "placeholders": [
+        {
+          "name": "Text Placeholder 1",
+          "kind": "body",
+          "idx": 10,
+          "binding": "contact_title"
+        },
+        {
+          "name": "Text Placeholder 2",
+          "kind": "body",
+          "idx": 11,
+          "binding": "contact_role"
+        },
+        {
+          "name": "Text Placeholder 3",
+          "kind": "body",
+          "idx": 12,
+          "binding": "contact_phone"
+        },
+        {
+          "name": "Text Placeholder 4",
+          "kind": "body",
+          "idx": 13,
+          "binding": "contact_email"
+        }
+      ]
+    }
+  ],
+  "prototype_slides": []
+}

@@ -1,0 +1,659 @@
+{
+  "template_id": "razmeshchenie_soglasiy",
+  "display_name": "Размещение согласий",
+  "source_pptx": "template.pptx",
+  "description": "Шаблон на основе пользовательского примера",
+  "generation_mode": "prototype",
+  "default_layout_key": "слайд_с_рисунком",
+  "layouts": [
+    {
+      "key": "слайд_с_таблицей",
+      "name": "Слайд с таблицей",
+      "slide_master_index": 0,
+      "slide_layout_index": 0,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Заголовок 1",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Заголовок 1",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 12",
+          "kind": "body",
+          "idx": 13,
+          "shape_name": "Текст 12",
+          "max_chars": null
+        },
+        {
+          "name": "Таблица 15",
+          "kind": "unknown",
+          "idx": 14,
+          "shape_name": "Таблица 15",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 4",
+          "kind": "body",
+          "idx": 11,
+          "shape_name": "Текст 4",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 4",
+          "kind": "body",
+          "idx": 12,
+          "shape_name": "Текст 4",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 19",
+          "kind": "body",
+          "idx": 15,
+          "shape_name": "Текст 19",
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "слайд_с_рисунком",
+      "name": "Слайд с рисунком",
+      "slide_master_index": 0,
+      "slide_layout_index": 1,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table",
+        "image"
+      ],
+      "placeholders": [
+        {
+          "name": "Заголовок 1",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Заголовок 1",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 12",
+          "kind": "body",
+          "idx": 13,
+          "shape_name": "Текст 12",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 9",
+          "kind": "body",
+          "idx": 14,
+          "shape_name": "Текст 9",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 9",
+          "kind": "body",
+          "idx": 15,
+          "shape_name": "Текст 9",
+          "max_chars": null
+        },
+        {
+          "name": "Рисунок 12",
+          "kind": "image",
+          "idx": 16,
+          "shape_name": "Рисунок 12",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 19",
+          "kind": "body",
+          "idx": 17,
+          "shape_name": "Текст 19",
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "слайд_с_карточками",
+      "name": "Слайд с карточками",
+      "slide_master_index": 0,
+      "slide_layout_index": 2,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Заголовок 1",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Заголовок 1",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 15",
+          "kind": "body",
+          "idx": 11,
+          "shape_name": "Текст 15",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 15",
+          "kind": "body",
+          "idx": 12,
+          "shape_name": "Текст 15",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 15",
+          "kind": "body",
+          "idx": 13,
+          "shape_name": "Текст 15",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 19",
+          "kind": "body",
+          "idx": 15,
+          "shape_name": "Текст 19",
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "слайд_с_перечислением",
+      "name": "Слайд с перечислением",
+      "slide_master_index": 0,
+      "slide_layout_index": 3,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table",
+        "image"
+      ],
+      "placeholders": [
+        {
+          "name": "Заголовок 1",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Заголовок 1",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 12",
+          "kind": "body",
+          "idx": 13,
+          "shape_name": "Текст 12",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 10",
+          "kind": "body",
+          "idx": 12,
+          "shape_name": "Текст 10",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 13",
+          "kind": "body",
+          "idx": 14,
+          "shape_name": "Текст 13",
+          "max_chars": null
+        },
+        {
+          "name": "Рисунок 24",
+          "kind": "image",
+          "idx": 15,
+          "shape_name": "Рисунок 24",
+          "max_chars": null
+        },
+        {
+          "name": "Рисунок 24",
+          "kind": "image",
+          "idx": 16,
+          "shape_name": "Рисунок 24",
+          "max_chars": null
+        },
+        {
+          "name": "Рисунок 24",
+          "kind": "image",
+          "idx": 17,
+          "shape_name": "Рисунок 24",
+          "max_chars": null
+        },
+        {
+          "name": "Рисунок 24",
+          "kind": "image",
+          "idx": 18,
+          "shape_name": "Рисунок 24",
+          "max_chars": null
+        },
+        {
+          "name": "Рисунок 24",
+          "kind": "image",
+          "idx": 19,
+          "shape_name": "Рисунок 24",
+          "max_chars": null
+        },
+        {
+          "name": "Рисунок 24",
+          "kind": "image",
+          "idx": 20,
+          "shape_name": "Рисунок 24",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 19",
+          "kind": "body",
+          "idx": 21,
+          "shape_name": "Текст 19",
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "только_фон",
+      "name": "Только фон",
+      "slide_master_index": 0,
+      "slide_layout_index": 4,
+      "preview_path": null,
+      "supported_slide_kinds": [],
+      "placeholders": []
+    },
+    {
+      "key": "титульный_слайд",
+      "name": "Титульный слайд",
+      "slide_master_index": 1,
+      "slide_layout_index": 0,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "title",
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Заголовок 1",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Заголовок 1",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 19",
+          "kind": "body",
+          "idx": 15,
+          "shape_name": "Текст 19",
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "карточки",
+      "name": "Карточки",
+      "slide_master_index": 1,
+      "slide_layout_index": 1,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table",
+        "image"
+      ],
+      "placeholders": [
+        {
+          "name": "Заголовок 1",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Заголовок 1",
+          "max_chars": null
+        },
+        {
+          "name": "Объект 2",
+          "kind": "image",
+          "idx": 1,
+          "shape_name": "Объект 2",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 10",
+          "kind": "body",
+          "idx": 11,
+          "shape_name": "Текст 10",
+          "max_chars": null
+        },
+        {
+          "name": "Объект 2",
+          "kind": "image",
+          "idx": 12,
+          "shape_name": "Объект 2",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 19",
+          "kind": "body",
+          "idx": 17,
+          "shape_name": "Текст 19",
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "слайд_с_перечислением_m1_l2",
+      "name": "Слайд с перечислением",
+      "slide_master_index": 1,
+      "slide_layout_index": 2,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Заголовок 1",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Заголовок 1",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 10",
+          "kind": "body",
+          "idx": 12,
+          "shape_name": "Текст 10",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 12",
+          "kind": "body",
+          "idx": 13,
+          "shape_name": "Текст 12",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 13",
+          "kind": "body",
+          "idx": 14,
+          "shape_name": "Текст 13",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 19",
+          "kind": "body",
+          "idx": 17,
+          "shape_name": "Текст 19",
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "только_фон_m1_l3",
+      "name": "Только фон",
+      "slide_master_index": 1,
+      "slide_layout_index": 3,
+      "preview_path": null,
+      "supported_slide_kinds": [],
+      "placeholders": []
+    },
+    {
+      "key": "контакты",
+      "name": "Контакты",
+      "slide_master_index": 1,
+      "slide_layout_index": 4,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Текст 12",
+          "kind": "body",
+          "idx": 10,
+          "shape_name": "Текст 12",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 12",
+          "kind": "body",
+          "idx": 11,
+          "shape_name": "Текст 12",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 12",
+          "kind": "body",
+          "idx": 12,
+          "shape_name": "Текст 12",
+          "max_chars": null
+        },
+        {
+          "name": "Текст 12",
+          "kind": "body",
+          "idx": 13,
+          "shape_name": "Текст 12",
+          "max_chars": null
+        }
+      ]
+    }
+  ],
+  "prototype_slides": [
+    {
+      "key": "cover",
+      "name": "Титульный слайд",
+      "source_slide_index": 0,
+      "supported_slide_kinds": [
+        "title"
+      ],
+      "tokens": [
+        {
+          "token": "cover_title",
+          "binding": "cover_title",
+          "shape_name": "Заголовок 1"
+        },
+        {
+          "token": "cover_meta",
+          "binding": "cover_meta",
+          "shape_name": "Текст 3"
+        }
+      ]
+    },
+    {
+      "key": "table",
+      "name": "Слайд с таблицей",
+      "source_slide_index": 1,
+      "supported_slide_kinds": [
+        "table"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Заголовок 1"
+        },
+        {
+          "token": "subtitle",
+          "binding": "subtitle",
+          "shape_name": "Текст 4"
+        },
+        {
+          "token": "table",
+          "binding": "table",
+          "shape_name": "Таблица 5"
+        },
+        {
+          "token": "left_note",
+          "binding": "left_note",
+          "shape_name": "Текст 2"
+        },
+        {
+          "token": "right_note",
+          "binding": "right_note",
+          "shape_name": "Текст 3"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "TextBox 24"
+        }
+      ]
+    },
+    {
+      "key": "image_text",
+      "name": "Слайд с рисунком",
+      "source_slide_index": 3,
+      "supported_slide_kinds": [
+        "image"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Заголовок 1"
+        },
+        {
+          "token": "subtitle",
+          "binding": "subtitle",
+          "shape_name": "Текст 2"
+        },
+        {
+          "token": "main_text",
+          "binding": "main_text",
+          "shape_name": "Текст 3"
+        },
+        {
+          "token": "secondary_text",
+          "binding": "secondary_text",
+          "shape_name": "Текст 4"
+        },
+        {
+          "token": "image",
+          "binding": "image",
+          "shape_name": "Рисунок 8"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "Текст 11"
+        }
+      ]
+    },
+    {
+      "key": "list_with_icons",
+      "name": "Слайд с перечислением",
+      "source_slide_index": 4,
+      "supported_slide_kinds": [
+        "two_column"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Заголовок 1"
+        },
+        {
+          "token": "subtitle",
+          "binding": "subtitle",
+          "shape_name": "Текст 4"
+        },
+        {
+          "token": "left_text",
+          "binding": "left_text",
+          "shape_name": "Текст 3"
+        },
+        {
+          "token": "right_list",
+          "binding": "right_list",
+          "shape_name": "Текст 5"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "Текст 14"
+        }
+      ]
+    },
+    {
+      "key": "cards_3",
+      "name": "Слайд с карточками",
+      "source_slide_index": 5,
+      "supported_slide_kinds": [
+        "bullets"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Заголовок 12"
+        },
+        {
+          "token": "card_1",
+          "binding": "card_1",
+          "shape_name": "Текст 14"
+        },
+        {
+          "token": "card_2",
+          "binding": "card_2",
+          "shape_name": "Текст 29"
+        },
+        {
+          "token": "card_3",
+          "binding": "card_3",
+          "shape_name": "Текст 30"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "Текст 31"
+        }
+      ]
+    },
+    {
+      "key": "contacts",
+      "name": "Контакты",
+      "source_slide_index": 6,
+      "supported_slide_kinds": [
+        "text"
+      ],
+      "tokens": [
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "TextBox 24"
+        },
+        {
+          "token": "contact_title",
+          "binding": "contact_title",
+          "shape_name": "Текст 10"
+        },
+        {
+          "token": "contact_role",
+          "binding": "contact_role",
+          "shape_name": "Текст 11"
+        },
+        {
+          "token": "contact_phone",
+          "binding": "contact_phone",
+          "shape_name": "Текст 12"
+        },
+        {
+          "token": "contact_email",
+          "binding": "contact_email",
+          "shape_name": "Текст 13"
+        }
+      ]
+    }
+  ]
+}

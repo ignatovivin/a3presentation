@@ -1,0 +1,772 @@
+{
+  "template_id": "kopiya_shablon_osnovnoy",
+  "display_name": "Копия Шаблон основной",
+  "source_pptx": "template.pptx",
+  "description": "Шаблон с таблицей, графиком, карточками, перечислением и контактами",
+  "generation_mode": "prototype",
+  "default_layout_key": "слайд_с_таблицей",
+  "layouts": [
+    {
+      "key": "титульный_слайд",
+      "name": "Титульный слайд",
+      "slide_master_index": 0,
+      "slide_layout_index": 0,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "title",
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Google Shape;14;p2",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Google Shape;14;p2",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;16;p2",
+          "kind": "body",
+          "idx": 1,
+          "shape_name": "Google Shape;16;p2",
+          "binding": null,
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "только_фон",
+      "name": "Только фон",
+      "slide_master_index": 0,
+      "slide_layout_index": 1,
+      "preview_path": null,
+      "supported_slide_kinds": [],
+      "placeholders": []
+    },
+    {
+      "key": "контакты",
+      "name": "Контакты",
+      "slide_master_index": 0,
+      "slide_layout_index": 2,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Google Shape;25;p4",
+          "kind": "body",
+          "idx": 1,
+          "shape_name": "Google Shape;25;p4",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;26;p4",
+          "kind": "body",
+          "idx": 2,
+          "shape_name": "Google Shape;26;p4",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;27;p4",
+          "kind": "body",
+          "idx": 3,
+          "shape_name": "Google Shape;27;p4",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;28;p4",
+          "kind": "body",
+          "idx": 4,
+          "shape_name": "Google Shape;28;p4",
+          "binding": null,
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "карточки",
+      "name": "Карточки",
+      "slide_master_index": 0,
+      "slide_layout_index": 3,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Google Shape;34;p5",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Google Shape;34;p5",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;35;p5",
+          "kind": "body",
+          "idx": 1,
+          "shape_name": "Google Shape;35;p5",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;36;p5",
+          "kind": "body",
+          "idx": 2,
+          "shape_name": "Google Shape;36;p5",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;37;p5",
+          "kind": "body",
+          "idx": 3,
+          "shape_name": "Google Shape;37;p5",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;39;p5",
+          "kind": "body",
+          "idx": 4,
+          "shape_name": "Google Shape;39;p5",
+          "binding": null,
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "слайд_с_перечислением",
+      "name": "Слайд с перечислением",
+      "slide_master_index": 0,
+      "slide_layout_index": 4,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Google Shape;41;p6",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Google Shape;41;p6",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;42;p6",
+          "kind": "body",
+          "idx": 1,
+          "shape_name": "Google Shape;42;p6",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;43;p6",
+          "kind": "body",
+          "idx": 2,
+          "shape_name": "Google Shape;43;p6",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;44;p6",
+          "kind": "body",
+          "idx": 3,
+          "shape_name": "Google Shape;44;p6",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;46;p6",
+          "kind": "body",
+          "idx": 4,
+          "shape_name": "Google Shape;46;p6",
+          "binding": null,
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "только_фон_m1_l0",
+      "name": "Только фон",
+      "slide_master_index": 1,
+      "slide_layout_index": 0,
+      "preview_path": null,
+      "supported_slide_kinds": [],
+      "placeholders": []
+    },
+    {
+      "key": "слайд_с_перечислением_m1_l1",
+      "name": "Слайд с перечислением",
+      "slide_master_index": 1,
+      "slide_layout_index": 1,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table",
+        "image"
+      ],
+      "placeholders": [
+        {
+          "name": "Google Shape;52;p9",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Google Shape;52;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;53;p9",
+          "kind": "body",
+          "idx": 1,
+          "shape_name": "Google Shape;53;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;54;p9",
+          "kind": "body",
+          "idx": 2,
+          "shape_name": "Google Shape;54;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;55;p9",
+          "kind": "body",
+          "idx": 3,
+          "shape_name": "Google Shape;55;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;56;p9",
+          "kind": "image",
+          "idx": 4,
+          "shape_name": "Google Shape;56;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;57;p9",
+          "kind": "image",
+          "idx": 5,
+          "shape_name": "Google Shape;57;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;58;p9",
+          "kind": "image",
+          "idx": 6,
+          "shape_name": "Google Shape;58;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;59;p9",
+          "kind": "image",
+          "idx": 7,
+          "shape_name": "Google Shape;59;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;60;p9",
+          "kind": "image",
+          "idx": 8,
+          "shape_name": "Google Shape;60;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;61;p9",
+          "kind": "image",
+          "idx": 9,
+          "shape_name": "Google Shape;61;p9",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;63;p9",
+          "kind": "body",
+          "idx": 13,
+          "shape_name": "Google Shape;63;p9",
+          "binding": null,
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "слайд_с_таблицей",
+      "name": "Слайд с таблицей",
+      "slide_master_index": 1,
+      "slide_layout_index": 2,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Google Shape;65;p10",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Google Shape;65;p10",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;66;p10",
+          "kind": "body",
+          "idx": 1,
+          "shape_name": "Google Shape;66;p10",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;67;p10",
+          "kind": "unknown",
+          "idx": 2,
+          "shape_name": "Google Shape;67;p10",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;68;p10",
+          "kind": "body",
+          "idx": 3,
+          "shape_name": "Google Shape;68;p10",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;69;p10",
+          "kind": "body",
+          "idx": 4,
+          "shape_name": "Google Shape;69;p10",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;71;p10",
+          "kind": "body",
+          "idx": 5,
+          "shape_name": "Google Shape;71;p10",
+          "binding": null,
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "слайд_с_рисунком",
+      "name": "Слайд с рисунком",
+      "slide_master_index": 1,
+      "slide_layout_index": 3,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table",
+        "image"
+      ],
+      "placeholders": [
+        {
+          "name": "Google Shape;73;p11",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Google Shape;73;p11",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;74;p11",
+          "kind": "body",
+          "idx": 1,
+          "shape_name": "Google Shape;74;p11",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;75;p11",
+          "kind": "body",
+          "idx": 2,
+          "shape_name": "Google Shape;75;p11",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;76;p11",
+          "kind": "body",
+          "idx": 3,
+          "shape_name": "Google Shape;76;p11",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;77;p11",
+          "kind": "image",
+          "idx": 4,
+          "shape_name": "Google Shape;77;p11",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;79;p11",
+          "kind": "body",
+          "idx": 5,
+          "shape_name": "Google Shape;79;p11",
+          "binding": null,
+          "max_chars": null
+        }
+      ]
+    },
+    {
+      "key": "слайд_с_карточками",
+      "name": "Слайд с карточками",
+      "slide_master_index": 1,
+      "slide_layout_index": 4,
+      "preview_path": null,
+      "supported_slide_kinds": [
+        "bullets",
+        "text",
+        "table"
+      ],
+      "placeholders": [
+        {
+          "name": "Google Shape;81;p12",
+          "kind": "title",
+          "idx": 0,
+          "shape_name": "Google Shape;81;p12",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;85;p12",
+          "kind": "body",
+          "idx": 1,
+          "shape_name": "Google Shape;85;p12",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;86;p12",
+          "kind": "body",
+          "idx": 2,
+          "shape_name": "Google Shape;86;p12",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;87;p12",
+          "kind": "body",
+          "idx": 3,
+          "shape_name": "Google Shape;87;p12",
+          "binding": null,
+          "max_chars": null
+        },
+        {
+          "name": "Google Shape;89;p12",
+          "kind": "body",
+          "idx": 4,
+          "shape_name": "Google Shape;89;p12",
+          "binding": null,
+          "max_chars": null
+        }
+      ]
+    }
+  ],
+  "prototype_slides": [
+    {
+      "key": "cover",
+      "name": "Титульный слайд",
+      "source_slide_index": 0,
+      "supported_slide_kinds": [
+        "title"
+      ],
+      "tokens": [
+        {
+          "token": "cover_title",
+          "binding": "cover_title",
+          "shape_name": "Google Shape;95;p13"
+        },
+        {
+          "token": "cover_meta",
+          "binding": "cover_meta",
+          "shape_name": "Google Shape;96;p13"
+        }
+      ]
+    },
+    {
+      "key": "table",
+      "name": "Слайд с таблицей",
+      "source_slide_index": 1,
+      "supported_slide_kinds": [
+        "table"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Google Shape;102;p14"
+        },
+        {
+          "token": "subtitle",
+          "binding": "subtitle",
+          "shape_name": "Google Shape;105;p14"
+        },
+        {
+          "token": "table",
+          "binding": "table",
+          "shape_name": "Google Shape;104;p14"
+        },
+        {
+          "token": "left_note",
+          "binding": "left_note",
+          "shape_name": "Google Shape;112;p14"
+        },
+        {
+          "token": "right_note",
+          "binding": "right_note",
+          "shape_name": "Google Shape;110;p14"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "Google Shape;111;p14"
+        }
+      ]
+    },
+    {
+      "key": "chart",
+      "name": "Слайд с графиком",
+      "source_slide_index": 2,
+      "supported_slide_kinds": [
+        "image"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Google Shape;121;p15"
+        },
+        {
+          "token": "subtitle",
+          "binding": "subtitle",
+          "shape_name": "Google Shape;120;p15"
+        },
+        {
+          "token": "summary_top",
+          "binding": "main_text",
+          "shape_name": "Google Shape;126;p15"
+        },
+        {
+          "token": "summary_bottom",
+          "binding": "secondary_text",
+          "shape_name": "Google Shape;127;p15"
+        },
+        {
+          "token": "chart_image",
+          "binding": "chart_image",
+          "shape_name": "Google Shape;118;p15"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "Google Shape;128;p15"
+        }
+      ]
+    },
+    {
+      "key": "image_text",
+      "name": "Слайд с изображением",
+      "source_slide_index": 3,
+      "supported_slide_kinds": [
+        "image"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Google Shape;137;p16"
+        },
+        {
+          "token": "subtitle",
+          "binding": "subtitle",
+          "shape_name": "Google Shape;136;p16"
+        },
+        {
+          "token": "summary_top",
+          "binding": "main_text",
+          "shape_name": "Google Shape;142;p16"
+        },
+        {
+          "token": "summary_bottom",
+          "binding": "secondary_text",
+          "shape_name": "Google Shape;143;p16"
+        },
+        {
+          "token": "image",
+          "binding": "image",
+          "shape_name": "Google Shape;134;p16"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "Google Shape;144;p16"
+        }
+      ]
+    },
+    {
+      "key": "cards_3",
+      "name": "Слайд с карточками",
+      "source_slide_index": 4,
+      "supported_slide_kinds": [
+        "bullets"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Google Shape;188;p17"
+        },
+        {
+          "token": "card_1",
+          "binding": "card_1",
+          "shape_name": "Google Shape;153;p17"
+        },
+        {
+          "token": "card_2",
+          "binding": "card_2",
+          "shape_name": "Google Shape;156;p17"
+        },
+        {
+          "token": "card_3",
+          "binding": "card_3",
+          "shape_name": "Google Shape;155;p17"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "Google Shape;193;p17"
+        }
+      ]
+    },
+    {
+      "key": "feature_list",
+      "name": "Слайд с перечислением",
+      "source_slide_index": 6,
+      "supported_slide_kinds": [
+        "two_column"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Google Shape;259;p19"
+        },
+        {
+          "token": "subtitle",
+          "binding": "subtitle",
+          "shape_name": "Google Shape;260;p19"
+        },
+        {
+          "token": "left_feature_block",
+          "binding": "left_text",
+          "shape_name": "Google Shape;251;p19"
+        },
+        {
+          "token": "right_list",
+          "binding": "right_list",
+          "shape_name": "Google Shape;250;p19"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "Google Shape;265;p19"
+        }
+      ]
+    },
+    {
+      "key": "feature_list_alt",
+      "name": "Слайд с перечислением 2",
+      "source_slide_index": 7,
+      "supported_slide_kinds": [
+        "two_column"
+      ],
+      "tokens": [
+        {
+          "token": "title",
+          "binding": "title",
+          "shape_name": "Google Shape;291;p20"
+        },
+        {
+          "token": "subtitle",
+          "binding": "subtitle",
+          "shape_name": "Google Shape;292;p20"
+        },
+        {
+          "token": "left_feature_block",
+          "binding": "left_text",
+          "shape_name": "Google Shape;289;p20"
+        },
+        {
+          "token": "right_list",
+          "binding": "right_list",
+          "shape_name": "Google Shape;293;p20"
+        },
+        {
+          "token": "presentation_name",
+          "binding": "presentation_name",
+          "shape_name": "Google Shape;298;p20"
+        }
+      ]
+    },
+    {
+      "key": "contacts",
+      "name": "Контакты",
+      "source_slide_index": 8,
+      "supported_slide_kinds": [
+        "text"
+      ],
+      "tokens": [
+        {
+          "token": "address",
+          "binding": "address",
+          "shape_name": "Google Shape;303;p21"
+        },
+        {
+          "token": "phone",
+          "binding": "phone",
+          "shape_name": "Google Shape;304;p21"
+        },
+        {
+          "token": "email",
+          "binding": "email",
+          "shape_name": "Google Shape;305;p21"
+        },
+        {
+          "token": "website",
+          "binding": "website",
+          "shape_name": "Google Shape;306;p21"
+        }
+      ]
+    }
+  ]
+}
