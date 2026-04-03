@@ -58,6 +58,7 @@ export type ExtractTextResponse = {
   text: string;
   tables: TableBlock[];
   blocks: DocumentBlock[];
+  chart_assessments: ChartabilityAssessment[];
 };
 
 export type DocumentBlock = {
@@ -78,6 +79,79 @@ export type DocumentBlock = {
 export type TableBlock = {
   headers: string[];
   rows: string[][];
+};
+
+export type ChartConfidence = "high" | "medium" | "low" | "none";
+
+export type ChartTableClassification =
+  | "single_series_category"
+  | "multi_series_category"
+  | "time_series"
+  | "composition"
+  | "ranking"
+  | "matrix_numeric"
+  | "text_dominant"
+  | "mixed_ambiguous"
+  | "not_chartable";
+
+export type ChartType = "bar" | "column" | "line" | "stacked_bar" | "stacked_column" | "combo" | "pie";
+
+export type StructuredCell = {
+  text: string;
+  normalized_text: string;
+  value_type: string;
+  parsed_value?: number | null;
+  unit?: string | null;
+  annotation?: string | null;
+  is_header_like: boolean;
+};
+
+export type StructuredTable = {
+  table_id: string;
+  header_rows: number[];
+  label_columns: number[];
+  numeric_columns: number[];
+  time_columns: number[];
+  data_start_row: number;
+  cells: StructuredCell[][];
+  summary_rows: number[];
+  warnings: string[];
+};
+
+export type ChartSeries = {
+  name: string;
+  values: number[];
+  unit?: string | null;
+  axis: string;
+  hidden: boolean;
+};
+
+export type ChartSpec = {
+  chart_id: string;
+  source_table_id: string;
+  chart_type: ChartType;
+  title?: string | null;
+  categories: string[];
+  series: ChartSeries[];
+  x_axis_title?: string | null;
+  y_axis_title?: string | null;
+  legend_visible: boolean;
+  data_labels_visible: boolean;
+  value_format: string;
+  stacking: string;
+  confidence: ChartConfidence;
+  warnings: string[];
+};
+
+export type ChartabilityAssessment = {
+  table_id: string;
+  chartable: boolean;
+  classification: ChartTableClassification;
+  confidence: ChartConfidence;
+  reasons: string[];
+  warnings: string[];
+  candidate_specs: ChartSpec[];
+  structured_table?: StructuredTable | null;
 };
 
 export type SlideSpec = {

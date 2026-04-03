@@ -1,7 +1,17 @@
 import { ChangeEvent, useEffect, useState, useTransition } from "react";
 
 import { buildDownloadUrl, buildPlan, extractTextFromDocument, fetchTemplates, generatePresentation } from "@/api";
-import type { DocumentBlock, GeneratePresentationResponse, PresentationPlan, TableBlock, TemplateSummary } from "@/types";
+import { ChartPreview } from "@/components/chart-preview";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import type {
+  ChartabilityAssessment,
+  ChartSpec,
+  DocumentBlock,
+  GeneratePresentationResponse,
+  PresentationPlan,
+  TableBlock,
+  TemplateSummary,
+} from "@/types";
 
 const PRIMARY_TEMPLATE_ID = "corp_light_v1";
 
@@ -13,6 +23,9 @@ export function App() {
   const [rawText, setRawText] = useState("");
   const [documentTables, setDocumentTables] = useState<TableBlock[]>([]);
   const [documentBlocks, setDocumentBlocks] = useState<DocumentBlock[]>([]);
+  const [chartAssessments, setChartAssessments] = useState<ChartabilityAssessment[]>([]);
+  const [chartSelectionByTableId, setChartSelectionByTableId] = useState<Record<string, string>>({});
+  const [chartModeByTableId, setChartModeByTableId] = useState<Record<string, "table" | "chart">>({});
   const [generationResult, setGenerationResult] = useState<GeneratePresentationResponse | null>(null);
   const [error, setError] = useState("");
   const [showLoadingNotice, setShowLoadingNotice] = useState(true);
@@ -53,6 +66,21 @@ export function App() {
           setRawText(result.text);
           setDocumentTables(result.tables);
           setDocumentBlocks(result.blocks);
+          setChartAssessments(result.chart_assessments);
+          setChartSelectionByTableId(
+            Object.fromEntries(
+              result.chart_assessments
+                .filter((assessment) => assessment.candidate_specs.length > 0)
+                .map((assessment) => [assessment.table_id, assessment.candidate_specs[0].chart_id]),
+            ),
+          );
+          setChartModeByTableId(
+            Object.fromEntries(
+              result.chart_assessments
+                .filter((assessment) => assessment.chartable)
+                .map((assessment) => [assessment.table_id, "table" satisfies "table" | "chart"]),
+            ),
+          );
         })
         .catch((err: Error) => {
           setError(err.message);
@@ -83,6 +111,35 @@ export function App() {
         .then((result) => setGenerationResult(result))
         .catch((err: Error) => setError(err.message));
     });
+  }
+
+  function selectedChartSpec(assessment: ChartabilityAssessment): ChartSpec | null {
+    const chartId = chartSelectionByTableId[assessment.table_id];
+    return assessment.candidate_specs.find((item) => item.chart_id === chartId) ?? assessment.candidate_specs[0] ?? null;
+  }
+
+  function renderTablePreview(assessment: ChartabilityAssessment) {
+    const structuredTable = assessment.structured_table;
+    if (!structuredTable?.cells.length) {
+      return <div className="table-preview-empty">Нет структурированного preview таблицы.</div>;
+    }
+
+    return (
+      <div className="table-preview">
+        {structuredTable.cells.slice(0, 6).map((row, rowIndex) => (
+          <div className="table-preview-row" key={`${assessment.table_id}-row-${rowIndex}`}>
+            {row.map((cell, cellIndex) => (
+              <div
+                className={`table-preview-cell${rowIndex === 0 ? " is-header" : ""}`}
+                key={`${assessment.table_id}-cell-${rowIndex}-${cellIndex}`}
+              >
+                {cell.text || "—"}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
   }
 
   return (
@@ -170,6 +227,72 @@ export function App() {
             </div>
           </div>
         </section>
+
+        {chartAssessments.length > 0 ? (
+          <section className="preview-gallery">
+            {chartAssessments.map((assessment) => {
+              const selectedSpec = selectedChartSpec(assessment);
+              const mode = chartModeByTableId[assessment.table_id] ?? "table";
+
+              return (
+                <Card className="preview-card" key={assessment.table_id}>
+                  <CardHeader>
+                    <CardTitle>{assessment.table_id}</CardTitle>
+                    <CardDescription>
+                      {assessment.classification} · confidence: {assessment.confidence}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="preview-card-content">
+                    <div className="preview-toolbar">
+                      <button
+                        type="button"
+                        className={`secondary-button${mode === "table" ? " is-active" : ""}`}
+                        onClick={() => setChartModeByTableId((current) => ({ ...current, [assessment.table_id]: "table" }))}
+                      >
+                        Таблица
+                      </button>
+                      <button
+                        type="button"
+                        className={`secondary-button${mode === "chart" ? " is-active" : ""}`}
+                        onClick={() => setChartModeByTableId((current) => ({ ...current, [assessment.table_id]: "chart" }))}
+                        disabled={!assessment.chartable || !selectedSpec}
+                      >
+                        График
+                      </button>
+                      {assessment.candidate_specs.length > 1 ? (
+                        <select
+                          className="chart-type-select"
+                          value={selectedSpec?.chart_id ?? ""}
+                          onChange={(event) =>
+                            setChartSelectionByTableId((current) => ({ ...current, [assessment.table_id]: event.target.value }))
+                          }
+                        >
+                          {assessment.candidate_specs.map((spec) => (
+                            <option key={spec.chart_id} value={spec.chart_id}>
+                              {spec.chart_type}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                    </div>
+
+                    {mode === "chart" && selectedSpec ? <ChartPreview spec={selectedSpec} /> : renderTablePreview(assessment)}
+
+                    {assessment.reasons.length > 0 ? (
+                      <div className="preview-reasons">
+                        {assessment.reasons.map((reason) => (
+                          <div className="preview-reason" key={reason}>
+                            {reason}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </section>
+        ) : null}
       </div>
     </main>
   );
