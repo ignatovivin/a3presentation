@@ -103,6 +103,20 @@ Railway-specific notes:
 - keep frontend and backend as separate Railway services
 - this is the cleanest way to keep the whole product in one Railway project with persistent file storage
 
+## Timeweb Cloud Server
+
+If you want the whole system on one VPS, use the server deployment mode.
+
+Guide:
+
+- [docs/timeweb-server-deploy.md](/C:/Project/a3presentation/docs/timeweb-server-deploy.md)
+
+Main command on the server:
+
+```bash
+docker compose -f docker-compose.server.yml up -d --build
+```
+
 ## Test and verification
 
 Backend tests:
