@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import json
 import math
 import re
 import zipfile
@@ -9,12 +10,15 @@ from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
+from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.oxml.xmlchemy import OxmlElement
 from pptx import Presentation
+from pptx.enum.chart import XL_CHART_TYPE, XL_MARKER_STYLE
 from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Pt
 
+from a3presentation.domain.chart import ChartSpec, ChartType
 from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec
 from a3presentation.domain.template import (
     GenerationMode,
@@ -50,6 +54,24 @@ class PptxGenerator:
     FULL_CONTENT_WIDTH_EMU = 11198224
     FOOTER_TOP_EMU = 6384626
     FOOTER_HEIGHT_EMU = 260000
+    _CHART_STYLE_CONFIG = None
+
+    @classmethod
+    def _chart_style_config(cls) -> dict:
+        if cls._CHART_STYLE_CONFIG is None:
+            config_path = Path(__file__).resolve().parents[3] / "frontend" / "src" / "chart-style.json"
+            cls._CHART_STYLE_CONFIG = json.loads(config_path.read_text(encoding="utf-8"))
+        return cls._CHART_STYLE_CONFIG
+
+    @classmethod
+    def _style_rgb(cls, key: str) -> RGBColor:
+        value = cls._chart_style_config()[key].lstrip("#")
+        return RGBColor.from_string(value)
+
+    @classmethod
+    def _series_color(cls, index: int) -> RGBColor:
+        palette = cls._chart_style_config()["palette"]
+        return RGBColor.from_string(palette[index % len(palette)].lstrip("#"))
 
     def generate(self, template_path: Path, manifest: TemplateManifest, plan: PresentationPlan, output_dir: Path) -> Path:
         if manifest.generation_mode == GenerationMode.PROTOTYPE and manifest.prototype_slides:
@@ -307,7 +329,9 @@ class PptxGenerator:
             elif placeholder_spec.kind == PlaceholderKind.FOOTER:
                 self._set_text(shape, slide_spec.notes or "")
             elif placeholder_spec.kind == PlaceholderKind.TABLE:
-                self._fill_table(shape, slide_spec)
+                self._fill_table_or_chart(shape, slide_spec)
+            elif placeholder_spec.kind == PlaceholderKind.CHART:
+                self._fill_chart(shape, slide_spec)
 
         for placeholder in slide.placeholders:
             placeholder_idx = placeholder.placeholder_format.idx
@@ -531,12 +555,15 @@ class PptxGenerator:
     def _fill_shape_by_binding(self, shape, binding: str, slide_spec: SlideSpec, presentation_title: str) -> None:
         binding_value = self._build_token_value_map(slide_spec, presentation_title).get(binding, "")
         if binding == "table":
-            self._fill_table(shape, slide_spec)
+            self._fill_table_or_chart(shape, slide_spec)
+            return
+        if binding == "chart":
+            self._fill_chart(shape, slide_spec)
             return
         if binding == "image":
             self._fill_image(shape, slide_spec)
             return
-        if binding in {"chart", "chart_image", "icon_grid"}:
+        if binding in {"chart_image", "icon_grid"}:
             self._clear_placeholder(shape)
             return
         if self._is_empty_binding_value(binding_value) and binding not in {"presentation_name", "cover_title", "title"}:
@@ -911,6 +938,337 @@ class PptxGenerator:
         as_lines.extend(" | ".join(row) for row in rows)
         if getattr(shape, "has_text_frame", False):
             self._set_bullets(shape, as_lines)
+
+    def _fill_table_or_chart(self, shape, slide_spec: SlideSpec) -> None:
+        if slide_spec.chart is not None:
+            self._fill_chart(shape, slide_spec)
+            return
+        self._fill_table(shape, slide_spec)
+
+    def _fill_chart(self, shape, slide_spec: SlideSpec) -> None:
+        if slide_spec.chart is None:
+            self._clear_placeholder(shape)
+            return
+
+        chart_spec = slide_spec.chart
+        if not chart_spec.categories or not chart_spec.series:
+            self._clear_placeholder(shape)
+            return
+
+        try:
+            chart_type = self._resolve_chart_type(chart_spec)
+            chart_data = CategoryChartData()
+            chart_data.categories = chart_spec.categories
+            visible_series_count = 0
+            for series in chart_spec.series:
+                if series.hidden:
+                    continue
+                chart_data.add_series(series.name or "Ряд", series.values)
+                visible_series_count += 1
+
+            if visible_series_count == 0:
+                self._clear_placeholder(shape)
+                return
+
+            slide_shapes = shape.part.slide.shapes
+            left = shape.left
+            top = shape.top
+            width = shape.width
+            height = shape.height
+            if getattr(shape, "is_placeholder", False):
+                self._clear_placeholder(shape)
+
+            graphic_frame = slide_shapes.add_chart(chart_type, left, top, width, height, chart_data)
+            chart = graphic_frame.chart
+            if chart_spec.chart_type == ChartType.COMBO:
+                self._convert_chart_to_combo(chart)
+            self._style_chart(chart, chart_spec)
+        except Exception:
+            if getattr(shape, "has_text_frame", False):
+                self._set_text(shape, "Не удалось построить график")
+            else:
+                self._clear_placeholder(shape)
+
+    def _convert_chart_to_combo(self, chart) -> None:
+        chart_space = chart._chartSpace
+        plot_area = chart_space.chart.plotArea
+        bar_charts = plot_area.xpath("./c:barChart")
+        if not bar_charts:
+            return
+
+        bar_chart = bar_charts[0]
+        series = bar_chart.xpath("./c:ser")
+        if len(series) < 2:
+            return
+
+        line_series = series[-1]
+        bar_chart.remove(line_series)
+
+        line_chart = OxmlElement("c:lineChart")
+        grouping = OxmlElement("c:grouping")
+        grouping.set("val", "standard")
+        line_chart.append(grouping)
+
+        self._ensure_line_series_shape(line_series)
+        line_chart.append(line_series)
+
+        for ax_id in bar_chart.xpath("./c:axId"):
+            cloned_ax_id = OxmlElement("c:axId")
+            cloned_ax_id.set("val", ax_id.get("val"))
+            line_chart.append(cloned_ax_id)
+
+        insert_at = list(plot_area).index(bar_chart) + 1
+        plot_area.insert(insert_at, line_chart)
+
+    def _ensure_line_series_shape(self, series_element) -> None:
+        if not series_element.xpath("./c:marker"):
+            marker = OxmlElement("c:marker")
+            symbol = OxmlElement("c:symbol")
+            symbol.set("val", "none")
+            marker.append(symbol)
+            insert_at = 0
+            for idx, child in enumerate(series_element):
+                if child.tag.endswith("}spPr"):
+                    insert_at = idx + 1
+                    break
+            series_element.insert(insert_at, marker)
+
+        if not series_element.xpath("./c:smooth"):
+            smooth = OxmlElement("c:smooth")
+            smooth.set("val", "0")
+            series_element.append(smooth)
+
+    def _resolve_chart_type(self, chart_spec: ChartSpec) -> XL_CHART_TYPE:
+        chart_type_map = {
+            ChartType.BAR: XL_CHART_TYPE.BAR_CLUSTERED,
+            ChartType.COLUMN: XL_CHART_TYPE.COLUMN_CLUSTERED,
+            ChartType.LINE: XL_CHART_TYPE.LINE,
+            ChartType.STACKED_BAR: XL_CHART_TYPE.BAR_STACKED,
+            ChartType.STACKED_COLUMN: XL_CHART_TYPE.COLUMN_STACKED,
+            ChartType.COMBO: XL_CHART_TYPE.COLUMN_CLUSTERED,
+            ChartType.PIE: XL_CHART_TYPE.PIE,
+        }
+        return chart_type_map.get(chart_spec.chart_type, XL_CHART_TYPE.COLUMN_CLUSTERED)
+
+    def _style_chart(self, chart, chart_spec: ChartSpec) -> None:
+        self._style_chart_plot(chart, chart_spec)
+        chart.has_legend = chart_spec.legend_visible and len(chart.series) > 1
+        if chart.has_legend:
+            chart.legend.include_in_layout = False
+            self._style_chart_legend(chart)
+
+        if chart_spec.title:
+            chart.has_title = True
+            chart.chart_title.text_frame.text = chart_spec.title
+            self._style_chart_title(chart)
+        else:
+            chart.has_title = False
+
+        for index, series in enumerate(chart.series):
+            self._style_chart_series(series, chart_spec, index)
+            if chart_spec.data_labels_visible:
+                series.has_data_labels = True
+                self._style_data_labels(series, chart_spec)
+
+        if hasattr(chart, "category_axis"):
+            try:
+                chart.category_axis.has_title = bool(chart_spec.x_axis_title)
+                if chart_spec.x_axis_title:
+                    chart.category_axis.axis_title.text_frame.text = chart_spec.x_axis_title
+                    self._style_axis_title(chart.category_axis)
+                self._style_category_axis(chart.category_axis, chart_spec)
+            except Exception:
+                pass
+
+        if hasattr(chart, "value_axis"):
+            try:
+                chart.value_axis.has_title = bool(chart_spec.y_axis_title)
+                if chart_spec.y_axis_title:
+                    chart.value_axis.axis_title.text_frame.text = chart_spec.y_axis_title
+                    self._style_axis_title(chart.value_axis)
+                chart.value_axis.has_major_gridlines = True
+                self._style_value_axis(chart.value_axis, chart_spec)
+            except Exception:
+                pass
+
+    def _style_chart_plot(self, chart, chart_spec: ChartSpec) -> None:
+        if not chart.plots:
+            return
+        plot = chart.plots[0]
+        dense_threshold = self._chart_style_config()["denseCategoryThreshold"]
+        very_dense_threshold = self._chart_style_config()["veryDenseCategoryThreshold"]
+        try:
+            if chart_spec.chart_type in {ChartType.COLUMN, ChartType.BAR, ChartType.STACKED_BAR, ChartType.STACKED_COLUMN}:
+                if len(chart_spec.categories) >= very_dense_threshold:
+                    plot.gap_width = 124
+                elif len(chart_spec.categories) >= dense_threshold:
+                    plot.gap_width = 96
+                else:
+                    plot.gap_width = 72
+                plot.overlap = 100 if chart_spec.chart_type in {ChartType.STACKED_BAR, ChartType.STACKED_COLUMN} else 0
+        except Exception:
+            pass
+
+    def _style_chart_title(self, chart) -> None:
+        try:
+            text_frame = chart.chart_title.text_frame
+            self._style_text_frame_runs(text_frame, font_size=Pt(18), bold=True, color=self._style_rgb("textColor"))
+        except Exception:
+            pass
+
+    def _style_chart_legend(self, chart) -> None:
+        try:
+            chart.legend.font.size = Pt(11)
+            chart.legend.font.color.rgb = self._style_rgb("mutedTextColor")
+        except Exception:
+            pass
+
+    def _style_chart_series(self, series, chart_spec: ChartSpec, index: int) -> None:
+        color = self._series_color(index)
+        if chart_spec.chart_type == ChartType.PIE:
+            self._style_pie_points(series)
+            return
+
+        is_combo_line_series = chart_spec.chart_type == ChartType.COMBO and index == len(chart_spec.series) - 1
+
+        try:
+            if not is_combo_line_series:
+                series.format.fill.solid()
+                series.format.fill.fore_color.rgb = color
+        except Exception:
+            pass
+
+        try:
+            series.format.line.color.rgb = color
+            if chart_spec.chart_type == ChartType.LINE or is_combo_line_series:
+                series.format.line.width = Pt(2.5)
+                self._style_line_marker(series, color)
+        except Exception:
+            pass
+
+    def _style_pie_points(self, series) -> None:
+        for index, point in enumerate(getattr(series, "points", [])):
+            color = self._series_color(index)
+            try:
+                point.format.fill.solid()
+                point.format.fill.fore_color.rgb = color
+            except Exception:
+                pass
+            try:
+                point.format.line.color.rgb = self._style_rgb("surfaceColor")
+                point.format.line.width = Pt(1)
+            except Exception:
+                pass
+
+    def _style_line_marker(self, series, color: RGBColor) -> None:
+        try:
+            series.marker.style = XL_MARKER_STYLE.CIRCLE
+            series.marker.size = 7
+            series.marker.format.fill.solid()
+            series.marker.format.fill.fore_color.rgb = color
+            series.marker.format.line.color.rgb = self._style_rgb("surfaceColor")
+            series.marker.format.line.width = Pt(1)
+        except Exception:
+            pass
+
+    def _style_data_labels(self, series, chart_spec: ChartSpec) -> None:
+        try:
+            data_labels = series.data_labels
+            data_labels.font.size = Pt(10)
+            data_labels.font.color.rgb = self._style_rgb("mutedTextColor")
+            data_labels.number_format = self._chart_number_format(chart_spec)
+        except Exception:
+            pass
+
+    def _style_category_axis(self, axis, chart_spec: ChartSpec) -> None:
+        self._style_axis_line(axis)
+        self._style_tick_labels(axis, chart_spec)
+
+    def _style_value_axis(self, axis, chart_spec: ChartSpec) -> None:
+        self._style_axis_line(axis)
+        self._style_tick_labels(axis, chart_spec)
+        try:
+            axis.major_gridlines.format.line.color.rgb = self._style_rgb("gridColor")
+            axis.major_gridlines.format.line.width = Pt(0.8)
+        except Exception:
+            pass
+        try:
+            axis.tick_labels.number_format = self._chart_axis_number_format(chart_spec)
+        except Exception:
+            pass
+
+    def _style_axis_line(self, axis) -> None:
+        try:
+            axis.format.line.color.rgb = self._style_rgb("axisColor")
+            axis.format.line.width = Pt(0.8)
+        except Exception:
+            pass
+
+    def _style_tick_labels(self, axis, chart_spec: ChartSpec) -> None:
+        tick_size = self._chart_tick_font_size(chart_spec)
+        try:
+            axis.tick_labels.font.size = Pt(tick_size)
+            axis.tick_labels.font.color.rgb = self._style_rgb("mutedTextColor")
+        except Exception:
+            pass
+
+    def _chart_number_format(self, chart_spec: ChartSpec) -> str:
+        if chart_spec.value_format == "currency":
+            return '#,##0" ₽"'
+        if chart_spec.value_format == "percent":
+            return '0"%"'
+        return "General"
+
+    def _chart_axis_number_format(self, chart_spec: ChartSpec) -> str:
+        if chart_spec.value_format == "percent":
+            return '0"%"'
+
+        max_value = max(
+            (abs(value) for series in chart_spec.series if not series.hidden for value in series.values),
+            default=0.0,
+        )
+
+        if chart_spec.value_format == "currency":
+            if max_value >= 1_000_000_000:
+                return '0.0,,," млрд ₽"'
+            if max_value >= 1_000_000:
+                return '0.0,," млн ₽"'
+            if max_value >= 1_000:
+                return '0," тыс ₽"'
+            return '#,##0" ₽"'
+
+        if max_value >= 1_000_000_000:
+            return '0.0,,," млрд"'
+        if max_value >= 1_000_000:
+            return '0.0,," млн"'
+        if max_value >= 1_000:
+            return '0," тыс"'
+        return "#,##0"
+
+    def _chart_tick_font_size(self, chart_spec: ChartSpec) -> int:
+        config = self._chart_style_config()
+        if len(chart_spec.categories) >= config["veryDenseCategoryThreshold"]:
+            return config["tickFontSizes"]["veryDense"]
+        if len(chart_spec.categories) >= config["denseCategoryThreshold"]:
+            return config["tickFontSizes"]["dense"]
+        return config["tickFontSizes"]["default"]
+
+    def _style_axis_title(self, axis) -> None:
+        try:
+            self._style_text_frame_runs(axis.axis_title.text_frame, font_size=Pt(11), bold=False, color=self._style_rgb("textColor"))
+        except Exception:
+            pass
+
+    def _style_text_frame_runs(self, text_frame, *, font_size, bold: bool, color: RGBColor) -> None:
+        for paragraph in text_frame.paragraphs:
+            if not paragraph.runs and paragraph.text:
+                run = paragraph.add_run()
+                run.text = paragraph.text
+                paragraph.text = ""
+            for run in paragraph.runs:
+                run.font.size = font_size
+                run.font.bold = bold
+                run.font.color.rgb = color
 
     def _fill_image(self, shape, slide_spec: SlideSpec) -> None:
         if not slide_spec.image_base64:

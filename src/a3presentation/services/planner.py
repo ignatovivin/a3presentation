@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from a3presentation.domain.api import DocumentBlock
+from a3presentation.domain.api import ChartOverride, DocumentBlock
 from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec, TableBlock
 from a3presentation.domain.semantic import DocumentKind, SemanticDocument, SemanticImage, SemanticSection
 from a3presentation.services.semantic_normalizer import SemanticDocumentNormalizer
@@ -48,6 +48,7 @@ class TextToPlanService:
         title: str | None = None,
         tables: list[TableBlock] | None = None,
         blocks: list[DocumentBlock] | None = None,
+        chart_overrides: list[ChartOverride] | None = None,
     ) -> PresentationPlan:
         semantic_document = self.normalizer.normalize(
             raw_text=raw_text,
@@ -69,6 +70,8 @@ class TextToPlanService:
                 preferred_layout_key="cover",
             )
         ]
+        chart_override_map = {override.table_id: override for override in chart_overrides or []}
+        table_sequence = 0
 
         content_slides: list[SlideSpec] = []
         contact_slides: list[SlideSpec] = []
@@ -98,6 +101,16 @@ class TextToPlanService:
                         content_slides.append(slide)
 
         content_slides = self._compress_slides(content_slides)
+        content_slides, table_sequence = self._apply_chart_overrides_to_slide_list(
+            content_slides,
+            chart_override_map,
+            table_sequence,
+        )
+        contact_slides, table_sequence = self._apply_chart_overrides_to_slide_list(
+            contact_slides,
+            chart_override_map,
+            table_sequence,
+        )
         slides.extend(content_slides)
 
         if not blocks_have_tables:
@@ -105,15 +118,15 @@ class TextToPlanService:
             for index, table in enumerate(tables or [], start=1):
                 if not table.headers and not table.rows:
                     continue
-                slides.append(
-                    SlideSpec(
-                        kind=SlideKind.TABLE,
-                        title=f"{table_title_base} {index}",
-                        subtitle="Ключевые данные из документа",
-                        table=table,
-                        preferred_layout_key="table",
-                    )
+                table_slide = SlideSpec(
+                    kind=SlideKind.TABLE,
+                    title=f"{table_title_base} {index}",
+                    subtitle="Ключевые данные из документа",
+                    table=table,
+                    preferred_layout_key="table",
                 )
+                table_sequence += 1
+                slides.append(self._apply_chart_override(table_slide, f"table_{table_sequence}", chart_override_map))
 
         slides.extend(contact_slides[:1])
         if len(slides) == 1 and (blocks or tables):
@@ -126,8 +139,62 @@ class TextToPlanService:
                     semantic_document=semantic_document,
                 )
             )
+        trailing_slides, table_sequence = self._apply_chart_overrides_to_slide_list(
+            slides[1:],
+            chart_override_map,
+            table_sequence,
+        )
+        slides = [slides[0], *trailing_slides]
         slides = self._enforce_hard_safety_rules(slides, plan_title, semantic_document, blocks or [], tables or [], sections)
         return PresentationPlan(template_id=template_id, title=plan_title, slides=slides)
+
+    def _apply_chart_override(
+        self,
+        slide: SlideSpec,
+        table_id: str,
+        chart_override_map: dict[str, ChartOverride],
+    ) -> SlideSpec:
+        override = chart_override_map.get(table_id)
+        slide.source_table_id = table_id
+        if override is None or override.mode != "chart" or override.selected_chart is None:
+            return slide
+
+        return SlideSpec(
+            kind=SlideKind.CHART,
+            title=slide.title,
+            subtitle=slide.subtitle,
+            text=slide.text,
+            bullets=slide.bullets,
+            left_bullets=slide.left_bullets,
+            right_bullets=slide.right_bullets,
+            chart=override.selected_chart.model_copy(deep=True),
+            source_table_id=table_id,
+            notes=slide.notes,
+            preferred_layout_key=slide.preferred_layout_key or "table",
+        )
+
+    def _apply_chart_overrides_to_slide_list(
+        self,
+        slides: list[SlideSpec],
+        chart_override_map: dict[str, ChartOverride],
+        start_index: int,
+    ) -> tuple[list[SlideSpec], int]:
+        updated_slides: list[SlideSpec] = []
+        table_sequence = start_index
+        for slide in slides:
+            if slide.table is None:
+                updated_slides.append(slide)
+                continue
+            if slide.source_table_id:
+                table_id = slide.source_table_id
+                matched = re.fullmatch(r"table_(\d+)", table_id)
+                if matched:
+                    table_sequence = max(table_sequence, int(matched.group(1)))
+            else:
+                table_sequence += 1
+                table_id = f"table_{table_sequence}"
+            updated_slides.append(self._apply_chart_override(slide, table_id, chart_override_map))
+        return updated_slides, table_sequence
 
     def _section_from_semantic(self, section: SemanticSection) -> Section:
         return Section(
@@ -1148,6 +1215,7 @@ class TextToPlanService:
                 slide.left_bullets,
                 slide.right_bullets,
                 slide.table is not None,
+                slide.chart is not None,
                 (slide.image_base64 or "").strip(),
             ]
         )

@@ -1,6 +1,7 @@
 import type {
   AnalyzeTemplateResponse,
   AutoUploadTemplateResponse,
+  ChartOverride,
   DocumentBlock,
   ExtractTextResponse,
   GeneratePresentationResponse,
@@ -41,6 +42,7 @@ export async function buildPlan(payload: {
   title?: string;
   tables?: TableBlock[];
   blocks?: DocumentBlock[];
+  chart_overrides?: ChartOverride[];
 }): Promise<PresentationPlan> {
   const response = await fetch(buildApiUrl("/plans/from-text"), {
     method: "POST",

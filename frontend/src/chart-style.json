@@ -1,0 +1,25 @@
+{
+  "palette": ["#679AEA", "#5AB29C", "#E29063", "#A47DE0"],
+  "textColor": "#182033",
+  "mutedTextColor": "#6E7582",
+  "gridColor": "#D7E1EF",
+  "axisColor": "#C6D2E3",
+  "surfaceColor": "#FFFFFF",
+  "denseCategoryThreshold": 7,
+  "veryDenseCategoryThreshold": 10,
+  "categorySlotWidths": {
+    "default": 132,
+    "dense": 102,
+    "veryDense": 84
+  },
+  "categoryLabelMaxChars": {
+    "default": 22,
+    "dense": 14,
+    "veryDense": 10
+  },
+  "tickFontSizes": {
+    "default": 10,
+    "dense": 9,
+    "veryDense": 8
+  }
+}

@@ -154,6 +154,12 @@ export type ChartabilityAssessment = {
   structured_table?: StructuredTable | null;
 };
 
+export type ChartOverride = {
+  table_id: string;
+  mode: "table" | "chart";
+  selected_chart?: ChartSpec | null;
+};
+
 export type SlideSpec = {
   kind: string;
   title?: string | null;
@@ -163,6 +169,8 @@ export type SlideSpec = {
   left_bullets: string[];
   right_bullets: string[];
   table?: TableBlock | null;
+  chart?: ChartSpec | null;
+  source_table_id?: string | null;
   notes?: string | null;
   preferred_layout_key?: string | null;
   image_base64?: string | null;

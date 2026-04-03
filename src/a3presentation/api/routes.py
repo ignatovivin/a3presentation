@@ -164,6 +164,7 @@ def plan_from_text(payload: TextPlanRequest) -> PresentationPlan:
         title=payload.title,
         tables=payload.tables,
         blocks=payload.blocks,
+        chart_overrides=payload.chart_overrides,
     )
 
 

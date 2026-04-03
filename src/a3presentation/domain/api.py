@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from a3presentation.domain.chart import ChartabilityAssessment
+from a3presentation.domain.chart import ChartabilityAssessment, ChartSpec
 from a3presentation.domain.presentation import TableBlock
 from a3presentation.domain.template import TemplateManifest
+
+
+class ChartOverride(BaseModel):
+    table_id: str
+    mode: str = Field(pattern="^(table|chart)$")
+    selected_chart: ChartSpec | None = None
 
 
 class TemplateSummary(BaseModel):
@@ -19,6 +25,7 @@ class TextPlanRequest(BaseModel):
     title: str | None = None
     tables: list[TableBlock] = Field(default_factory=list)
     blocks: list["DocumentBlock"] = Field(default_factory=list)
+    chart_overrides: list[ChartOverride] = Field(default_factory=list)
 
 
 class GeneratePresentationResponse(BaseModel):

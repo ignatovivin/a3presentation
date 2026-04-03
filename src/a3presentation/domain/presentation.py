@@ -4,6 +4,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from a3presentation.domain.chart import ChartSpec
+
 
 class SlideKind(str, Enum):
     TITLE = "title"
@@ -11,6 +13,7 @@ class SlideKind(str, Enum):
     TEXT = "text"
     TWO_COLUMN = "two_column"
     TABLE = "table"
+    CHART = "chart"
     IMAGE = "image"
 
 
@@ -33,6 +36,8 @@ class SlideSpec(BaseModel):
     left_bullets: list[str] = Field(default_factory=list)
     right_bullets: list[str] = Field(default_factory=list)
     table: TableBlock | None = None
+    chart: ChartSpec | None = None
+    source_table_id: str | None = None
     notes: str | None = None
     preferred_layout_key: str | None = None
     image_base64: str | None = None
