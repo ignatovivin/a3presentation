@@ -19,6 +19,7 @@ from a3presentation.domain.presentation import PresentationPlan
 from a3presentation.domain.template import TemplateManifest
 from a3presentation.services.document_text_extractor import DocumentTextExtractor
 from a3presentation.services.planner import TextToPlanService
+from a3presentation.services.table_chart_analyzer import TableChartAnalyzer
 from a3presentation.services.template_analyzer import TemplateAnalyzer
 from a3presentation.services.pptx_generator import PptxGenerator
 from a3presentation.services.template_registry import TemplateRegistry
@@ -31,6 +32,7 @@ template_registry = TemplateRegistry(settings.templates_dir)
 planner = TextToPlanService()
 analyzer = TemplateAnalyzer()
 document_text_extractor = DocumentTextExtractor()
+table_chart_analyzer = TableChartAnalyzer()
 generator = PptxGenerator()
 
 
@@ -181,7 +183,18 @@ async def extract_document_text(file: UploadFile = File(...)) -> ExtractTextResp
     if not text.strip():
         raise HTTPException(status_code=400, detail=f"No extractable text found in '{file.filename}'")
 
-    return ExtractTextResponse(file_name=file.filename, text=text, tables=tables, blocks=blocks)
+    chart_assessments = [
+        table_chart_analyzer.analyze(table, table_id=f"table_{index}")
+        for index, table in enumerate(tables, start=1)
+    ]
+
+    return ExtractTextResponse(
+        file_name=file.filename,
+        text=text,
+        tables=tables,
+        blocks=blocks,
+        chart_assessments=chart_assessments,
+    )
 
 
 @router.post("/presentations/generate")

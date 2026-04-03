@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from a3presentation.domain.chart import ChartabilityAssessment
 from a3presentation.domain.presentation import TableBlock
 from a3presentation.domain.template import TemplateManifest
 
@@ -69,3 +70,4 @@ class ExtractTextResponse(BaseModel):
     text: str
     tables: list[TableBlock] = Field(default_factory=list)
     blocks: list[DocumentBlock] = Field(default_factory=list)
+    chart_assessments: list[ChartabilityAssessment] = Field(default_factory=list)
