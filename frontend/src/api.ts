@@ -10,7 +10,12 @@ import type {
   TemplateSummary,
 } from "./types";
 
-const API_PREFIX = "/api";
+const rawApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
+const API_BASE_URL = rawApiBaseUrl ? rawApiBaseUrl.replace(/\/+$/, "") : "/api";
+
+function buildApiUrl(path: string): string {
+  return `${API_BASE_URL}${path}`;
+}
 
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -21,12 +26,12 @@ async function readJson<T>(response: Response): Promise<T> {
 }
 
 export async function fetchTemplates(): Promise<TemplateSummary[]> {
-  const response = await fetch(`${API_PREFIX}/templates`);
+  const response = await fetch(buildApiUrl("/templates"));
   return readJson<TemplateSummary[]>(response);
 }
 
 export async function fetchTemplate(templateId: string): Promise<TemplateDetailsResponse> {
-  const response = await fetch(`${API_PREFIX}/templates/${templateId}`);
+  const response = await fetch(buildApiUrl(`/templates/${templateId}`));
   return readJson<TemplateDetailsResponse>(response);
 }
 
@@ -37,7 +42,7 @@ export async function buildPlan(payload: {
   tables?: TableBlock[];
   blocks?: DocumentBlock[];
 }): Promise<PresentationPlan> {
-  const response = await fetch(`${API_PREFIX}/plans/from-text`, {
+  const response = await fetch(buildApiUrl("/plans/from-text"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -48,7 +53,7 @@ export async function buildPlan(payload: {
 }
 
 export async function generatePresentation(plan: PresentationPlan): Promise<GeneratePresentationResponse> {
-  const response = await fetch(`${API_PREFIX}/presentations/generate`, {
+  const response = await fetch(buildApiUrl("/presentations/generate"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -60,7 +65,7 @@ export async function generatePresentation(plan: PresentationPlan): Promise<Gene
 
 export async function analyzeTemplate(templateId: string, displayName?: string): Promise<AnalyzeTemplateResponse> {
   const query = displayName ? `?display_name=${encodeURIComponent(displayName)}` : "";
-  const response = await fetch(`${API_PREFIX}/templates/${templateId}/analyze${query}`, {
+  const response = await fetch(buildApiUrl(`/templates/${templateId}/analyze${query}`), {
     method: "POST",
   });
   return readJson<AnalyzeTemplateResponse>(response);
@@ -80,7 +85,7 @@ export async function uploadTemplateFromUi(payload: {
   }
   formData.set("template_file", payload.template_file);
 
-  const response = await fetch(`${API_PREFIX}/templates/auto`, {
+  const response = await fetch(buildApiUrl("/templates/auto"), {
     method: "POST",
     body: formData,
   });
@@ -91,9 +96,13 @@ export async function extractTextFromDocument(file: File): Promise<ExtractTextRe
   const formData = new FormData();
   formData.set("file", file);
 
-  const response = await fetch(`${API_PREFIX}/documents/extract-text`, {
+  const response = await fetch(buildApiUrl("/documents/extract-text"), {
     method: "POST",
     body: formData,
   });
   return readJson<ExtractTextResponse>(response);
+}
+
+export function buildDownloadUrl(downloadUrl: string): string {
+  return buildApiUrl(downloadUrl);
 }

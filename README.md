@@ -75,6 +75,28 @@ yarn verify
 - Node.js 20.19+ or 22.12+
 - Yarn 1.x
 
+## Vercel deployment
+
+This repository is prepared for deploying the frontend to Vercel from the repo root.
+
+Required Vercel environment variable:
+
+```bash
+VITE_API_BASE_URL=https://your-backend-host.example.com
+```
+
+Important:
+
+- the current FastAPI backend is not Vercel-ready as-is
+- backend code writes templates and generated files to local `storage/`
+- for production, host the backend separately on a VM, container, or another platform with persistent filesystem access
+- Vercel should be used for the frontend in the current architecture
+
+Files added for Vercel:
+
+- [vercel.json](/C:/Project/a3presentation/vercel.json)
+- [frontend/.env.example](/C:/Project/a3presentation/frontend/.env.example)
+
 ## Test and verification
 
 Backend tests:

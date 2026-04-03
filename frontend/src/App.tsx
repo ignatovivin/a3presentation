@@ -1,6 +1,6 @@
 import { ChangeEvent, useEffect, useState, useTransition } from "react";
 
-import { buildPlan, extractTextFromDocument, fetchTemplates, generatePresentation } from "@/api";
+import { buildDownloadUrl, buildPlan, extractTextFromDocument, fetchTemplates, generatePresentation } from "@/api";
 import type { DocumentBlock, GeneratePresentationResponse, PresentationPlan, TableBlock, TemplateSummary } from "@/types";
 
 const PRIMARY_TEMPLATE_ID = "corp_light_v1";
@@ -109,7 +109,7 @@ export function App() {
             <button
               type="button"
               className="primary-button status-download"
-              onClick={() => window.open(`/api${generationResult.download_url}`, "_blank", "noopener,noreferrer")}
+              onClick={() => window.open(buildDownloadUrl(generationResult.download_url), "_blank", "noopener,noreferrer")}
             >
               Скачать презентацию
             </button>
