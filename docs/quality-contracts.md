@@ -6,6 +6,7 @@ It is narrower than the full backend test suite and focuses on end-to-end layout
 
 - text and bullets capacity
 - continuation balance
+- mixed-content order preservation
 - table layout geometry
 - chart layout geometry
 - image layout geometry
@@ -60,6 +61,7 @@ This layer is intended to answer:
 
 - did the deck render with the expected layout contracts?
 - did planner and generator stay aligned on slide capacity rules?
+- did mixed paragraph/list content keep its expected order after rendering?
 - did representative document classes remain stable?
 
 It is not intended to replace:

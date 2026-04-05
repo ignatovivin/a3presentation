@@ -24,6 +24,7 @@ Recommended flow:
 - Template registry in `storage/templates`
 - Regression, contract, and quality backend tests
 - Frontend smoke and visual checks with Playwright
+- Deck-level quality contracts for capacity, geometry, and mixed-content order
 
 ## Project structure
 
@@ -134,6 +135,7 @@ Quality contracts:
 ```
 
 Quality-contract layer is documented in [docs/quality-contracts.md](/C:/Project/a3presentation/docs/quality-contracts.md).
+It now validates not only capacity and geometry, but also rendered content order for mixed text/list continuations.
 
 Frontend verification:
 
@@ -192,4 +194,5 @@ curl -X POST http://127.0.0.1:8000/presentations/generate ^
 - expanding regression coverage for real documents
 - improving layout safety for dense content
 - keeping planner, generator, and quality contracts aligned
+- preserving mixed-content order across extractor, planner, generator, and deck audit
 - keeping generated artifacts out of the repository

@@ -15,6 +15,7 @@ from a3presentation.domain.api import TextPlanRequest
 from a3presentation.domain.chart import ChartConfidence, ChartSeries, ChartSpec, ChartType
 from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec, TableBlock
 from a3presentation.services.deck_audit import (
+    SlideAudit,
     audit_generated_presentation,
     continuation_groups,
     find_capacity_violations,
@@ -370,6 +371,76 @@ class ProjectContractTests(unittest.TestCase):
         violation_rules = {violation.rule for violation in violations}
         self.assertIn("continuation_balance", violation_rules)
         self.assertIn("underfilled_continuation", violation_rules)
+
+    def test_deck_audit_keeps_expected_bullet_order_for_mixed_slide(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Order",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Order", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.BULLETS,
+                    title="Смешанный блок",
+                    bullets=[
+                        "Вводный абзац задает контекст.",
+                        "Первый тезис фиксирует массовый каталог.",
+                        "Второй тезис фиксирует SLA-контур.",
+                        "Финальный абзац завершает аргументацию.",
+                    ],
+                    preferred_layout_key="list_full_width",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        mixed_audit = next(audit for audit in audits if audit.title == "Смешанный блок")
+        self.assertEqual(
+            tuple(item.strip() for item in mixed_audit.rendered_items if item.strip()),
+            tuple(item.strip() for item in mixed_audit.expected_items if item.strip()),
+        )
+        violations = find_capacity_violations(audits)
+        self.assertNotIn("content_order_mismatch", {violation.rule for violation in violations})
+
+    def test_deck_audit_flags_continuation_order_mismatch(self) -> None:
+        audits = [
+            SlideAudit(
+                slide_index=2,
+                title="Раздел",
+                kind=SlideKind.BULLETS.value,
+                layout_key="list_full_width",
+                body_char_count=120,
+                body_font_sizes=(14.0,),
+                profile=profile_for_layout("list_full_width"),
+                expected_items=("Первый", "Второй"),
+                rendered_items=("Второй", "Первый"),
+            ),
+            SlideAudit(
+                slide_index=3,
+                title="Раздел (2)",
+                kind=SlideKind.BULLETS.value,
+                layout_key="list_full_width",
+                body_char_count=120,
+                body_font_sizes=(14.0,),
+                profile=profile_for_layout("list_full_width"),
+                expected_items=("Третий",),
+                rendered_items=("Третий",),
+            ),
+        ]
+
+        violations = find_capacity_violations(audits)
+        rules = {violation.rule for violation in violations}
+        self.assertIn("content_order_mismatch", rules)
+        self.assertIn("continuation_order_mismatch", rules)
 
     def test_deck_audit_accepts_balanced_dense_slides_without_capacity_violations(self) -> None:
         plan = PresentationPlan(

@@ -103,6 +103,104 @@ class RegressionCorpusTests(unittest.TestCase):
         violations = find_capacity_violations(audits)
         self.assertEqual(violations, [])
 
+    def test_generic_mixed_section_rebalances_continuation_series_without_underfilled_tail(self) -> None:
+        planner = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="paragraph", text="Партнерская стратегия A3"),
+            DocumentBlock(kind="heading", text="Как ограничение управляемого слоя усиливает партнерства", level=1),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "Если компания ограничивает число глубоко интегрированных поставщиков, но сохраняет широкий каталог, "
+                    "она может одновременно показывать рынку масштаб и удерживать качество операционного контура."
+                ),
+            ),
+            DocumentBlock(
+                kind="list",
+                items=[
+                    "Каталог закрывает массовый спрос и остается внешним маркером масштаба для партнеров.",
+                    "Глубокий интеграционный слой удерживает SLA, безопасность и предсказуемость изменений.",
+                    "Понятный процесс онбординга снижает зависимость от ручного сопровождения.",
+                    "Разделение двух контуров делает коммерческий оффер для банков и экосистем понятнее.",
+                ],
+            ),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "CEO может объяснять модель двумя цифрами: сколько организаций доступно к оплате и сколько поставщиков "
+                    "находятся в глубокой интеграции с полным сопровождением."
+                ),
+            ),
+            DocumentBlock(kind="heading", text="Следующий раздел", level=1),
+            DocumentBlock(kind="paragraph", text="Короткий завершающий блок нужен для фиксации границы между секциями."),
+        ]
+        raw_text = "\n".join(block.text or "" for block in blocks)
+        plan = planner.build_plan("corp_light_v1", raw_text, None, [], blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        relevant = [
+            violation
+            for violation in find_capacity_violations(audits)
+            if violation.rule in {
+                "underfilled_continuation",
+                "continuation_balance",
+                "content_order_mismatch",
+                "continuation_order_mismatch",
+            }
+            and "Как ограничение управляемого слоя усиливает партнерства" in violation.title
+        ]
+        self.assertEqual(relevant, [])
+
+    def test_generic_mixed_section_keeps_block_order_through_planner_and_generator(self) -> None:
+        planner = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="paragraph", text="Архитектура партнерств"),
+            DocumentBlock(kind="heading", text="Модель взаимодействия с поставщиками", level=1),
+            DocumentBlock(
+                kind="paragraph",
+                text="Первый абзац описывает контекст и должен остаться перед операционными тезисами списка.",
+            ),
+            DocumentBlock(
+                kind="list",
+                items=[
+                    "Первый тезис описывает каталог и охват массового клиента.",
+                    "Второй тезис описывает глубокие интеграции и требования к SLA.",
+                ],
+            ),
+            DocumentBlock(
+                kind="paragraph",
+                text="Финальный абзац завершает аргументацию и должен остаться после списка, а не перед ним.",
+            ),
+            DocumentBlock(kind="heading", text="Следующий раздел", level=1),
+            DocumentBlock(kind="paragraph", text="Короткая отбивка следующего раздела."),
+        ]
+        raw_text = "\n".join(block.text or "" for block in blocks)
+        plan = planner.build_plan("corp_light_v1", raw_text, None, [], blocks)
+
+        flattened = [
+            item
+            for slide in plan.slides
+            if (slide.title or "").startswith("Модель взаимодействия с поставщиками")
+            for item in slide.bullets
+        ]
+        self.assertTrue(flattened)
+        self.assertLess(
+            next(index for index, item in enumerate(flattened) if item.startswith("Первый абзац")),
+            next(index for index, item in enumerate(flattened) if item.startswith("Первый тезис")),
+        )
+        self.assertLess(
+            next(index for index, item in enumerate(flattened) if item.startswith("Второй тезис")),
+            next(index for index, item in enumerate(flattened) if item.startswith("Финальный абзац")),
+        )
+
     def test_generated_docx_corpus_covers_report_form_resume_and_table_heavy(self) -> None:
         cases = [
             ("report.docx", self._build_report_docx()),

@@ -140,6 +140,7 @@ Important planner behavior that was implemented:
 - `cards_3` is restricted to very short, label-like items only
 - long sections are split only when needed
 - tiny text tails are not split into separate meaningless fragments
+- mixed `paragraph -> list -> paragraph` order is preserved on the main planning path
 - top-level headings are preserved instead of getting lost
 - compact tables stay on one slide when possible
 - larger tables are paginated across slides
@@ -255,9 +256,11 @@ Problem before:
 Current behavior:
 - extractor identifies lists from Word structure
 - planner routes ordinary lists to `list_full_width`
+- planner uses ordered block sections from source documents when available instead of flattening mixed content too early
 - `cards_3` is reserved for very short card-like content only
 - generator now writes real PowerPoint bullet markers (`buChar`) into paragraph XML
 - continuation slides are rebalanced to avoid obviously underfilled tails
+- deck audit checks rendered bullet/text order against the planned content order
 
 ### 5. Text slides
 

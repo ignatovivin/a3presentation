@@ -57,6 +57,7 @@
 
 - backend unit/regression tests
 - deck-level quality checks
+- order checks for mixed text/list content in generated decks
 - frontend smoke и visual checks
 
 ## Следующий этап
@@ -65,6 +66,7 @@
 
 - вынесения quality-contracts в отдельный CI gate
 - расширения визуальных и deck-level quality правил
+- дальнейшего усиления mixed-content contracts для сложных narrative документов
 - улучшения финального визуального качества
 - добавления предпросмотра и более удобного пользовательского интерфейса
 

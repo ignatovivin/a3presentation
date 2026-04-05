@@ -77,6 +77,74 @@ class TextToPlanServiceTests(unittest.TestCase):
         chunks = service._chunk_bullets_for_slides(bullets)
         self.assertGreaterEqual(len(chunks), 2)
 
+    def test_rebalance_continuation_group_balances_short_tail_bullet_slide(self) -> None:
+        service = TextToPlanService()
+        slides = [
+            SlideSpec(
+                kind=SlideKind.BULLETS,
+                title="Партнерская стратегия",
+                bullets=[
+                    "Первый пункт подробно описывает рыночный контекст, ограничения онбординга, требования к SLA и связь с масштабом каталога для внешних партнеров.",
+                    "Второй пункт связывает устойчивость интеграционного слоя с управляемой операционной моделью сопровождения и предсказуемым контуром изменений.",
+                    "Третий пункт фиксирует роль каталога как массового охвата и отделяет его от глубокого интеграционного слоя для ключевых провайдеров.",
+                ],
+                preferred_layout_key="list_full_width",
+            ),
+            SlideSpec(
+                kind=SlideKind.BULLETS,
+                title="Партнерская стратегия (2)",
+                bullets=[
+                    "Четвертый пункт объясняет, как двухконтурная модель усиливает переговорную позицию в сделках с банками и экосистемами.",
+                ],
+                preferred_layout_key="list_full_width",
+            ),
+        ]
+
+        rebalanced = service._rebalance_single_continuation_group(slides)
+
+        self.assertLessEqual(len(rebalanced), 2)
+        self.assertTrue(all(slide.kind == SlideKind.BULLETS for slide in rebalanced))
+        total_bullets = sum(len(slide.bullets) for slide in rebalanced)
+        self.assertEqual(total_bullets, 4)
+        if len(rebalanced) == 2:
+            self.assertGreaterEqual(len(rebalanced[1].bullets), 2)
+
+    def test_rebalance_continuation_group_balances_mixed_bullets_and_text_tail(self) -> None:
+        service = TextToPlanService()
+        slides = [
+            SlideSpec(
+                kind=SlideKind.BULLETS,
+                title='Как "5000" усиливает партнерства',
+                bullets=[
+                    "Если компания ограничивает управляемый слой поставщиков, она может удерживать качество интеграций и не размывать операционный контур.",
+                    "Большой каталог при этом остается внешним сигналом масштаба для банков, супер-аппов и государственных каналов.",
+                    "Такое разделение помогает объяснить рынку две цифры: охват каталога и количество глубоко интегрированных поставщиков.",
+                ],
+                preferred_layout_key="list_full_width",
+            ),
+            SlideSpec(
+                kind=SlideKind.TEXT,
+                title='Как "5000" усиливает партнерства (2)',
+                text=(
+                    "Надежность и предсказуемость онбординга превращаются в понятный продуктовый оффер, "
+                    "а не в ручной консалтинг для каждого нового поставщика."
+                ),
+                preferred_layout_key="text_full_width",
+            ),
+        ]
+
+        rebalanced = service._rebalance_single_continuation_group(slides)
+
+        self.assertLessEqual(len(rebalanced), 2)
+        tail_payload = " ".join(
+            part
+            for slide in rebalanced
+            for part in [slide.text or "", slide.notes or "", *slide.bullets]
+            if part
+        )
+        self.assertIn("Надежность и предсказуемость", tail_payload)
+        self.assertTrue(any(slide.kind in {SlideKind.TEXT, SlideKind.BULLETS} for slide in rebalanced))
+
     def test_cover_meta_stays_compact_for_long_first_section(self) -> None:
         service = TextToPlanService()
         blocks = [
@@ -200,6 +268,47 @@ class TextToPlanServiceTests(unittest.TestCase):
         bullets_text = "\n".join("\n".join(slide.bullets) for slide in plan.slides if slide.kind == SlideKind.BULLETS)
         self.assertIn("Цель: построить системный пайплайн проверки гипотез", bullets_text)
         self.assertIn("Q2 2026 (Discovery): Анализ архитектуры платформы цифрового рубля ЦБ", bullets_text)
+        flattened = [
+            item
+            for slide in plan.slides
+            if slide.kind == SlideKind.BULLETS and slide.title and slide.title.startswith("5.3 R&D новые продукты")
+            for item in slide.bullets
+        ]
+        q2_index = next(index for index, item in enumerate(flattened) if item.startswith("Q2 2026 (Discovery)"))
+        q3_index = next(index for index, item in enumerate(flattened) if item.startswith("Q3 2026 (Proof of Concept)"))
+        self.assertLess(q2_index, q3_index)
+
+    def test_mixed_section_preserves_paragraph_list_paragraph_order(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="paragraph", text="Стратегия партнерств"),
+            DocumentBlock(kind="heading", text="Контур взаимодействия", level=1),
+            DocumentBlock(kind="paragraph", text="Вводный абзац задает контекст и объясняет ограничение управляемого слоя."),
+            DocumentBlock(kind="list", items=["Первый список фиксирует массовый каталог.", "Второй список фиксирует SLA-контур."]),
+            DocumentBlock(kind="paragraph", text="Заключающий абзац должен остаться после списка, а не переехать перед ним."),
+            DocumentBlock(kind="heading", text="Следующий блок", level=1),
+            DocumentBlock(kind="paragraph", text="Граница следующего раздела."),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title=None,
+            tables=[],
+            blocks=blocks,
+        )
+
+        flattened = [
+            item
+            for slide in plan.slides
+            if (slide.title or "").startswith("Контур взаимодействия")
+            for item in slide.bullets
+        ]
+        intro_index = next(index for index, item in enumerate(flattened) if item.startswith("Вводный абзац"))
+        list_index = next(index for index, item in enumerate(flattened) if item.startswith("Первый список"))
+        outro_index = next(index for index, item in enumerate(flattened) if item.startswith("Заключающий абзац"))
+        self.assertLess(intro_index, list_index)
+        self.assertLess(list_index, outro_index)
 
     def test_first_section_with_tables_is_not_swallowed_by_cover(self) -> None:
         service = TextToPlanService()

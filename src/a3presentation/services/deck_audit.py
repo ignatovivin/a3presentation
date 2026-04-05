@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pptx import Presentation
-from a3presentation.domain.presentation import PresentationPlan, SlideKind
+from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec
 from a3presentation.services.layout_capacity import LayoutCapacityProfile, profile_for_layout
 from a3presentation.services.pptx_generator import PptxGenerator
 
@@ -24,6 +24,8 @@ class SlideAudit:
     has_table: bool = False
     has_chart: bool = False
     has_image: bool = False
+    expected_items: tuple[str, ...] = ()
+    rendered_items: tuple[str, ...] = ()
 
     @property
     def fill_ratio(self) -> float:
@@ -103,9 +105,11 @@ def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> l
 
         body_char_count = 0
         body_font_sizes: tuple[float, ...] = ()
+        rendered_items: tuple[str, ...] = ()
         if body is not None and getattr(body, "has_text_frame", False):
             body_paragraphs = [paragraph.text.strip() for paragraph in body.text_frame.paragraphs if paragraph.text.strip()]
             body_char_count = sum(len(paragraph) for paragraph in body_paragraphs)
+            rendered_items = tuple(body_paragraphs)
             body_font_sizes = tuple(
                 sorted(
                     {
@@ -134,6 +138,7 @@ def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> l
                 )
                 content_width = getattr(image_shape, "width", None) if image_shape is not None else None
         layout_key = slide_spec.preferred_layout_key or _infer_layout_key(slide_spec.kind.value)
+        expected_items = _expected_items_for_slide(slide_spec)
         audits.append(
             SlideAudit(
                 slide_index=slide_index,
@@ -148,6 +153,8 @@ def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> l
                 has_table=has_table,
                 has_chart=has_chart,
                 has_image=has_image,
+                expected_items=expected_items,
+                rendered_items=rendered_items,
             )
         )
 
@@ -261,6 +268,19 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
                 )
 
+        if audit.kind == SlideKind.BULLETS.value and audit.expected_items:
+            expected = [_normalize_audit_text(item) for item in audit.expected_items if _normalize_audit_text(item)]
+            rendered = [_normalize_audit_text(item) for item in audit.rendered_items if _normalize_audit_text(item)]
+            if rendered and expected != rendered:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="content_order_mismatch",
+                        details=f"expected={expected} rendered={rendered}",
+                    )
+                )
+
     for title, items in continuation_groups(audits).items():
         fills = [item.fill_ratio for item in items]
         fill_delta = max(fills) - min(fills)
@@ -296,6 +316,28 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
                 )
 
+        expected_group = [
+            _normalize_audit_text(entry)
+            for item in items
+            for entry in item.expected_items
+            if _normalize_audit_text(entry)
+        ]
+        rendered_group = [
+            _normalize_audit_text(entry)
+            for item in items
+            for entry in item.rendered_items
+            if _normalize_audit_text(entry)
+        ]
+        if rendered_group and expected_group != rendered_group:
+            violations.append(
+                CapacityViolation(
+                    slide_index=items[-1].slide_index,
+                    title=title,
+                    rule="continuation_order_mismatch",
+                    details=f"expected={expected_group} rendered={rendered_group}",
+                )
+            )
+
     return violations
 
 
@@ -309,3 +351,16 @@ def _infer_layout_key(kind: str) -> str:
 
 def self_has_image(shape) -> bool:
     return hasattr(shape, "image") or "Picture Placeholder" in (getattr(shape, "name", "") or "")
+
+
+def _expected_items_for_slide(slide_spec: SlideSpec) -> tuple[str, ...]:
+    if slide_spec.kind == SlideKind.BULLETS:
+        return tuple(item.strip() for item in slide_spec.bullets if item.strip())
+    if slide_spec.kind == SlideKind.TEXT:
+        parts = [part.strip() for part in (slide_spec.text or "", slide_spec.notes or "") if part and part.strip()]
+        return tuple(parts)
+    return ()
+
+
+def _normalize_audit_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())

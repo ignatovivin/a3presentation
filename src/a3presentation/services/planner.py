@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 
@@ -22,6 +23,20 @@ class Section:
     bullet_lists: list[list[str]] = field(default_factory=list)
     tables: list[TableBlock] = field(default_factory=list)
     images: list[SemanticImage] = field(default_factory=list)
+    content_blocks: list["SectionContentBlock"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ContinuationUnit:
+    kind: str
+    text: str
+
+
+@dataclass(frozen=True)
+class SectionContentBlock:
+    kind: str
+    text: str = ""
+    items: tuple[str, ...] = ()
 
 
 class TextToPlanService:
@@ -77,7 +92,9 @@ class TextToPlanService:
             tables=tables or [],
             title=title,
         )
-        sections = [self._section_from_semantic(section) for section in semantic_document.sections]
+        sections = self._build_sections(blocks or [], raw_text)
+        if not sections:
+            sections = [self._section_from_semantic(section) for section in semantic_document.sections]
         plan_title = semantic_document.title
         document_kind = semantic_document.kind.value
 
@@ -218,6 +235,12 @@ class TextToPlanService:
         return updated_slides, table_sequence
 
     def _section_from_semantic(self, section: SemanticSection) -> Section:
+        content_blocks: list[SectionContentBlock] = [
+            SectionContentBlock(kind="paragraph", text=paragraph)
+            for paragraph in section.paragraphs
+        ]
+        if section.bullets:
+            content_blocks.append(SectionContentBlock(kind="list", items=tuple(section.bullets)))
         return Section(
             title=section.title,
             level=section.level,
@@ -226,6 +249,7 @@ class TextToPlanService:
             bullet_lists=[section.bullets.copy()] if section.bullets else [],
             tables=section.tables.copy(),
             images=section.images.copy(),
+            content_blocks=content_blocks,
         )
 
     def _classify_document(
@@ -391,13 +415,16 @@ class TextToPlanService:
                 continue
 
             if block.kind == "list" and block.items:
-                current.bullet_lists.append([item.strip()[:220] for item in block.items if item.strip()])
+                items = [item.strip()[:220] for item in block.items if item.strip()]
+                current.bullet_lists.append(items)
+                current.content_blocks.append(SectionContentBlock(kind="list", items=tuple(items)))
                 continue
 
             if block.text:
                 text = block.text.strip()
                 if text:
                     current.paragraphs.append(text[:1200])
+                    current.content_blocks.append(SectionContentBlock(kind="paragraph", text=text[:1200]))
 
         flush()
         return [section for section in sections if section.title]
@@ -440,8 +467,16 @@ class TextToPlanService:
                 if not current.bullet_lists:
                     current.bullet_lists.append([])
                 current.bullet_lists[-1].append(normalized_bullet[:220])
+                if current.content_blocks and current.content_blocks[-1].kind == "list":
+                    current.content_blocks[-1] = SectionContentBlock(
+                        kind="list",
+                        items=(*current.content_blocks[-1].items, normalized_bullet[:220]),
+                    )
+                else:
+                    current.content_blocks.append(SectionContentBlock(kind="list", items=(normalized_bullet[:220],)))
             else:
                 current.paragraphs.append(line[:1200])
+                current.content_blocks.append(SectionContentBlock(kind="paragraph", text=line[:1200]))
 
         flush()
         return sections
@@ -584,9 +619,11 @@ class TextToPlanService:
         return weight
 
     def _fits_single_slide(self, section: Section) -> bool:
-        paragraph_chars = sum(len(item) for item in section.paragraphs)
-        bullet_count = sum(len(items) for items in section.bullet_lists)
-        max_bullet_len = max((len(item) for items in section.bullet_lists for item in items), default=0)
+        units = self._section_continuation_units(section)
+        paragraph_chars = sum(len(unit.text) for unit in units if unit.kind == "paragraph")
+        bullet_count = sum(1 for unit in units if unit.kind == "bullet")
+        max_bullet_len = max((len(unit.text) for unit in units if unit.kind == "bullet"), default=0)
+        total_chars = sum(len(unit.text) for unit in units)
 
         if paragraph_chars <= self._text_slide_char_budget() and bullet_count == 0:
             return True
@@ -596,13 +633,14 @@ class TextToPlanService:
             and max_bullet_len <= self.CARD_BULLET_MAX_CHARS
         ):
             return True
-        if bullet_count <= self.list_profile.max_items and paragraph_chars <= 260:
+        if bullet_count <= self.list_profile.max_items and total_chars <= self.list_profile.max_chars:
             return True
         return False
 
     def _build_single_slide(self, section: Section) -> SlideSpec:
-        text = " ".join(section.paragraphs).strip()
-        bullets = [item for bullet_list in section.bullet_lists for item in bullet_list]
+        units = self._section_continuation_units(section)
+        text = " ".join(unit.text for unit in units if unit.kind == "paragraph").strip()
+        bullets = [unit.text for unit in units if unit.kind == "bullet"]
         if bullets and not text and self._should_use_cards_layout(section.title, bullets):
             return SlideSpec(
                 kind=SlideKind.BULLETS,
@@ -612,13 +650,7 @@ class TextToPlanService:
             )
 
         if bullets:
-            bullet_items = self._paragraphs_as_bullets(section.paragraphs) + bullets
-            return SlideSpec(
-                kind=SlideKind.BULLETS,
-                title=section.title,
-                bullets=bullet_items[: self._bullet_slide_item_budget()],
-                preferred_layout_key="list_full_width",
-            )
+            return self._build_continuation_slide(section.title, section.subtitle or "", units)
 
         if len(text) <= self._text_slide_char_budget():
             primary_text, secondary_text = self._split_text_for_slide(text)
@@ -641,52 +673,107 @@ class TextToPlanService:
         )
 
     def _split_large_section(self, section: Section) -> list[SlideSpec]:
-        slides: list[SlideSpec] = []
-        bullets = [item for bullet_list in section.bullet_lists for item in bullet_list]
-        if bullets:
-            mixed_bullets = self._paragraphs_as_bullets(section.paragraphs) + bullets
-            batches = self._chunk_bullets_for_slides(mixed_bullets)
+        units = self._section_continuation_units(section)
+        if not units:
+            return []
+
+        if all(unit.kind == "paragraph" for unit in units):
+            slides: list[SlideSpec] = []
+            batches = self._chunk_text_for_slides([unit.text for unit in units])
             for index, batch in enumerate(batches):
                 slide_title = section.title if index == 0 else f"{section.title} ({index + 1})"
-                slides.append(
-                    SlideSpec(
-                        kind=SlideKind.BULLETS,
-                        title=slide_title,
-                        bullets=batch,
-                        preferred_layout_key="list_full_width",
+                if len(batch) <= 2 and len(" ".join(batch)) <= self._text_slide_char_budget():
+                    merged = " ".join(batch)
+                    primary_text, secondary_text = self._split_text_for_slide(merged)
+                    subtitle = self._normalize_subtitle(section.subtitle or "", primary_text)
+                    slides.append(
+                        SlideSpec(
+                            kind=SlideKind.TEXT,
+                            title=slide_title,
+                            subtitle=subtitle,
+                            text=primary_text,
+                            notes=secondary_text,
+                            preferred_layout_key="text_full_width",
+                        )
                     )
-                )
+                else:
+                    slides.append(
+                        SlideSpec(
+                            kind=SlideKind.BULLETS,
+                            title=slide_title,
+                            bullets=batch[: self.list_profile.max_items],
+                            preferred_layout_key="list_full_width",
+                        )
+                    )
             return slides
 
-        text = " ".join(section.paragraphs).strip()
-        sentences = self._sentence_chunks(text)
-        batches = self._chunk_text_for_slides(sentences)
+        slides = []
+        batches = self._chunk_continuation_units_for_slides(units)
         for index, batch in enumerate(batches):
             slide_title = section.title if index == 0 else f"{section.title} ({index + 1})"
-            if len(batch) <= 2 and len(" ".join(batch)) <= self._text_slide_char_budget():
-                merged = " ".join(batch)
-                primary_text, secondary_text = self._split_text_for_slide(merged)
-                subtitle = self._normalize_subtitle(section.subtitle or "", primary_text)
-                slides.append(
-                    SlideSpec(
-                        kind=SlideKind.TEXT,
-                        title=slide_title,
-                        subtitle=subtitle,
-                        text=primary_text,
-                        notes=secondary_text,
-                        preferred_layout_key="text_full_width",
-                    )
-                )
-            else:
-                slides.append(
-                    SlideSpec(
-                        kind=SlideKind.BULLETS,
-                        title=slide_title,
-                        bullets=batch[: self.list_profile.max_items],
-                        preferred_layout_key="list_full_width",
-                    )
-                )
+            slide_subtitle = section.subtitle if index == 0 else ""
+            slides.append(self._build_continuation_slide(slide_title, slide_subtitle, batch))
         return slides
+
+    def _section_continuation_units(self, section: Section) -> list[ContinuationUnit]:
+        if section.content_blocks:
+            units: list[ContinuationUnit] = []
+            for block in section.content_blocks:
+                if block.kind == "paragraph" and block.text.strip():
+                    units.extend(
+                        ContinuationUnit(kind="paragraph", text=chunk)
+                        for chunk in self._sentence_chunks(block.text.strip())
+                        if chunk.strip()
+                    )
+                elif block.kind == "list":
+                    units.extend(
+                        ContinuationUnit(kind="bullet", text=item.strip())
+                        for item in block.items
+                        if item.strip()
+                    )
+            return units
+
+        units = [
+            ContinuationUnit(kind="paragraph", text=chunk)
+            for paragraph in section.paragraphs
+            for chunk in self._sentence_chunks(self._normalize_line(paragraph))
+            if chunk.strip()
+        ]
+        units.extend(
+            ContinuationUnit(kind="bullet", text=item)
+            for bullet_list in section.bullet_lists
+            for item in bullet_list
+            if item.strip()
+        )
+        return units
+
+    def _chunk_continuation_units_for_slides(self, units: list[ContinuationUnit]) -> list[list[ContinuationUnit]]:
+        batches: list[list[ContinuationUnit]] = []
+        current_batch: list[ContinuationUnit] = []
+        current_weight = 0.0
+        current_chars = 0
+
+        for unit in units:
+            unit_weight = self._continuation_unit_weight(unit)
+            unit_chars = len(unit.text)
+            if current_batch and (
+                len(current_batch) >= self._bullet_slide_item_budget()
+                or current_weight + unit_weight > (self._list_slide_weight_budget() + 1.25)
+                or current_chars + unit_chars > self.list_profile.max_chars
+            ):
+                batches.append(current_batch)
+                current_batch = []
+                current_weight = 0.0
+                current_chars = 0
+
+            current_batch.append(unit)
+            current_weight += unit_weight
+            current_chars += unit_chars
+
+        if current_batch:
+            batches.append(current_batch)
+
+        return batches
 
     def _chunk_bullets_for_slides(self, bullets: list[str]) -> list[list[str]]:
         batches: list[list[str]] = []
@@ -1281,7 +1368,7 @@ class TextToPlanService:
                 continue
             compressed.append(slide)
 
-        compressed = self._rebalance_adjacent_bullet_slides(compressed)
+        compressed = self._rebalance_continuation_groups(compressed)
         return self._renumber_continuation_titles(compressed)
 
     def _can_merge_slide_pair(self, previous: SlideSpec, current: SlideSpec) -> bool:
@@ -1351,37 +1438,182 @@ class TextToPlanService:
 
         return slides
 
-    def _rebalance_adjacent_bullet_slides(self, slides: list[SlideSpec]) -> list[SlideSpec]:
+    def _rebalance_continuation_groups(self, slides: list[SlideSpec]) -> list[SlideSpec]:
         if len(slides) < 2:
             return slides
 
         rebalanced = [slide.model_copy(deep=True) for slide in slides]
-        overflow_budget = 1.5
-        underfill_threshold = self._list_slide_weight_budget() * self.list_profile.target_fill_ratio
+        grouped_ranges: list[tuple[int, int]] = []
+        group_start = 0
 
-        for index in range(len(rebalanced) - 1):
-            current = rebalanced[index]
-            following = rebalanced[index + 1]
-            if current.kind != SlideKind.BULLETS or following.kind != SlideKind.BULLETS:
-                continue
-            if self._base_slide_title(current.title) != self._base_slide_title(following.title):
-                continue
+        for index in range(1, len(rebalanced) + 1):
+            group_closed = index == len(rebalanced)
+            if not group_closed:
+                same_title = self._base_slide_title(rebalanced[group_start].title) == self._base_slide_title(
+                    rebalanced[index].title
+                )
+                compatible_kinds = (
+                    rebalanced[group_start].kind in {SlideKind.TEXT, SlideKind.BULLETS}
+                    and rebalanced[index].kind in {SlideKind.TEXT, SlideKind.BULLETS}
+                )
+                group_closed = not (same_title and compatible_kinds)
+            if group_closed:
+                if index - group_start > 1:
+                    grouped_ranges.append((group_start, index))
+                group_start = index
 
-            while len(current.bullets) < self._bullet_slide_item_budget() and len(following.bullets) > 2:
-                current_weight = sum(self._estimate_bullet_weight(item) for item in current.bullets)
-                following_weight = sum(self._estimate_bullet_weight(item) for item in following.bullets)
-                if following_weight >= underfill_threshold:
-                    break
-
-                candidate = following.bullets[0]
-                projected_weight = current_weight + self._estimate_bullet_weight(candidate)
-                if projected_weight > self._list_slide_weight_budget() + overflow_budget:
-                    break
-
-                current.bullets.append(candidate)
-                following.bullets = following.bullets[1:]
+        for start, end in grouped_ranges:
+            group = rebalanced[start:end]
+            rebuilt = self._rebalance_single_continuation_group(group)
+            rebalanced[start:end] = rebuilt
 
         return rebalanced
+
+    def _rebalance_single_continuation_group(self, slides: list[SlideSpec]) -> list[SlideSpec]:
+        if len(slides) <= 1:
+            return slides
+
+        units: list[ContinuationUnit] = []
+        subtitle = ""
+        base_title = self._base_slide_title(slides[0].title)
+
+        for slide in slides:
+            if not subtitle and (slide.subtitle or "").strip():
+                subtitle = (slide.subtitle or "").strip()
+            units.extend(self._slide_to_continuation_units(slide))
+
+        units = [unit for unit in units if unit.text.strip()]
+        if not units:
+            return slides
+
+        total_weight = sum(self._continuation_unit_weight(unit) for unit in units)
+        total_chars = sum(len(unit.text) for unit in units)
+        min_by_items = math.ceil(len(units) / max(self._bullet_slide_item_budget(), 1))
+        min_by_chars = math.ceil(total_chars / max(self.list_profile.max_chars, 1))
+        min_by_weight = math.ceil(total_weight / max(self._list_slide_weight_budget() + 1.75, 1.0))
+        target_slide_count = min(len(slides), max(1, min_by_items, min_by_chars, min_by_weight))
+        buckets = self._pack_continuation_units(units, target_slide_count)
+
+        rebuilt: list[SlideSpec] = []
+        for index, bucket in enumerate(buckets):
+            if not bucket:
+                continue
+            slide_title = base_title if index == 0 else f"{base_title} ({index + 1})"
+            slide_subtitle = subtitle if index == 0 else ""
+            rebuilt.append(self._build_continuation_slide(slide_title, slide_subtitle, bucket))
+
+        return rebuilt or slides
+
+    def _slide_to_continuation_units(self, slide: SlideSpec) -> list[ContinuationUnit]:
+        if slide.kind == SlideKind.BULLETS:
+            return [ContinuationUnit(kind="bullet", text=item.strip()) for item in slide.bullets if item.strip()]
+
+        if slide.kind == SlideKind.TEXT:
+            text_parts = [part.strip() for part in (slide.text or "", slide.notes or "") if part and part.strip()]
+            units: list[ContinuationUnit] = []
+            for part in text_parts:
+                units.extend(
+                    ContinuationUnit(kind="paragraph", text=chunk)
+                    for chunk in self._sentence_chunks(part)
+                    if chunk.strip()
+                )
+            return units
+
+        return []
+
+    def _continuation_unit_weight(self, unit: ContinuationUnit) -> float:
+        if unit.kind == "paragraph":
+            return self._estimate_text_chunk_weight(unit.text)
+        return self._estimate_bullet_weight(unit.text)
+
+    def _pack_continuation_units(
+        self,
+        units: list[ContinuationUnit],
+        slide_count: int,
+    ) -> list[list[ContinuationUnit]]:
+        if slide_count <= 1 or len(units) <= 1:
+            return [units]
+
+        total_weight = sum(self._continuation_unit_weight(unit) for unit in units)
+        total_chars = sum(len(unit.text) for unit in units)
+        buckets: list[list[ContinuationUnit]] = []
+        current: list[ContinuationUnit] = []
+        current_weight = 0.0
+        current_chars = 0
+        remaining_weight = total_weight
+        remaining_chars = total_chars
+
+        for index, unit in enumerate(units):
+            remaining_units = len(units) - index
+            remaining_buckets = slide_count - len(buckets)
+            unit_weight = self._continuation_unit_weight(unit)
+            unit_chars = len(unit.text)
+            target_weight = remaining_weight / max(remaining_buckets, 1)
+            target_chars = remaining_chars / max(remaining_buckets, 1)
+            projected_weight = current_weight + unit_weight
+            projected_chars = current_chars + unit_chars
+            enough_units_left = remaining_units > remaining_buckets
+            should_wrap = (
+                bool(current)
+                and enough_units_left
+                and (
+                    (current_weight >= target_weight * 0.92)
+                    or (current_chars >= target_chars * 0.92)
+                    or projected_weight > (self._list_slide_weight_budget() + 1.25)
+                    or projected_chars > self.list_profile.max_chars
+                )
+            )
+
+            if should_wrap:
+                buckets.append(current)
+                current = []
+                current_weight = 0.0
+                current_chars = 0
+                remaining_buckets = slide_count - len(buckets)
+                target_weight = remaining_weight / max(remaining_buckets, 1)
+                target_chars = remaining_chars / max(remaining_buckets, 1)
+                projected_weight = unit_weight
+                projected_chars = unit_chars
+
+            current.append(unit)
+            current_weight = projected_weight
+            current_chars = projected_chars
+            remaining_weight -= unit_weight
+            remaining_chars -= unit_chars
+
+        if current:
+            buckets.append(current)
+
+        return buckets
+
+    def _build_continuation_slide(
+        self,
+        title: str,
+        subtitle: str,
+        units: list[ContinuationUnit],
+    ) -> SlideSpec:
+        has_bullets = any(unit.kind == "bullet" for unit in units)
+        total_chars = sum(len(unit.text) for unit in units)
+        paragraphs = [unit.text for unit in units]
+
+        if not has_bullets and len(paragraphs) <= 2 and total_chars <= self._text_slide_char_budget():
+            merged = " ".join(paragraphs)
+            primary_text, secondary_text = self._split_text_for_slide(merged)
+            return SlideSpec(
+                kind=SlideKind.TEXT,
+                title=title,
+                subtitle=subtitle,
+                text=primary_text,
+                notes=secondary_text,
+                preferred_layout_key="text_full_width",
+            )
+
+        return SlideSpec(
+            kind=SlideKind.BULLETS,
+            title=title,
+            bullets=[unit.text for unit in units],
+            preferred_layout_key="list_full_width",
+        )
 
     def _chunk_items(self, items: list[str], size: int) -> list[list[str]]:
         return [items[index : index + size] for index in range(0, len(items), size)]
