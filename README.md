@@ -20,8 +20,10 @@ Recommended flow:
 - React + Vite frontend for template upload, analysis, generation, and download
 - Semantic pipeline: extract -> classify -> normalize -> plan -> render
 - Fallback logic for weakly structured, form-like, resume, and table-heavy documents
+- Chart and image slide support in the planning and rendering pipeline
 - Template registry in `storage/templates`
-- Regression and end-to-end backend tests
+- Regression, contract, and quality backend tests
+- Frontend smoke and visual checks with Playwright
 
 ## Project structure
 
@@ -125,6 +127,14 @@ Backend tests:
 python -m unittest discover -s tests -v
 ```
 
+Quality contracts:
+
+```bash
+.venv\Scripts\python.exe scripts/run_quality_contracts.py
+```
+
+Quality-contract layer is documented in [docs/quality-contracts.md](/C:/Project/a3presentation/docs/quality-contracts.md).
+
 Frontend verification:
 
 ```bash
@@ -132,7 +142,16 @@ cd frontend
 yarn verify
 ```
 
-GitHub Actions runs both checks on pushes and pull requests for `dev`, `test`, and `main`.
+Frontend smoke and visual checks:
+
+```bash
+cd frontend
+yarn test:smoke
+yarn test:visual
+```
+
+GitHub Actions should run backend tests, frontend verification, and the dedicated quality-contract gate on pushes and pull requests for `dev`, `test`, and `main`.
+Frontend smoke tests are also suitable as a separate CI gate.
 
 ## API entry points
 
@@ -172,4 +191,5 @@ curl -X POST http://127.0.0.1:8000/presentations/generate ^
 - hardening the semantic and planning pipeline
 - expanding regression coverage for real documents
 - improving layout safety for dense content
+- keeping planner, generator, and quality contracts aligned
 - keeping generated artifacts out of the repository

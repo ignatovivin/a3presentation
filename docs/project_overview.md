@@ -15,6 +15,7 @@ The target workflow is:
    - paragraphs
    - bullet lists
    - tables
+   - images
 4. The planner converts that structure into a slide plan.
 5. The PowerPoint generator renders the plan into a branded `.pptx` using the corporate PowerPoint template.
 
@@ -95,6 +96,7 @@ It tries to preserve document semantics:
   - hanging indent typical for Word lists
   - explicit list-like text prefixes
 - tables extracted as structured rows and headers
+- image blocks preserved for semantic planning
 
 This means the system can distinguish:
 
@@ -124,6 +126,8 @@ Supported logical slide outcomes include:
 - `text_full_width`
 - `list_full_width`
 - `table`
+- `chart`
+- `image_text`
 - `cards_3`
 - `contacts`
 
@@ -139,6 +143,9 @@ Important planner behavior that was implemented:
 - top-level headings are preserved instead of getting lost
 - compact tables stay on one slide when possible
 - larger tables are paginated across slides
+- chart overrides can replace selected table slides with chart slides
+- semantic image blocks can become image slides
+- first real numbered section is protected from being swallowed by cover heuristics
 
 ### 3. Template resolution
 
@@ -161,6 +168,7 @@ For example:
 - `text_full_width`
 - `list_full_width`
 - `table`
+- `image_text`
 - `cards_3`
 - `list_with_icons`
 - `contacts`
@@ -226,8 +234,18 @@ Current behavior:
 - compact tables stay on one slide
 - larger tables split across multiple slides when truly necessary
 - table colors are aligned with the corporate palette
+- footer and content width on table slides are normalized to the active layout contract
 
-### 3. Bullet lists
+### 3. Charts
+
+Current behavior:
+
+- chartable tables can be promoted to real chart slides
+- column, line, stacked, pie, and combo scenarios are covered
+- rendered charts are validated in regression and contract tests
+- chart slides use the same layout-quality contract as the rest of the deck
+
+### 4. Bullet lists
 
 Problem before:
 - real lists were sometimes treated as plain text
@@ -239,8 +257,9 @@ Current behavior:
 - planner routes ordinary lists to `list_full_width`
 - `cards_3` is reserved for very short card-like content only
 - generator now writes real PowerPoint bullet markers (`buChar`) into paragraph XML
+- continuation slides are rebalanced to avoid obviously underfilled tails
 
-### 4. Text slides
+### 5. Text slides
 
 Problem before:
 - normal text sometimes went into image-based layouts
@@ -251,6 +270,15 @@ Current behavior:
 - text-only content uses dedicated wide layouts
 - unused placeholders are cleared
 - the system avoids leaving PowerPoint instructional placeholder text
+- planner and generator now share a common capacity-contract layer for text and bullets
+
+### 6. Images
+
+Current behavior:
+
+- semantic image blocks can be rendered as image slides
+- cover-skip heuristics no longer swallow numbered first sections that include images
+- image layouts are now covered by deck-level quality contracts
 
 ## Frontend
 
@@ -265,6 +293,8 @@ Frontend responsibilities:
 - trigger plan creation
 - trigger PPTX generation
 - download result
+- review extracted structure before generation
+- switch chartable tables between `table` and `chart`
 
 UI was simplified from a technical admin-like screen into a more user-oriented flow:
 
@@ -275,9 +305,9 @@ UI was simplified from a technical admin-like screen into a more user-oriented f
 
 ## Current State
 
-The project is now in a working state for the main scenario:
+The project is now in a working state for the main scenarios:
 
-- input: business `docx`
+- input: business `docx`, markdown, and mixed text
 - output: branded `.pptx`
 - style: `corp_light_v1`
 
@@ -287,16 +317,28 @@ The most important end-to-end capabilities are working:
 - heading-based section planning
 - bullet list recognition
 - table extraction and rendering
+- chart generation
+- image slide generation
 - PowerPoint file validity
+- frontend smoke and visual checks
+- backend quality-contract suite for deck-level layout safety
 
-## Remaining Nice-to-Have Improvements
+## Current Verification Layers
+
+- unit and regression backend tests
+- API contract tests
+- planner/generator compatibility tests
+- deck-level quality-contract tests
+- dedicated `quality-contracts` runner
+- frontend `playwright` smoke and visual checks
+
+## Remaining Improvements
 
 These are no longer core blockers, but they can improve quality further:
 
-- remove the remaining technical footer text like `A3 Presentation MVP`
-- improve naming of generated files
-- add smarter splitting for very dense tables
-- add richer support for images and charts if documents start containing them
+- move `quality-contracts` into a dedicated CI gate
+- extend deck-audit further for more layout-specific geometry rules
+- expand visual snapshots for more frontend and generated-slide scenarios
 - introduce template-specific typography rules per layout
 - add export previews
 

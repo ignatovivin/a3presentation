@@ -28,7 +28,8 @@ class SemanticDocumentNormalizer:
         tables: list[TableBlock],
         title: str | None = None,
     ) -> SemanticDocument:
-        sections = self._build_sections(blocks)
+        effective_blocks = self._trim_leading_cover_blocks(blocks)
+        sections = self._build_sections(effective_blocks)
         document_title = title or self._detect_title(blocks, raw_text, sections)
         facts = self._extract_facts(blocks)
         contacts = self._extract_contacts(blocks)
@@ -120,6 +121,9 @@ class SemanticDocumentNormalizer:
         for block in blocks:
             if block.kind == "title" and (block.text or "").strip():
                 return (block.text or "").strip()[:120]
+        leading_lines = self._leading_cover_lines(blocks)
+        if leading_lines:
+            return self._cover_title_from_lines(leading_lines)[:120]
         for block in blocks:
             if block.kind in {"heading", "subheading", "paragraph"} and (block.text or "").strip():
                 return (block.text or "").strip()[:120]
@@ -329,3 +333,46 @@ class SemanticDocumentNormalizer:
 
     def _normalize_line(self, line: str) -> str:
         return re.sub(r"\s+", " ", line.strip())
+
+    def _leading_cover_lines(self, blocks: list[DocumentBlock]) -> list[str]:
+        lines: list[str] = []
+        for block in blocks:
+            if block.kind in {"heading", "subheading", "table", "list"}:
+                break
+            text = self._normalize_line(block.text or "")
+            if text:
+                lines.append(text)
+        return lines[:6]
+
+    def _trim_leading_cover_blocks(self, blocks: list[DocumentBlock]) -> list[DocumentBlock]:
+        first_structured_index = next(
+            (index for index, block in enumerate(blocks) if block.kind in {"heading", "subheading"}),
+            None,
+        )
+        if first_structured_index is None or first_structured_index <= 0:
+            return blocks
+
+        leading_blocks = blocks[:first_structured_index]
+        if len(leading_blocks) > 6:
+            return blocks
+        if any(block.kind in {"list", "table", "image"} for block in leading_blocks):
+            return blocks
+
+        candidate_lines = [self._normalize_line(block.text or "") for block in leading_blocks if (block.text or "").strip()]
+        if not candidate_lines or any(len(line) > 140 for line in candidate_lines):
+            return blocks
+        return blocks[first_structured_index:]
+
+    def _cover_title_from_lines(self, lines: list[str]) -> str:
+        normalized = [line for line in lines if line]
+        if not normalized:
+            return ""
+        if len(normalized) >= 2 and self._looks_like_cover_prefix(normalized[0]):
+            return f"{normalized[0]} {normalized[1]}".strip()
+        return normalized[0]
+
+    def _looks_like_cover_prefix(self, text: str) -> bool:
+        compact = text.strip()
+        if not compact or len(compact) > 8 or compact[0].isdigit():
+            return False
+        return len(compact.split()) <= 2

@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from a3presentation.domain.api import ChartOverride, DocumentBlock
 from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec, TableBlock
 from a3presentation.domain.semantic import DocumentKind, SemanticDocument, SemanticImage, SemanticSection
+from a3presentation.services.layout_capacity import (
+    LIST_FULL_WIDTH_PROFILE,
+    TEXT_FULL_WIDTH_PROFILE,
+)
 from a3presentation.services.semantic_normalizer import SemanticDocumentNormalizer
 
 
@@ -26,12 +30,12 @@ class TextToPlanService:
     HEADING_PATTERN = re.compile(r"^(\d+(\.\d+)*[.)]?\s+.+|[А-ЯA-Z].{0,90})$")
     CARD_BULLET_MAX_CHARS = 100
     CARD_BULLET_COUNT = 3
-    LIST_BATCH_SIZE = 5
-    LIST_SLIDE_MAX_WEIGHT = 9.0
+    LIST_BATCH_SIZE = LIST_FULL_WIDTH_PROFILE.max_items
+    LIST_SLIDE_MAX_WEIGHT = LIST_FULL_WIDTH_PROFILE.max_weight
     LIST_BULLET_MAX_CHARS = 220
-    TEXT_SLIDE_MAX_WEIGHT = 7.5
-    TEXT_SLIDE_MAX_CHARS = 420
-    TEXT_PRIMARY_MAX_CHARS = 320
+    TEXT_SLIDE_MAX_WEIGHT = TEXT_FULL_WIDTH_PROFILE.max_weight
+    TEXT_SLIDE_MAX_CHARS = TEXT_FULL_WIDTH_PROFILE.max_chars
+    TEXT_PRIMARY_MAX_CHARS = TEXT_FULL_WIDTH_PROFILE.max_primary_chars
     TEXT_TAIL_MERGE_THRESHOLD = 120
     COVER_META_MAX_LINES = 2
     COVER_META_MAX_LINE_CHARS = 72
@@ -40,6 +44,23 @@ class TextToPlanService:
 
     def __init__(self) -> None:
         self.normalizer = SemanticDocumentNormalizer()
+        self.list_profile = LIST_FULL_WIDTH_PROFILE
+        self.text_profile = TEXT_FULL_WIDTH_PROFILE
+
+    def _text_slide_char_budget(self) -> int:
+        return self.text_profile.max_chars
+
+    def _text_primary_char_budget(self) -> int:
+        return self.text_profile.max_primary_chars
+
+    def _bullet_slide_item_budget(self) -> int:
+        return self.list_profile.max_items
+
+    def _list_slide_weight_budget(self) -> float:
+        return self.list_profile.max_weight
+
+    def _text_slide_weight_budget(self) -> float:
+        return self.text_profile.max_weight
 
     def build_plan(
         self,
@@ -271,14 +292,18 @@ class TextToPlanService:
     def _is_cover_section(self, section: Section, cover_title: str) -> bool:
         if section.tables:
             return False
+        if section.images:
+            return False
         if len(section.paragraphs) > 2:
             return False
         if sum(len(items) for items in section.bullet_lists) > 3:
             return False
         if section.title == cover_title:
             return True
+        if re.match(r"^\d+(\.\d+)*[.)]?\s+", section.title or ""):
+            return False
         total_items = len(section.paragraphs) + sum(len(items) for items in section.bullet_lists)
-        return section.level <= 1 and total_items <= 5
+        return section.level <= 1 and total_items <= 2
 
     def _detect_title(self, blocks: list[DocumentBlock], raw_text: str, sections: list[Section]) -> str:
         for block in blocks:
@@ -481,21 +506,33 @@ class TextToPlanService:
 
         if col_count == 2 and row_count <= 6:
             return [table]
+        if col_count == 2 and row_count <= 10 and max_cell_length <= 70 and avg_row_length <= 55:
+            return [table]
         if col_count == 3 and row_count <= 5:
             return [table]
         if col_count == 3 and row_count <= 7 and max_cell_length <= 70 and avg_row_length <= 85:
             return [table]
         if col_count == 3 and row_count <= 9 and max_cell_length <= 130 and avg_row_length <= 120:
             return [table]
+        if col_count == 3 and row_count <= 7 and max_cell_length <= 155 and avg_row_length <= 95:
+            return [table]
+        if 4 <= col_count <= 5 and row_count <= 7 and max_cell_length <= 120 and avg_row_length <= 170:
+            return [table]
 
-        base_capacity = 8
+        base_capacity = 10
         if col_count >= 3:
-            base_capacity = 6
+            base_capacity = 8
         if col_count >= 4:
-            base_capacity = 5
+            base_capacity = 7
+        if col_count >= 5:
+            base_capacity = 6
 
-        if max_cell_length >= 120:
+        if max_cell_length >= 180:
             base_capacity -= 2
+        elif max_cell_length >= 120:
+            base_capacity -= 1
+        if avg_row_length >= 130:
+            base_capacity -= 1
         elif max_cell_length >= 80:
             base_capacity -= 1
 
@@ -532,16 +569,18 @@ class TextToPlanService:
         avg_length = sum(len(cell or "") for cell in row) / max(1, len(row))
 
         weight = 1.0
-        if col_count >= 3:
+        if col_count >= 4:
+            weight += 0.15
+        if col_count >= 5:
+            weight += 0.1
+        if avg_length >= 55:
             weight += 0.2
-        if avg_length >= 40:
+        if avg_length >= 90:
+            weight += 0.25
+        if max_length >= 140:
             weight += 0.35
-        if avg_length >= 70:
-            weight += 0.35
-        if max_length >= 120:
-            weight += 0.6
-        if max_length >= 180:
-            weight += 0.8
+        if max_length >= 220:
+            weight += 0.45
         return weight
 
     def _fits_single_slide(self, section: Section) -> bool:
@@ -549,7 +588,7 @@ class TextToPlanService:
         bullet_count = sum(len(items) for items in section.bullet_lists)
         max_bullet_len = max((len(item) for items in section.bullet_lists for item in items), default=0)
 
-        if paragraph_chars <= self.TEXT_SLIDE_MAX_CHARS and bullet_count == 0:
+        if paragraph_chars <= self._text_slide_char_budget() and bullet_count == 0:
             return True
         if (
             bullet_count <= self.CARD_BULLET_COUNT
@@ -557,13 +596,14 @@ class TextToPlanService:
             and max_bullet_len <= self.CARD_BULLET_MAX_CHARS
         ):
             return True
-        if bullet_count <= self.LIST_BATCH_SIZE and paragraph_chars <= 260:
+        if bullet_count <= self.list_profile.max_items and paragraph_chars <= 260:
             return True
         return False
 
     def _build_single_slide(self, section: Section) -> SlideSpec:
+        text = " ".join(section.paragraphs).strip()
         bullets = [item for bullet_list in section.bullet_lists for item in bullet_list]
-        if bullets and self._should_use_cards_layout(section.title, bullets):
+        if bullets and not text and self._should_use_cards_layout(section.title, bullets):
             return SlideSpec(
                 kind=SlideKind.BULLETS,
                 title=section.title,
@@ -572,15 +612,15 @@ class TextToPlanService:
             )
 
         if bullets:
+            bullet_items = self._paragraphs_as_bullets(section.paragraphs) + bullets
             return SlideSpec(
                 kind=SlideKind.BULLETS,
                 title=section.title,
-                bullets=bullets[: self.LIST_BATCH_SIZE],
+                bullets=bullet_items[: self._bullet_slide_item_budget()],
                 preferred_layout_key="list_full_width",
             )
 
-        text = " ".join(section.paragraphs).strip()
-        if len(text) <= self.TEXT_SLIDE_MAX_CHARS:
+        if len(text) <= self._text_slide_char_budget():
             primary_text, secondary_text = self._split_text_for_slide(text)
             subtitle = self._normalize_subtitle(section.subtitle or "", primary_text)
             return SlideSpec(
@@ -596,7 +636,7 @@ class TextToPlanService:
         return SlideSpec(
             kind=SlideKind.BULLETS,
             title=section.title,
-            bullets=sentences[: self.LIST_BATCH_SIZE],
+            bullets=sentences[: self._bullet_slide_item_budget()],
             preferred_layout_key="list_full_width",
         )
 
@@ -604,7 +644,8 @@ class TextToPlanService:
         slides: list[SlideSpec] = []
         bullets = [item for bullet_list in section.bullet_lists for item in bullet_list]
         if bullets:
-            batches = self._chunk_bullets_for_slides(bullets)
+            mixed_bullets = self._paragraphs_as_bullets(section.paragraphs) + bullets
+            batches = self._chunk_bullets_for_slides(mixed_bullets)
             for index, batch in enumerate(batches):
                 slide_title = section.title if index == 0 else f"{section.title} ({index + 1})"
                 slides.append(
@@ -622,7 +663,7 @@ class TextToPlanService:
         batches = self._chunk_text_for_slides(sentences)
         for index, batch in enumerate(batches):
             slide_title = section.title if index == 0 else f"{section.title} ({index + 1})"
-            if len(batch) <= 2 and len(" ".join(batch)) <= self.TEXT_SLIDE_MAX_CHARS:
+            if len(batch) <= 2 and len(" ".join(batch)) <= self._text_slide_char_budget():
                 merged = " ".join(batch)
                 primary_text, secondary_text = self._split_text_for_slide(merged)
                 subtitle = self._normalize_subtitle(section.subtitle or "", primary_text)
@@ -641,7 +682,7 @@ class TextToPlanService:
                     SlideSpec(
                         kind=SlideKind.BULLETS,
                         title=slide_title,
-                        bullets=batch[: self.LIST_BATCH_SIZE],
+                        bullets=batch[: self.list_profile.max_items],
                         preferred_layout_key="list_full_width",
                     )
                 )
@@ -655,7 +696,7 @@ class TextToPlanService:
         for bullet in bullets:
             bullet_weight = self._estimate_bullet_weight(bullet)
             if current_batch and (
-                len(current_batch) >= self.LIST_BATCH_SIZE or current_weight + bullet_weight > self.LIST_SLIDE_MAX_WEIGHT
+                len(current_batch) >= self._bullet_slide_item_budget() or current_weight + bullet_weight > self._list_slide_weight_budget()
             ):
                 batches.append(current_batch)
                 current_batch = []
@@ -677,8 +718,8 @@ class TextToPlanService:
         for chunk in chunks:
             chunk_weight = self._estimate_text_chunk_weight(chunk)
             if current_batch and (
-                len(current_batch) >= self.LIST_BATCH_SIZE
-                or current_weight + chunk_weight > self.TEXT_SLIDE_MAX_WEIGHT
+                len(current_batch) >= self.text_profile.max_items
+                or current_weight + chunk_weight > self._text_slide_weight_budget()
             ):
                 batches.append(current_batch)
                 current_batch = []
@@ -691,6 +732,15 @@ class TextToPlanService:
             batches.append(current_batch)
 
         return batches
+
+    def _paragraphs_as_bullets(self, paragraphs: list[str]) -> list[str]:
+        items: list[str] = []
+        for paragraph in paragraphs:
+            normalized = self._normalize_line(paragraph)
+            if not normalized:
+                continue
+            items.extend(self._sentence_chunks(normalized))
+        return items
 
     def _estimate_text_chunk_weight(self, chunk: str) -> float:
         normalized = (chunk or "").strip()
@@ -725,16 +775,16 @@ class TextToPlanService:
 
     def _split_text_for_slide(self, text: str) -> tuple[str, str]:
         normalized = text.strip()
-        if len(normalized) <= self.TEXT_PRIMARY_MAX_CHARS:
+        if len(normalized) <= self._text_primary_char_budget():
             return normalized, ""
 
-        split_at = normalized.rfind(". ", 0, self.TEXT_PRIMARY_MAX_CHARS)
+        split_at = normalized.rfind(". ", 0, self._text_primary_char_budget())
         if split_at == -1:
-            split_at = normalized.rfind("; ", 0, self.TEXT_PRIMARY_MAX_CHARS)
+            split_at = normalized.rfind("; ", 0, self._text_primary_char_budget())
         if split_at == -1:
-            split_at = normalized.rfind(", ", 0, self.TEXT_PRIMARY_MAX_CHARS)
-        if split_at == -1 or split_at < int(self.TEXT_PRIMARY_MAX_CHARS * 0.55):
-            split_at = self.TEXT_PRIMARY_MAX_CHARS
+            split_at = normalized.rfind(", ", 0, self._text_primary_char_budget())
+        if split_at == -1 or split_at < int(self._text_primary_char_budget() * 0.55):
+            split_at = self._text_primary_char_budget()
         else:
             split_at += 1
 
@@ -790,7 +840,7 @@ class TextToPlanService:
             return blocks
 
         leading_blocks = blocks[:first_structured_index]
-        if len(leading_blocks) > 4:
+        if len(leading_blocks) > 6:
             return blocks
         if any(block.kind in {"list", "table", "image"} for block in leading_blocks):
             return blocks
@@ -891,7 +941,7 @@ class TextToPlanService:
                 SlideSpec(
                     kind=SlideKind.BULLETS,
                     title=f"{plan_title} - обзор",
-                    bullets=summary_items[: self.LIST_BATCH_SIZE],
+                    bullets=summary_items[: self._bullet_slide_item_budget()],
                     preferred_layout_key="list_full_width",
                 )
             )
@@ -1161,8 +1211,8 @@ class TextToPlanService:
                 continue
             if not (slide.title or "").strip():
                 slide.title = plan_title if index == 0 else f"{plan_title} ({index})"
-            if slide.kind == SlideKind.BULLETS and len(slide.bullets) > self.LIST_BATCH_SIZE:
-                slide.bullets = slide.bullets[: self.LIST_BATCH_SIZE]
+            if slide.kind == SlideKind.BULLETS and len(slide.bullets) > self._bullet_slide_item_budget():
+                slide.bullets = slide.bullets[: self._bullet_slide_item_budget()]
             normalized_slides.append(slide)
 
         if len(normalized_slides) == 1 and semantic_document.stats.character_count > 0:
@@ -1183,7 +1233,7 @@ class TextToPlanService:
                 SlideSpec(
                     kind=SlideKind.BULLETS,
                     title=f"{plan_title} - Приложение",
-                    bullets=appendix_items[: self.LIST_BATCH_SIZE],
+                    bullets=appendix_items[: self._bullet_slide_item_budget()],
                     preferred_layout_key="list_full_width",
                 )
             )
@@ -1204,7 +1254,7 @@ class TextToPlanService:
         for signature in semantic_document.signatures[:1]:
             if signature not in items:
                 items.append(signature[:120])
-        return items[: self.LIST_BATCH_SIZE]
+        return items[: self._bullet_slide_item_budget()]
 
     def _is_empty_slide(self, slide: SlideSpec) -> bool:
         return not any(
@@ -1221,7 +1271,117 @@ class TextToPlanService:
         )
 
     def _compress_slides(self, slides: list[SlideSpec]) -> list[SlideSpec]:
+        if not slides:
+            return slides
+
+        compressed: list[SlideSpec] = []
+        for slide in slides:
+            if compressed and self._can_merge_slide_pair(compressed[-1], slide):
+                compressed[-1] = self._merge_slide_pair(compressed[-1], slide)
+                continue
+            compressed.append(slide)
+
+        compressed = self._rebalance_adjacent_bullet_slides(compressed)
+        return self._renumber_continuation_titles(compressed)
+
+    def _can_merge_slide_pair(self, previous: SlideSpec, current: SlideSpec) -> bool:
+        if previous.kind in {SlideKind.TABLE, SlideKind.CHART, SlideKind.IMAGE}:
+            return False
+        if current.kind in {SlideKind.TABLE, SlideKind.CHART, SlideKind.IMAGE}:
+            return False
+        if self._base_slide_title(previous.title) != self._base_slide_title(current.title):
+            return False
+
+        previous_bullets = self._slide_as_mergeable_bullets(previous)
+        current_bullets = self._slide_as_mergeable_bullets(current)
+        if previous_bullets is None or current_bullets is None:
+            return False
+
+        merged = previous_bullets + current_bullets
+        if len(merged) > self._bullet_slide_item_budget():
+            return False
+        merged_weight = sum(self._estimate_bullet_weight(item) for item in merged)
+        return merged_weight <= self._list_slide_weight_budget()
+
+    def _merge_slide_pair(self, previous: SlideSpec, current: SlideSpec) -> SlideSpec:
+        merged_bullets = (self._slide_as_mergeable_bullets(previous) or []) + (self._slide_as_mergeable_bullets(current) or [])
+        return SlideSpec(
+            kind=SlideKind.BULLETS,
+            title=self._base_slide_title(previous.title),
+            subtitle=previous.subtitle or current.subtitle,
+            bullets=merged_bullets,
+            preferred_layout_key="list_full_width",
+        )
+
+    def _slide_as_mergeable_bullets(self, slide: SlideSpec) -> list[str] | None:
+        if slide.kind == SlideKind.BULLETS:
+            return [item for item in slide.bullets if item.strip()]
+        if slide.kind == SlideKind.TEXT:
+            text_parts = [part.strip() for part in (slide.text or "", slide.notes or "") if part and part.strip()]
+            if not text_parts:
+                return []
+            return self._sentence_chunks(" ".join(text_parts))
+        return None
+
+    def _base_slide_title(self, title: str | None) -> str:
+        normalized = (title or "").strip()
+        return re.sub(r"\s+\(\d+\)$", "", normalized)
+
+    def _renumber_continuation_titles(self, slides: list[SlideSpec]) -> list[SlideSpec]:
+        groups: dict[str, list[int]] = {}
+        order: list[str] = []
+        for index, slide in enumerate(slides):
+            if slide.kind in {SlideKind.TABLE, SlideKind.CHART, SlideKind.IMAGE, SlideKind.TITLE}:
+                continue
+            base_title = self._base_slide_title(slide.title)
+            if not base_title:
+                continue
+            if base_title not in groups:
+                groups[base_title] = []
+                order.append(base_title)
+            groups[base_title].append(index)
+
+        for base_title in order:
+            indexes = groups[base_title]
+            if len(indexes) <= 1:
+                slides[indexes[0]].title = base_title
+                continue
+            for position, slide_index in enumerate(indexes, start=1):
+                slides[slide_index].title = base_title if position == 1 else f"{base_title} ({position})"
+
         return slides
+
+    def _rebalance_adjacent_bullet_slides(self, slides: list[SlideSpec]) -> list[SlideSpec]:
+        if len(slides) < 2:
+            return slides
+
+        rebalanced = [slide.model_copy(deep=True) for slide in slides]
+        overflow_budget = 1.5
+        underfill_threshold = self._list_slide_weight_budget() * self.list_profile.target_fill_ratio
+
+        for index in range(len(rebalanced) - 1):
+            current = rebalanced[index]
+            following = rebalanced[index + 1]
+            if current.kind != SlideKind.BULLETS or following.kind != SlideKind.BULLETS:
+                continue
+            if self._base_slide_title(current.title) != self._base_slide_title(following.title):
+                continue
+
+            while len(current.bullets) < self._bullet_slide_item_budget() and len(following.bullets) > 2:
+                current_weight = sum(self._estimate_bullet_weight(item) for item in current.bullets)
+                following_weight = sum(self._estimate_bullet_weight(item) for item in following.bullets)
+                if following_weight >= underfill_threshold:
+                    break
+
+                candidate = following.bullets[0]
+                projected_weight = current_weight + self._estimate_bullet_weight(candidate)
+                if projected_weight > self._list_slide_weight_budget() + overflow_budget:
+                    break
+
+                current.bullets.append(candidate)
+                following.bullets = following.bullets[1:]
+
+        return rebalanced
 
     def _chunk_items(self, items: list[str], size: int) -> list[list[str]]:
         return [items[index : index + size] for index in range(0, len(items), size)]

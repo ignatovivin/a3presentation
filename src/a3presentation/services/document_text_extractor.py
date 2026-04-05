@@ -21,6 +21,8 @@ class DocumentTextExtractor:
     HEADING_STYLE_PREFIXES = ("heading", "заголовок")
     LIST_STYLE_MARKERS = ("list", "список", "bullet", "маркир", "number", "нумер")
     LIST_TEXT_PREFIXES = ("- ", "• ", "– ", "— ", "* ")
+    OUTLINE_HEADING_PATTERN = re.compile(r"^(?P<number>\d+(?:\.\d+)*)[.)]?\s+.+$")
+    QUARTER_HEADING_PATTERN = re.compile(r"^Q[1-4](?:\s+\d{4})?(?:\s*[-—–:].+)?$", re.IGNORECASE)
 
     def extract(self, filename: str, content: bytes) -> tuple[str, list[TableBlock], list[DocumentBlock]]:
         extension = Path(filename).suffix.lower()
@@ -157,8 +159,9 @@ class DocumentTextExtractor:
         normalized = line.strip()
         if len(normalized) <= 90 and normalized == normalized.upper() and any(char.isalpha() for char in normalized):
             return 1
-        if re.match(r"^\d+(\.\d+)*[.)]?\s+.+$", normalized):
-            return 1 if normalized.count(".") <= 1 else 2
+        outline_level = self._outline_heading_level(normalized)
+        if outline_level is not None:
+            return outline_level
         return None
 
     def _plain_text_list_item(self, line: str, markdown: bool) -> str | None:
@@ -202,6 +205,9 @@ class DocumentTextExtractor:
             return ("heading" if level <= 1 else "subheading"), level
         if self._looks_like_list_paragraph(paragraph, text, style_name):
             return "list", None
+        heading_level = self._infer_heading_level_from_text(text)
+        if heading_level is not None:
+            return ("heading" if heading_level <= 1 else "subheading"), heading_level
         return "paragraph", None
 
     def _extract_heading_level(self, style_name: str) -> int:
@@ -209,6 +215,26 @@ class DocumentTextExtractor:
         if not digits:
             return 1
         return int(digits)
+
+    def _outline_heading_level(self, text: str) -> int | None:
+        match = self.OUTLINE_HEADING_PATTERN.match(text.strip())
+        if match is None:
+            return None
+        return max(1, min(len(match.group("number").split(".")), 3))
+
+    def _infer_heading_level_from_text(self, text: str) -> int | None:
+        normalized = text.strip()
+        if not normalized or len(normalized) > 90:
+            return None
+        if normalized.endswith((".", "!", "?")):
+            return None
+
+        outline_level = self._outline_heading_level(normalized)
+        if outline_level is not None:
+            return outline_level
+        if self.QUARTER_HEADING_PATTERN.match(normalized):
+            return 2
+        return None
 
     def _looks_like_list_paragraph(self, paragraph: Paragraph, text: str, style_name: str) -> bool:
         stripped = text.strip()

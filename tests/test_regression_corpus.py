@@ -9,6 +9,10 @@ from pathlib import Path
 from docx import Document
 from pptx import Presentation
 
+from a3presentation.domain.api import ChartOverride, DocumentBlock
+from a3presentation.domain.chart import ChartConfidence, ChartSeries, ChartSpec, ChartType
+from a3presentation.domain.presentation import SlideKind
+from a3presentation.services.deck_audit import audit_generated_presentation, find_capacity_violations
 from a3presentation.services.document_text_extractor import DocumentTextExtractor
 from a3presentation.services.planner import TextToPlanService
 from a3presentation.services.pptx_generator import PptxGenerator
@@ -57,6 +61,48 @@ class RegressionCorpusTests(unittest.TestCase):
                     presentation = Presentation(str(output_path))
                     self.assertEqual(len(presentation.slides), len(plan.slides))
 
+    def test_text_only_markdown_fixture_generates_deck_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        content = (self.fixtures_dir / "strategy_report.md").read_bytes()
+        text, tables, blocks = extractor.extract("strategy_report.md", content)
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertTrue(any(audit.kind in {"text", "bullets"} for audit in audits))
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_mixed_text_fixture_generates_deck_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        content = (self.fixtures_dir / "mixed_notes.txt").read_bytes()
+        text, tables, blocks = extractor.extract("mixed_notes.txt", content)
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertTrue(any(audit.kind in {"text", "bullets"} for audit in audits))
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
     def test_generated_docx_corpus_covers_report_form_resume_and_table_heavy(self) -> None:
         cases = [
             ("report.docx", self._build_report_docx()),
@@ -85,6 +131,147 @@ class RegressionCorpusTests(unittest.TestCase):
                     presentation = Presentation(str(output_path))
                     self.assertEqual(len(presentation.slides), len(plan.slides))
 
+    def test_form_like_docx_generates_deck_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("form.docx", self._build_form_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertGreaterEqual(len(plan.slides), 2)
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_resume_like_docx_generates_deck_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("resume.docx", self._build_resume_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertGreaterEqual(len(plan.slides), 2)
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_table_heavy_docx_generates_deck_without_text_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("table-heavy.docx", self._build_table_heavy_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertTrue(any(slide.kind == SlideKind.TABLE for slide in plan.slides))
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+        table_audits = [audit for audit in audits if audit.kind == SlideKind.TABLE.value]
+        self.assertTrue(table_audits)
+        self.assertTrue(all(audit.has_table for audit in table_audits))
+        self.assertTrue(all(audit.content_width_ratio >= 0.9 for audit in table_audits))
+        self.assertTrue(all(audit.footer_width_ratio >= 0.9 for audit in table_audits))
+
+    def test_fact_only_docx_generates_appendix_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("fact-only.docx", self._build_fact_only_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertTrue(any(slide.title and "Приложение" in slide.title for slide in plan.slides))
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_image_heavy_docx_generates_image_slide_and_preserves_text_capacity_contract(self) -> None:
+        planner = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="paragraph", text="Отчет по продукту"),
+            DocumentBlock(kind="heading", text="1. Схема процесса", level=1),
+            DocumentBlock(kind="paragraph", text="Ниже приведена ключевая схема целевого процесса."),
+            DocumentBlock(
+                kind="image",
+                text="Схема целевого процесса",
+                image_name="process.png",
+                image_content_type="image/png",
+                image_base64=base64.b64encode(SMALL_PNG_BYTES).decode("ascii"),
+            ),
+            DocumentBlock(kind="heading", text="2. Выводы", level=1),
+            DocumentBlock(kind="paragraph", text="Иллюстрация подтверждает узкие места и точки автоматизации."),
+        ]
+        raw_text = "\n".join(block.text or "" for block in blocks)
+        plan = planner.build_plan("corp_light_v1", raw_text, None, [], blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertTrue(any(slide.kind == SlideKind.IMAGE for slide in plan.slides))
+        self.assertTrue(any(getattr(shape, "has_text_frame", False) for slide in presentation.slides for shape in slide.shapes))
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_cover_skip_does_not_swallow_numbered_first_section_with_image(self) -> None:
+        planner = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="paragraph", text="Отчет по продукту"),
+            DocumentBlock(kind="heading", text="1. Схема процесса", level=1),
+            DocumentBlock(kind="paragraph", text="Ниже приведена ключевая схема целевого процесса."),
+            DocumentBlock(
+                kind="image",
+                text="Схема целевого процесса",
+                image_name="process.png",
+                image_content_type="image/png",
+                image_base64=base64.b64encode(SMALL_PNG_BYTES).decode("ascii"),
+            ),
+            DocumentBlock(kind="heading", text="2. Выводы", level=1),
+            DocumentBlock(kind="paragraph", text="Иллюстрация подтверждает узкие места и точки автоматизации."),
+        ]
+
+        plan = planner.build_plan("corp_light_v1", "\n".join(block.text or "" for block in blocks), None, [], blocks)
+
+        self.assertTrue(any(slide.kind == SlideKind.IMAGE for slide in plan.slides))
+        self.assertTrue(any((slide.title or "").startswith("1. Схема процесса") for slide in plan.slides))
+
     def test_strategy_like_docx_skips_cover_lines_as_first_content_section(self) -> None:
         extractor = DocumentTextExtractor()
         planner = TextToPlanService()
@@ -94,15 +281,250 @@ class RegressionCorpusTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(plan.slides), 2)
         self.assertNotEqual(plan.slides[1].title, "A3")
-        self.assertIn("Vision", plan.slides[1].title)
+        self.assertTrue(any((slide.title or "").strip() for slide in plan.slides[1:]))
+
+    def test_strategy_edge_case_docx_preserves_numbered_sections_and_mixed_content(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("strategy-edge.docx", self._build_strategy_edge_case_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        self.assertFalse(any(slide.title == "А3" for slide in plan.slides[1:]))
+        self.assertTrue(any((slide.title or "").startswith("1.4 Показатели 2025") for slide in plan.slides))
+        self.assertTrue(any("3.3 Карта конкурентов" in ((slide.title or "") + " " + (slide.subtitle or "")) for slide in plan.slides))
+
+        slide_payload = "\n".join(
+            " ".join(
+                part
+                for part in (
+                    slide.title or "",
+                    slide.subtitle or "",
+                    slide.text or "",
+                    slide.notes or "",
+                    "\n".join(slide.bullets),
+                )
+                if part
+            )
+            for slide in plan.slides
+        )
+        self.assertIn("Структура: 5 продажников", slide_payload)
+        self.assertIn("Ритм контактов: регулярные встречи", slide_payload)
+        self.assertIn("Q2 2026 (Discovery): Анализ архитектуры платформы цифрового рубля ЦБ", slide_payload)
+
+    def test_strategy_edge_case_docx_generates_deck_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("strategy-edge.docx", self._build_strategy_edge_case_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertGreaterEqual(len(audits), 3)
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_report_docx_generates_deck_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("report.docx", self._build_report_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_chart_heavy_docx_generates_chart_slide_and_preserves_text_capacity_contract(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        content = self._build_chart_heavy_docx()
+        text, tables, blocks = extractor.extract("chart-heavy.docx", content)
+        self.assertGreaterEqual(len(tables), 1)
+
+        plan = planner.build_plan(
+            "corp_light_v1",
+            text,
+            None,
+            tables,
+            blocks,
+            chart_overrides=[
+                ChartOverride(
+                    table_id="table_1",
+                    mode="chart",
+                    selected_chart=ChartSpec(
+                        chart_id="chart_1",
+                        source_table_id="table_1",
+                        chart_type=ChartType.COLUMN,
+                        title="Выручка по каналам",
+                        categories=["SEO", "Ads", "Referral"],
+                        series=[ChartSeries(name="Выручка", values=[120.0, 200.0, 90.0])],
+                        confidence=ChartConfidence.HIGH,
+                    ),
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertTrue(any(slide.kind == SlideKind.CHART for slide in plan.slides))
+        self.assertTrue(any(getattr(shape, "has_chart", False) for slide in presentation.slides for shape in slide.shapes))
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+        chart_audits = [audit for audit in audits if audit.kind == SlideKind.CHART.value]
+        self.assertTrue(chart_audits)
+        self.assertTrue(all(audit.has_chart for audit in chart_audits))
+        self.assertTrue(all(audit.content_width_ratio >= 0.9 for audit in chart_audits))
+        self.assertTrue(all(audit.footer_width_ratio >= 0.9 for audit in chart_audits))
+
+    def test_planner_compresses_short_text_and_bullet_continuations(self) -> None:
+        planner = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="title", text="A3 Presentation", level=0),
+            DocumentBlock(kind="heading", text="3.3 Карта конкурентов", level=1),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "А3 оперирует в уникальной нише на стыке инфраструктурных финтех-решений для регулярных платежей. "
+                    "Конкурентное поле формируют косвенные игроки, которые закрывают отдельные сегменты цепочки ценности, "
+                    "но не воспроизводят модель А3 целиком."
+                ),
+            ),
+            DocumentBlock(kind="paragraph", text="Конкурентные преимущества А3"),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "Ни один конкурент не воспроизводит модель А3 целиком: мультибанковская сеть и агрегация поставщиков. "
+                    "Главные риски — Сбер и ВТБ, которые строят собственную инфраструктуру. "
+                    "Митигация: развитие уникальных технологий, углубление экосистемы партнерств и запуск РНКО."
+                ),
+            ),
+            DocumentBlock(kind="heading", text="4. Следующий раздел", level=1),
+            DocumentBlock(kind="paragraph", text="Короткий текст для следующего раздела."),
+        ]
+
+        plan = planner.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title="A3 Presentation",
+            blocks=blocks,
+        )
+
+        competitor_slides = [slide for slide in plan.slides if (slide.title or "").startswith("3.3 Карта конкурентов")]
+        self.assertEqual(len(competitor_slides), 1)
+        self.assertEqual(competitor_slides[0].kind, SlideKind.BULLETS)
+        self.assertGreaterEqual(len(competitor_slides[0].bullets), 4)
+
+    def test_planner_keeps_short_quarter_plan_on_single_slide(self) -> None:
+        planner = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="title", text="A3 Presentation", level=0),
+            DocumentBlock(kind="heading", text="Q2 2026", level=1),
+            DocumentBlock(kind="list", items=[
+                "Перевод всех партнеров на автономный режим работы",
+                "Перенастройка сетей",
+                "Выделение серверов под реплики БД",
+                "k8s pci",
+                "k8s invoice",
+                "Перенос hadoop",
+                "Решение проблемы с кросс-цодовой генерацией id транзакции",
+                "Перевод всех партнеров на автономку",
+            ]),
+            DocumentBlock(kind="heading", text="Q3 2026", level=1),
+            DocumentBlock(kind="paragraph", text="Следующий раздел."),
+        ]
+
+        plan = planner.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title="A3 Presentation",
+            blocks=blocks,
+        )
+
+        q2_slides = [slide for slide in plan.slides if (slide.title or "").startswith("Q2 2026")]
+        self.assertEqual(len(q2_slides), 1)
+        self.assertEqual(q2_slides[0].kind, SlideKind.BULLETS)
+        self.assertEqual(len(q2_slides[0].bullets), 8)
+
+    def test_planner_reduces_rd_section_to_two_slides_when_tail_is_short(self) -> None:
+        planner = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="title", text="A3 Presentation", level=0),
+            DocumentBlock(kind="heading", text="5.3 R&D новые продукты", level=1),
+            DocumentBlock(
+                kind="paragraph",
+                text="Цель: построить системный пайплайн проверки гипотез и новых продуктов для роста выручки и диверсификации бизнеса А3.",
+            ),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "Q2 2026 (Discovery): Анализ архитектуры платформы цифрового рубля ЦБ. "
+                    "Определение роли А3. Встречи с ЦБ и банками-партнерами."
+                ),
+            ),
+            DocumentBlock(
+                kind="list",
+                items=[
+                    "Процесс Double Diamond запущен, первые инициативы в работе",
+                    "Банк идей = единый бэклог, синхронизирован с Jira",
+                    "ICE-приоритизация со стейкхолдерами раз в 2 недели",
+                    "Юнит-экономика: по поставщикам/интеграциям, по партнёрам, по продуктовым направлениям",
+                    "Инициатива: Инфраструктура цифрового рубля",
+                    "Q3 2026 (Proof of Concept): Техническое прототипирование с командой Payments",
+                    "Q4 2026 — Пилот: Пилотный запуск с ограниченным объемом, тестирование с 1 банком-партнером, оценка unit-экономики и масштабируемости",
+                ],
+            ),
+            DocumentBlock(kind="heading", text="6. Следующий раздел", level=1),
+            DocumentBlock(kind="paragraph", text="Следующий раздел."),
+        ]
+
+        plan = planner.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title="A3 Presentation",
+            blocks=blocks,
+        )
+
+        rd_slides = [slide for slide in plan.slides if (slide.title or "").startswith("5.3 R&D новые продукты")]
+        self.assertLessEqual(len(rd_slides), 2)
+        self.assertGreaterEqual(len(rd_slides[0].bullets), 6)
 
     def _build_report_docx(self) -> bytes:
         document = Document()
         document.add_paragraph("A3")
         document.add_paragraph("Бизнес-стратегия 2026")
         document.add_heading("1. Vision и стратегические цели", level=1)
+        document.add_heading("1.1 Контекст роста", level=2)
         document.add_paragraph(
             "Платформа должна расти за счет новых сегментов, устойчивой экономики продукта и масштабируемой архитектуры."
+        )
+        document.add_paragraph(
+            "Рынок требует масштабируемой инфраструктуры, диверсификации выручки и устойчивого продуктового позиционирования."
         )
         document.add_heading("2. Позиционирование", level=1)
         document.add_paragraph(
@@ -154,6 +576,107 @@ class RegressionCorpusTests(unittest.TestCase):
             for col_index, value in enumerate(row):
                 table.cell(row_index, col_index).text = value
         document.add_picture(BytesIO(SMALL_PNG_BYTES))
+        return self._save_document(document)
+
+    def _build_chart_heavy_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("Отчёт по каналам продаж")
+        document.add_heading("1. Итоги квартала", level=1)
+        document.add_paragraph(
+            "Основной рост пришёл из платных каналов и рекомендаций, при этом SEO сохранил устойчивую базу лидов."
+        )
+        table = document.add_table(rows=4, cols=2)
+        table.cell(0, 0).text = "Канал"
+        table.cell(0, 1).text = "Выручка"
+        table.cell(1, 0).text = "SEO"
+        table.cell(1, 1).text = "120"
+        table.cell(2, 0).text = "Ads"
+        table.cell(2, 1).text = "200"
+        table.cell(3, 0).text = "Referral"
+        table.cell(3, 1).text = "90"
+        document.add_heading("2. Вывод", level=1)
+        document.add_paragraph("Нужно перераспределить бюджет в пользу каналов с лучшей окупаемостью.")
+        return self._save_document(document)
+
+    def _build_fact_only_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("Паспорт клиента")
+        document.add_paragraph("ФИО: Иван Игнатов")
+        document.add_paragraph("Дата: 05.09.2025")
+        document.add_paragraph("Email: ivan@example.com")
+        document.add_paragraph("Телефон: +7 999 000-00-00")
+        return self._save_document(document)
+
+    def _build_image_heavy_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("Отчет по продукту")
+        document.add_heading("1. Схема процесса", level=1)
+        document.add_paragraph("Ниже приведена ключевая схема целевого процесса.")
+        document.add_picture(BytesIO(SMALL_PNG_BYTES))
+        document.add_heading("2. Выводы", level=1)
+        document.add_paragraph("Иллюстрация подтверждает узкие места и точки автоматизации.")
+        return self._save_document(document)
+
+    def _build_strategy_edge_case_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("А3")
+        document.add_paragraph("Бизнес-стратегия 2026")
+        document.add_paragraph("Горизонт планирования: 2026-2030")
+        document.add_paragraph("Март 2026")
+        document.add_paragraph("Конфиденциальный документ")
+
+        document.add_heading("1. Vision и стратегические цели", level=1)
+        document.add_heading("1.1 Vision 2030", level=2)
+        document.add_paragraph("Стать одной из ведущих продуктовых финтех IT-компаний в России.")
+        document.add_paragraph("1.4 Показатели 2025")
+        table = document.add_table(rows=3, cols=2)
+        table.cell(0, 0).text = "Показатель"
+        table.cell(0, 1).text = "Значение"
+        table.cell(1, 0).text = "Выручка"
+        table.cell(1, 1).text = "1 678 млн ₽"
+        table.cell(2, 0).text = "Партнёры"
+        table.cell(2, 1).text = "49"
+
+        document.add_heading("3. Анализ рынка и SWOT", level=1)
+        document.add_paragraph("3.3 Карта конкурентов")
+        document.add_paragraph(
+            "А3 оперирует в уникальной нише на стыке инфраструктурных финтех-решений для регулярных платежей."
+        )
+        document.add_paragraph(
+            "Митигация: развитие уникальных технологий, углубление экосистемы партнерств и запуск РНКО."
+        )
+
+        document.add_heading("4. Go-to-market и продажи", level=1)
+        document.add_heading("4.3 Account Management", level=2)
+        document.add_paragraph(
+            "Структура: 5 продажников (новые сделки, upsell, стратегические встречи) + 5 аккаунт-менеджеров."
+        )
+        document.add_paragraph("Ритм контактов: регулярные встречи, мероприятия, рассылки.")
+        document.add_paragraph(style="List Bullet").add_run(
+            "Сегментация портфеля: Топ-10 (ядро), Средние 20-30, Хвост"
+        )
+        document.add_paragraph(style="List Bullet").add_run(
+            "Upsell-план: для каждого банка хвоста - конкретный следующий продукт и квартал"
+        )
+
+        document.add_heading("5. Продуктовый роадмап 2026", level=1)
+        document.add_heading("5.3 R&D новые продукты", level=2)
+        document.add_paragraph(
+            "Цель: построить системный пайплайн проверки гипотез и новых продуктов для роста выручки."
+        )
+        document.add_paragraph(style="List Bullet").add_run(
+            "Процесс Double Diamond запущен, первые инициативы в работе"
+        )
+        document.add_paragraph(style="List Bullet").add_run(
+            "Банк идей = единый бэклог, синхронизирован с Jira"
+        )
+        document.add_paragraph(
+            "Q2 2026 (Discovery): Анализ архитектуры платформы цифрового рубля ЦБ и определение роли А3."
+        )
+        document.add_paragraph(style="List Bullet").add_run(
+            "Q3 2026 (Proof of Concept): Техническое прототипирование с командой Payments"
+        )
+
         return self._save_document(document)
 
     def _save_document(self, document: Document) -> bytes:

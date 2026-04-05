@@ -310,7 +310,7 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" data-testid="app-shell">
       <section className="hero-block" data-node-id="634:1739">
         <h1 className="hero-title" data-node-id="633:1698">
           A3 Presentation
@@ -324,15 +324,16 @@ export function App() {
 
       <div className="composer-stack">
         {generationResult ? (
-          <div className="status-panel status-success">
+          <div className="status-panel status-success" data-testid="generation-success">
             <button type="button" className="status-close" onClick={() => setGenerationResult(null)} aria-label="Закрыть">
               ×
             </button>
             <div className="status-title">Презентация готова</div>
-            <div className="status-text">{generationResult.file_name}</div>
+            <div className="status-text" data-testid="generated-file-name">{generationResult.file_name}</div>
             <button
               type="button"
               className="primary-button status-download"
+              data-testid="download-presentation"
               onClick={() => window.open(buildDownloadUrl(generationResult.download_url), "_blank", "noopener,noreferrer")}
             >
               Скачать презентацию
@@ -341,12 +342,12 @@ export function App() {
         ) : null}
 
         {error ? (
-          <div className="status-panel status-error">
+          <div className="status-panel status-error" data-testid="error-panel">
             <button type="button" className="status-close" onClick={() => setError("")} aria-label="Закрыть">
               ×
             </button>
             <div className="status-title">Ошибка</div>
-            <div className="status-text">{error}</div>
+            <div className="status-text" data-testid="error-text">{error}</div>
           </div>
         ) : null}
 
@@ -367,16 +368,19 @@ export function App() {
                 onChange={(event) => setRawText(event.target.value)}
                 placeholder={initialText}
                 className="main-textarea"
+                data-testid="raw-text-input"
                 rows={10}
               />
             </div>
 
             <div className="actions-row" data-node-id="634:1772">
-              <label className="secondary-button" data-node-id="633:2618">
+              <label className="secondary-button" data-node-id="633:2618" data-testid="upload-document-trigger">
                 <input
                   type="file"
                   accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                   className="sr-only"
+                  data-testid="upload-document-input"
+                  aria-label="Загрузить документ"
                   onChange={handleTextFileUpload}
                 />
                 <span>Загрузить документ</span>
@@ -387,6 +391,7 @@ export function App() {
                   <button
                     type="button"
                     className="secondary-button"
+                    data-testid="open-structure-drawer"
                     onClick={() => setIsStructureDrawerOpen(true)}
                   >
                     Посмотреть структуру ({chartAssessments.length})
@@ -397,6 +402,7 @@ export function App() {
                   type="button"
                   className="primary-button"
                   data-node-id="634:1743"
+                  data-testid="generate-presentation"
                   onClick={handleGenerate}
                   disabled={isPending}
                 >
@@ -421,6 +427,7 @@ export function App() {
                 <button
                   type="button"
                   className="primary-button"
+                  data-testid="save-structure-choices"
                   onClick={handleSaveStructureChoices}
                   disabled={!hasUnsavedStructureChanges}
                 >
@@ -456,6 +463,7 @@ export function App() {
 
                 return (
                   <Card className="preview-card" key={assessment.table_id}>
+                    <div data-testid={`assessment-card-${assessment.table_id}`}>
                     <CardHeader>
                       <CardTitle>
                         {assessment.chartable ? "Можно заменить на график" : "Оставить как таблицу"}
@@ -473,6 +481,7 @@ export function App() {
                             <button
                               type="button"
                               className={`secondary-button${mode === "table" ? " is-active" : ""}`}
+                              data-testid={`mode-table-${assessment.table_id}`}
                               onClick={() => setChartModeByTableId((current) => ({ ...current, [assessment.table_id]: "table" }))}
                             >
                               Таблица
@@ -480,6 +489,7 @@ export function App() {
                             <button
                               type="button"
                               className={`secondary-button${mode === "chart" ? " is-active" : ""}`}
+                              data-testid={`mode-chart-${assessment.table_id}`}
                               onClick={() => setChartModeByTableId((current) => ({ ...current, [assessment.table_id]: "chart" }))}
                               disabled={!selectedSpec}
                             >
@@ -492,6 +502,7 @@ export function App() {
                         {assessment.chartable && mode === "chart" && assessment.candidate_specs.length > 1 ? (
                           <Select
                             className="chart-type-select"
+                            data-testid={`chart-type-${assessment.table_id}`}
                             value={selectedChartId}
                             onChange={(event) =>
                               setChartSelectionByTableId((current) => ({ ...current, [assessment.table_id]: event.target.value }))
@@ -507,6 +518,7 @@ export function App() {
                         {assessment.chartable && mode === "chart" && canTransposeChart(selectedSpec) ? (
                           <Select
                             className="chart-type-select"
+                            data-testid={`chart-orientation-${assessment.table_id}`}
                             value={chartOrientationByTableId[assessment.table_id] ?? "default"}
                             onChange={(event) =>
                               setChartOrientationByTableId((current) => ({
@@ -532,6 +544,7 @@ export function App() {
                                 <Input
                                   type="checkbox"
                                   className="series-toggle-input"
+                                  data-testid={`series-toggle-${assessment.table_id}-${series.name}`}
                                   checked={!series.hidden}
                                   onChange={() => toggleSeriesVisibility(assessment.table_id, series.name)}
                                 />
@@ -552,6 +565,7 @@ export function App() {
                         </div>
                       ) : null}
                     </CardContent>
+                    </div>
                   </Card>
                 );
               })}

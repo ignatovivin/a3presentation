@@ -27,6 +27,7 @@ from a3presentation.domain.template import (
     PrototypeSlideSpec,
     TemplateManifest,
 )
+from a3presentation.services.layout_capacity import LayoutCapacityProfile, profile_for_layout
 
 
 class PptxGenerator:
@@ -196,6 +197,7 @@ class PptxGenerator:
     def _replace_tokens_in_slide(self, slide, prototype: PrototypeSlideSpec, slide_spec: SlideSpec, presentation_title: str) -> None:
         token_values = self._build_token_value_map(slide_spec, presentation_title)
         used_shapes: set[str] = set()
+        layout_profile = profile_for_layout(slide_spec.preferred_layout_key or "text_full_width")
 
         # Preferred path for real templates: bind by explicit shape name from manifest.
         for token_spec in prototype.tokens:
@@ -204,7 +206,7 @@ class PptxGenerator:
             target_shape = next((shape for shape in slide.shapes if shape.name == token_spec.shape_name), None)
             if target_shape is None:
                 continue
-            self._fill_shape_by_binding(target_shape, token_spec.binding, slide_spec, presentation_title)
+            self._fill_shape_by_binding(target_shape, token_spec.binding, slide_spec, presentation_title, layout_profile)
             used_shapes.add(token_spec.shape_name)
 
         for shape in slide.shapes:
@@ -224,9 +226,9 @@ class PptxGenerator:
                 token_name = single_token_match.group(1)
                 token_value = token_values.get(token_name, "")
                 if isinstance(token_value, list):
-                    self._set_bullets(shape, token_value)
+                    self._set_bullets(shape, token_value, layout_profile)
                 else:
-                    self._set_text(shape, str(token_value))
+                    self._set_text(shape, str(token_value), layout_profile)
                 continue
 
             replaced_text = original_text
@@ -235,7 +237,7 @@ class PptxGenerator:
                 if isinstance(token_value, list):
                     token_value = "\n".join(token_value)
                 replaced_text = re.sub(r"{{\s*" + re.escape(token_name) + r"\s*}}", str(token_value), replaced_text)
-            self._set_text(shape, replaced_text)
+            self._set_text(shape, replaced_text, layout_profile)
 
     def _build_token_value_map(self, slide_spec: SlideSpec, presentation_title: str) -> dict[str, str | list[str]]:
         token_map: dict[str, str | list[str]] = {
@@ -309,6 +311,7 @@ class PptxGenerator:
         if layout.key == "cover":
             self._populate_cover_slide(slide, slide_spec)
             return
+        layout_profile = profile_for_layout(layout.key)
         placeholders = {placeholder.placeholder_format.idx: placeholder for placeholder in slide.placeholders}
         used_placeholder_indices: set[int] = set()
 
@@ -318,16 +321,16 @@ class PptxGenerator:
             shape = placeholders[placeholder_spec.idx]
             used_placeholder_indices.add(placeholder_spec.idx)
             if placeholder_spec.binding:
-                self._fill_shape_by_binding(shape, placeholder_spec.binding, slide_spec, presentation_title)
+                self._fill_shape_by_binding(shape, placeholder_spec.binding, slide_spec, presentation_title, layout_profile)
                 continue
             if placeholder_spec.kind == PlaceholderKind.TITLE:
-                self._set_text(shape, slide_spec.title or "")
+                self._set_text(shape, slide_spec.title or "", layout_profile)
             elif placeholder_spec.kind == PlaceholderKind.SUBTITLE:
-                self._set_text(shape, slide_spec.subtitle or "")
+                self._set_text(shape, slide_spec.subtitle or "", layout_profile)
             elif placeholder_spec.kind == PlaceholderKind.BODY:
-                self._fill_body(shape, slide_spec)
+                self._fill_body(shape, slide_spec, layout_profile)
             elif placeholder_spec.kind == PlaceholderKind.FOOTER:
-                self._set_text(shape, slide_spec.notes or "")
+                self._set_text(shape, slide_spec.notes or "", layout_profile)
             elif placeholder_spec.kind == PlaceholderKind.TABLE:
                 self._fill_table_or_chart(shape, slide_spec)
             elif placeholder_spec.kind == PlaceholderKind.CHART:
@@ -514,45 +517,45 @@ class PptxGenerator:
                 return candidate
         return 28.0
 
-    def _fill_body(self, shape, slide_spec: SlideSpec) -> None:
+    def _fill_body(self, shape, slide_spec: SlideSpec, layout_profile: LayoutCapacityProfile) -> None:
         if slide_spec.kind == SlideKind.BULLETS:
             if not slide_spec.bullets:
                 self._clear_placeholder(shape)
                 return
-            self._set_bullets(shape, slide_spec.bullets)
+            self._set_bullets(shape, slide_spec.bullets, layout_profile)
             return
         if slide_spec.kind == SlideKind.TWO_COLUMN:
             merged = [*slide_spec.left_bullets, "", *slide_spec.right_bullets]
             if not any(item.strip() for item in merged):
                 self._clear_placeholder(shape)
                 return
-            self._set_bullets(shape, merged)
+            self._set_bullets(shape, merged, layout_profile)
             return
         if slide_spec.kind == SlideKind.TEXT:
             if not (slide_spec.text or "").strip():
                 self._clear_placeholder(shape)
                 return
-            self._set_text(shape, slide_spec.text or "")
+            self._set_text(shape, slide_spec.text or "", layout_profile)
             return
         if slide_spec.kind == SlideKind.TITLE:
             if not (slide_spec.text or "").strip():
                 self._clear_placeholder(shape)
                 return
-            self._set_text(shape, slide_spec.text or "")
+            self._set_text(shape, slide_spec.text or "", layout_profile)
             return
         if slide_spec.table is not None:
             rows = [" | ".join(row) for row in slide_spec.table.rows]
             if not rows:
                 self._clear_placeholder(shape)
                 return
-            self._set_bullets(shape, rows)
+            self._set_bullets(shape, rows, layout_profile)
             return
         if not (slide_spec.text or "").strip():
             self._clear_placeholder(shape)
             return
-        self._set_text(shape, slide_spec.text or "")
+        self._set_text(shape, slide_spec.text or "", layout_profile)
 
-    def _fill_shape_by_binding(self, shape, binding: str, slide_spec: SlideSpec, presentation_title: str) -> None:
+    def _fill_shape_by_binding(self, shape, binding: str, slide_spec: SlideSpec, presentation_title: str, layout_profile: LayoutCapacityProfile) -> None:
         binding_value = self._build_token_value_map(slide_spec, presentation_title).get(binding, "")
         if binding == "table":
             self._fill_table_or_chart(shape, slide_spec)
@@ -572,9 +575,9 @@ class PptxGenerator:
         if not getattr(shape, "has_text_frame", False):
             return
         if isinstance(binding_value, list):
-            self._set_bullets(shape, [str(item) for item in binding_value])
+            self._set_bullets(shape, [str(item) for item in binding_value], layout_profile)
             return
-        self._set_text(shape, str(binding_value))
+        self._set_text(shape, str(binding_value), layout_profile)
 
     def _expand_text_full_width_layout(self, slide) -> None:
         placeholders = {
@@ -641,6 +644,12 @@ class PptxGenerator:
             title.width = self.FULL_CONTENT_WIDTH_EMU
             title.height = max(title.height or 0, 584960)
 
+        if footer is not None:
+            footer.left = self.FULL_CONTENT_LEFT_EMU
+            footer.top = self.FOOTER_TOP_EMU
+            footer.width = self.FULL_CONTENT_WIDTH_EMU
+            footer.height = self.FOOTER_HEIGHT_EMU
+
         if subtitle is None or not getattr(subtitle, "text", "").strip():
             return
 
@@ -655,12 +664,6 @@ class PptxGenerator:
         subtitle.top = 1228230
         subtitle.width = self.FULL_CONTENT_WIDTH_EMU
         subtitle.height = 700000
-
-        if footer is not None:
-            footer.left = self.FULL_CONTENT_LEFT_EMU
-            footer.top = self.FOOTER_TOP_EMU
-            footer.width = self.FULL_CONTENT_WIDTH_EMU
-            footer.height = self.FOOTER_HEIGHT_EMU
 
     def _adjust_title_and_flow(self, slide, layout_key: str) -> None:
         if layout_key in {"text_full_width", "list_full_width"}:
@@ -780,6 +783,9 @@ class PptxGenerator:
         cursor = title.top + title.height + self.TITLE_CONTENT_GAP_EMU
         if subtitle is not None and getattr(subtitle, "text", "").strip():
             subtitle_text = subtitle.text.strip()
+            subtitle_font_size = self._table_subtitle_font_size_points(subtitle_text)
+            self._apply_font_size(subtitle, subtitle_font_size)
+            self._configure_subtitle_text_frame(subtitle)
             subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 16.0))
             subtitle.top = cursor
             cursor = subtitle.top + subtitle.height + self.TITLE_CONTENT_GAP_EMU
@@ -797,6 +803,21 @@ class PptxGenerator:
         if layout_key == "list_with_icons":
             return 28.0
         return 30.0
+
+    def _table_subtitle_font_size_points(self, text: str) -> float:
+        normalized = (text or "").strip()
+        if len(normalized) >= 120:
+            return 13.0
+        if len(normalized) >= 80:
+            return 14.0
+        return 16.0
+
+    def _configure_subtitle_text_frame(self, shape) -> None:
+        if not getattr(shape, "has_text_frame", False):
+            return
+        text_frame = shape.text_frame
+        text_frame.word_wrap = True
+        text_frame.auto_size = MSO_AUTO_SIZE.NONE
 
     def _minimum_title_height_emu(self, layout_key: str) -> int:
         if layout_key == "table":
@@ -879,7 +900,7 @@ class PptxGenerator:
     def _fill_table(self, shape, slide_spec: SlideSpec) -> None:
         if slide_spec.table is None:
             if getattr(shape, "has_text_frame", False):
-                self._set_text(shape, "")
+                self._set_text(shape, "", profile_for_layout("text_full_width"))
             return
 
         headers = slide_spec.table.headers
@@ -888,7 +909,7 @@ class PptxGenerator:
         col_count = len(headers) if headers else max((len(row) for row in rows), default=0)
         if row_count == 0 or col_count == 0:
             if getattr(shape, "has_text_frame", False):
-                self._set_text(shape, "")
+                self._set_text(shape, "", profile_for_layout("text_full_width"))
             return
 
         if hasattr(shape, "insert_table"):
@@ -937,7 +958,7 @@ class PptxGenerator:
             as_lines.append(" | ".join(headers))
         as_lines.extend(" | ".join(row) for row in rows)
         if getattr(shape, "has_text_frame", False):
-            self._set_bullets(shape, as_lines)
+            self._set_bullets(shape, as_lines, profile_for_layout("list_full_width"))
 
     def _fill_table_or_chart(self, shape, slide_spec: SlideSpec) -> None:
         if slide_spec.chart is not None:
@@ -985,7 +1006,7 @@ class PptxGenerator:
             self._style_chart(chart, chart_spec)
         except Exception:
             if getattr(shape, "has_text_frame", False):
-                self._set_text(shape, "Не удалось построить график")
+                self._set_text(shape, "Не удалось построить график", profile_for_layout("text_full_width"))
             else:
                 self._clear_placeholder(shape)
 
@@ -1300,9 +1321,9 @@ class PptxGenerator:
             slide_shapes.add_picture(image_stream, left, top, width=width, height=height)
         except Exception:
             if getattr(shape, "has_text_frame", False):
-                self._set_text(shape, "Изображение из документа")
+                self._set_text(shape, "Изображение из документа", profile_for_layout("text_full_width"))
 
-    def _set_text(self, shape, text: str) -> None:
+    def _set_text(self, shape, text: str, layout_profile: LayoutCapacityProfile) -> None:
         text_frame = shape.text_frame
         text_frame.clear()
         text_frame.text = text
@@ -1311,9 +1332,10 @@ class PptxGenerator:
             if placeholder_format is not None and placeholder_format.idx in {15, 17}:
                 self._apply_footer_font_size(text_frame, text)
                 return
-        self._apply_body_font_size(text_frame, [text])
+        self._configure_body_text_frame(text_frame)
+        self._apply_body_font_size(text_frame, [text], shape, layout_profile)
 
-    def _set_bullets(self, shape, items: list[str]) -> None:
+    def _set_bullets(self, shape, items: list[str], layout_profile: LayoutCapacityProfile) -> None:
         text_frame = shape.text_frame
         text_frame.clear()
         if not items:
@@ -1327,28 +1349,48 @@ class PptxGenerator:
                 paragraph.level = 0
                 self._apply_bullet_format(paragraph)
             first = False
-        self._apply_body_font_size(text_frame, items)
+        self._configure_body_text_frame(text_frame)
+        self._apply_body_font_size(text_frame, items, shape, layout_profile)
 
-    def _apply_body_font_size(self, text_frame, items: list[str]) -> None:
+    def _configure_body_text_frame(self, text_frame) -> None:
+        text_frame.word_wrap = True
+        text_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+
+    def _apply_body_font_size(self, text_frame, items: list[str], shape, layout_profile: LayoutCapacityProfile) -> None:
         non_empty_items = [item.strip() for item in items if item and item.strip()]
         if not non_empty_items:
             return
 
         total_chars = sum(len(item) for item in non_empty_items)
         max_item_len = max(len(item) for item in non_empty_items)
-        font_size = None
+        item_count = len(non_empty_items)
+        shape_height = getattr(shape, "height", 0) if shape is not None else 0
+        shape_width = getattr(shape, "width", 0) if shape is not None else 0
 
-        if total_chars >= 1100 or max_item_len >= 320:
-            font_size = Pt(12)
-        elif total_chars >= 850 or max_item_len >= 240:
-            font_size = Pt(13)
-        elif total_chars >= 650 or max_item_len >= 180:
-            font_size = Pt(14)
+        points = layout_profile.max_font_pt
+        if total_chars >= layout_profile.max_chars * 2 or max_item_len >= 320:
+            points = layout_profile.min_font_pt
+        elif total_chars >= int(layout_profile.max_chars * 1.55) or max_item_len >= 240 or item_count >= layout_profile.max_items:
+            points = max(layout_profile.max_font_pt - 3, layout_profile.min_font_pt)
+        elif total_chars >= int(layout_profile.max_chars * 1.2) or max_item_len >= 180 or item_count >= max(layout_profile.max_items - 2, 1):
+            points = max(layout_profile.max_font_pt - 2, layout_profile.min_font_pt)
+        elif total_chars >= int(layout_profile.max_chars * 0.8) or max_item_len >= 120 or item_count >= max(layout_profile.max_items - 4, 1):
+            points = max(layout_profile.max_font_pt - 1, layout_profile.min_font_pt)
 
-        if font_size is None:
-            return
+        # Tight containers need one extra step down to avoid overflow on dense appendix-like slides.
+        if shape_height and shape_height < 4000000 and (total_chars >= 900 or item_count >= 7):
+            points = max(points - 1, layout_profile.min_font_pt)
+        if shape_width and shape_width < 8000000 and total_chars >= 600:
+            points = max(points - 1, layout_profile.min_font_pt)
+
+        font_size = Pt(points)
 
         for paragraph in text_frame.paragraphs:
+            if not paragraph.runs and paragraph.text:
+                run = paragraph.add_run()
+                run.text = paragraph.text
+                paragraph.text = ""
+            paragraph.font.size = font_size
             for run in paragraph.runs:
                 run.font.size = font_size
 

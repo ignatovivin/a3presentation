@@ -24,3 +24,4 @@ These folders are local artifacts only. They can be cleaned, regenerated, or arc
 - commit template sources
 - do not commit generated presentation results
 - do not use `storage/outputs` as a document archive
+- use generated outputs only as local runtime or manual QA artifacts

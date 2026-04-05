@@ -38,6 +38,7 @@ export function StructureDrawer({ open, onOpenChange, title, description, footer
   return createPortal(
     <div
       className={`drawer-root${isVisible ? " is-open" : ""}`}
+      data-testid="structure-drawer"
       role="dialog"
       aria-modal="true"
       aria-label={typeof title === "string" ? title : "Структура"}
