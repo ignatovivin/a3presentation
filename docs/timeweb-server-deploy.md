@@ -82,6 +82,13 @@ Behavior:
 - hard-reset server checkout to `origin/dev`
 - run `bash scripts/deploy_server.sh`
 
+Why the deploy script does a full `docker compose down` first:
+
+- docker `nginx` resolves `backend` and `frontend` upstream container IPs at startup
+- during deploy, `backend` and `frontend` are recreated and receive new container IPs
+- if docker `nginx` is left running, it can keep stale upstream IPs and return `502 Bad Gateway`
+- recreating the whole docker app stack avoids this drift
+
 Required GitHub repository secrets:
 
 - `TIMEWEB_HOST`

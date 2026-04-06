@@ -6,4 +6,5 @@ cd "$ROOT_DIR"
 
 mkdir -p data/outputs
 
+docker compose -f docker-compose.server.yml down
 docker compose -f docker-compose.server.yml up -d --build
