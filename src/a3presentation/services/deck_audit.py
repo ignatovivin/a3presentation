@@ -11,8 +11,8 @@ from a3presentation.services.layout_capacity import (
     LayoutCapacityProfile,
     LayoutGeometryPolicy,
     PlaceholderGeometryPolicy,
+    derive_capacity_profile_for_geometry,
     geometry_policy_for_layout,
-    profile_for_layout,
 )
 from a3presentation.services.pptx_generator import PptxGenerator
 
@@ -171,8 +171,15 @@ def audit_generated_presentation(
         footer = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.FOOTER, footer_idx)
         title = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.TITLE, title_idx)
         subtitle = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.SUBTITLE, subtitle_idx)
+        layout_key = slide_spec.preferred_layout_key or _infer_layout_key(slide_spec.kind.value)
         resolved_geometry = _geometry_policy_for_slide(slide_spec, manifest)
         expected_body_spec = _shape_spec_for_role(slide_spec, manifest, PlaceholderKind.BODY)
+        expected_body_geometry = resolved_geometry.placeholders.get(body_idx or 14)
+        effective_profile = derive_capacity_profile_for_geometry(
+            layout_key,
+            width_emu=expected_body_geometry.width_emu if expected_body_geometry is not None else None,
+            height_emu=expected_body_geometry.height_emu if expected_body_geometry is not None else None,
+        )
         auxiliary_widths = {
             idx: getattr(shape, "width", None)
             for idx, shape in placeholders.items()
@@ -222,7 +229,6 @@ def audit_generated_presentation(
                 content_width = getattr(chart_shape, "width", None) if chart_shape is not None else None
             elif has_image:
                 content_width = getattr(image_shape, "width", None) if image_shape is not None else None
-        layout_key = slide_spec.preferred_layout_key or _infer_layout_key(slide_spec.kind.value)
         expected_items = _expected_items_for_slide(slide_spec)
         audits.append(
             SlideAudit(
@@ -232,7 +238,7 @@ def audit_generated_presentation(
                 layout_key=layout_key,
                 body_char_count=body_char_count,
                 body_font_sizes=body_font_sizes,
-                profile=profile_for_layout(layout_key),
+                profile=effective_profile,
                 content_width=content_width,
                 footer_width=footer_width,
                 has_table=has_table,

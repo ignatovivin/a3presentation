@@ -326,6 +326,50 @@ def profile_for_layout(layout_key: str) -> LayoutCapacityProfile:
     return TEXT_FULL_WIDTH_PROFILE
 
 
+def derive_capacity_profile_for_geometry(
+    layout_key: str,
+    *,
+    width_emu: int | None = None,
+    height_emu: int | None = None,
+) -> LayoutCapacityProfile:
+    base_profile = profile_for_layout(layout_key)
+    if width_emu is None or height_emu is None or base_profile.max_chars <= 0:
+        return base_profile
+
+    reference_geometry = geometry_policy_for_layout(layout_key)
+    reference_body = reference_geometry.placeholders.get(14)
+    if reference_body is None or reference_body.width_emu <= 0 or reference_body.height_emu <= 0:
+        return base_profile
+
+    width_ratio = max(0.55, min(width_emu / reference_body.width_emu, 1.45))
+    height_ratio = max(0.55, min(height_emu / reference_body.height_emu, 1.45))
+    area_ratio = max(0.45, min(width_ratio * height_ratio, 1.6))
+    item_ratio = max(0.75, min(height_ratio, 1.2))
+    min_ratio = min(width_ratio, height_ratio)
+
+    max_font_pt = base_profile.max_font_pt
+    if min_ratio < 0.9:
+        max_font_pt -= 1
+    if min_ratio < 0.75:
+        max_font_pt -= 1
+    if min_ratio > 1.15:
+        max_font_pt += 1
+    max_font_pt = max(base_profile.min_font_pt, max_font_pt)
+
+    return LayoutCapacityProfile(
+        layout_key=base_profile.layout_key,
+        max_items=max(1, int(round(base_profile.max_items * item_ratio))),
+        max_weight=round(base_profile.max_weight * max(0.75, min(area_ratio, 1.25)), 2),
+        max_chars=max(80, int(round(base_profile.max_chars * area_ratio))),
+        max_primary_chars=max(0, int(round(base_profile.max_primary_chars * area_ratio))),
+        min_font_pt=base_profile.min_font_pt,
+        max_font_pt=max_font_pt,
+        target_fill_ratio=base_profile.target_fill_ratio,
+        max_fill_ratio=base_profile.max_fill_ratio,
+        continuation_balance_tolerance=base_profile.continuation_balance_tolerance,
+    )
+
+
 def geometry_policy_for_layout(layout_key: str) -> LayoutGeometryPolicy:
     if layout_key == "table":
         return TABLE_LAYOUT_GEOMETRY_POLICY

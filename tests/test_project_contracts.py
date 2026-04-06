@@ -35,6 +35,7 @@ from a3presentation.services.document_text_extractor import DocumentTextExtracto
 from a3presentation.services.layout_capacity import (
     LIST_FULL_WIDTH_PROFILE,
     TEXT_FULL_WIDTH_PROFILE,
+    derive_capacity_profile_for_geometry,
     geometry_policy_for_layout,
     profile_for_layout,
     spacing_policy_for_layout,
@@ -331,6 +332,7 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(audits)
         self.assertFalse(any(item.rule == "body_left_misalignment" for item in violations))
         self.assertFalse(any(item.rule == "body_margin_mismatch" for item in violations))
+        self.assertLess(audits[0].profile.max_chars, TEXT_FULL_WIDTH_PROFILE.max_chars)
 
     def test_generator_applies_manifest_geometry_metadata_for_uploaded_prototype_templates(self) -> None:
         template_id = "razmeshchenie_soglasiy"
@@ -429,6 +431,18 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(audits)
         self.assertFalse(any(item.rule == "body_left_misalignment" for item in violations))
         self.assertFalse(any(item.rule == "body_margin_mismatch" for item in violations))
+        self.assertLess(audits[0].profile.max_chars, TEXT_FULL_WIDTH_PROFILE.max_chars)
+
+    def test_capacity_profile_derivation_reduces_limits_for_narrower_body_geometry(self) -> None:
+        reference_body = geometry_policy_for_layout("text_full_width").placeholders[14]
+        derived = derive_capacity_profile_for_geometry(
+            "text_full_width",
+            width_emu=int(reference_body.width_emu * 0.6),
+            height_emu=int(reference_body.height_emu * 0.7),
+        )
+
+        self.assertLess(derived.max_chars, TEXT_FULL_WIDTH_PROFILE.max_chars)
+        self.assertLessEqual(derived.max_font_pt, TEXT_FULL_WIDTH_PROFILE.max_font_pt)
 
     def test_full_pipeline_contract_for_mixed_docx_document(self) -> None:
         document = Document()
@@ -472,6 +486,58 @@ class ProjectContractTests(unittest.TestCase):
             )
             presentation = Presentation(str(output_path))
             self.assertEqual(len(presentation.slides), len(plan.slides))
+
+    def test_full_pipeline_contract_for_uploaded_prototype_template_keeps_template_aware_audit_green(self) -> None:
+        document = Document()
+        document.add_paragraph("A3")
+        document.add_paragraph("Стратегический документ для пользовательского шаблона")
+        document.add_heading("1. Основные выводы", level=1)
+        document.add_paragraph(
+            "Рост выручки обеспечивается платформенными интеграциями, улучшением конверсии и управляемым контуром сопровождения."
+        )
+        document.add_paragraph(
+            "Следующий абзац нужен для text-flow сценария и проверки того, что template-aware audit читает реальную геометрию пользовательского prototype template."
+        )
+        document.add_heading("2. Таблица метрик", level=1)
+        table = document.add_table(rows=3, cols=2)
+        table.cell(0, 0).text = "Метрика"
+        table.cell(0, 1).text = "Значение"
+        table.cell(1, 0).text = "GMV"
+        table.cell(1, 1).text = "125"
+        table.cell(2, 0).text = "NPS"
+        table.cell(2, 1).text = "61"
+
+        buffer = BytesIO()
+        document.save(buffer)
+        content = buffer.getvalue()
+
+        template_id = "razmeshchenie_soglasiy"
+        manifest = self.registry.get_template(template_id)
+        template_path = self.settings.templates_dir / template_id / manifest.source_pptx
+
+        text, tables, blocks = self.extractor.extract("uploaded-prototype-contract.docx", content)
+        plan = self.planner.build_plan(template_id, text, None, tables, blocks)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan, manifest)
+            violations = find_capacity_violations(audits)
+
+        self.assertEqual(len(audits), len([slide for slide in plan.slides if slide.kind in {
+            SlideKind.TEXT,
+            SlideKind.BULLETS,
+            SlideKind.TWO_COLUMN,
+            SlideKind.TABLE,
+            SlideKind.CHART,
+            SlideKind.IMAGE,
+        }]))
+        self.assertFalse(any(item.rule == "body_margin_mismatch" for item in violations))
+        self.assertFalse(any(item.rule == "body_left_misalignment" for item in violations))
 
     def test_api_roundtrip_contract_keeps_extract_plan_generate_download_in_sync(self) -> None:
         document = Document()
