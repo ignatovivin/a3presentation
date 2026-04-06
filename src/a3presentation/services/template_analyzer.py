@@ -36,6 +36,14 @@ class TemplateAnalyzer:
                             kind=self._map_placeholder_kind(placeholder_format.type),
                             idx=placeholder_format.idx,
                             shape_name=shape.name,
+                            left_emu=int(shape.left),
+                            top_emu=int(shape.top),
+                            width_emu=int(shape.width),
+                            height_emu=int(shape.height),
+                            margin_left_emu=self._text_frame_margin(shape, "left"),
+                            margin_right_emu=self._text_frame_margin(shape, "right"),
+                            margin_top_emu=self._text_frame_margin(shape, "top"),
+                            margin_bottom_emu=self._text_frame_margin(shape, "bottom"),
                         )
                     )
 
@@ -76,6 +84,14 @@ class TemplateAnalyzer:
                             token=token,
                             binding=self._infer_binding(token),
                             shape_name=shape.name,
+                            left_emu=int(shape.left),
+                            top_emu=int(shape.top),
+                            width_emu=int(shape.width),
+                            height_emu=int(shape.height),
+                            margin_left_emu=self._text_frame_margin(shape, "left"),
+                            margin_right_emu=self._text_frame_margin(shape, "right"),
+                            margin_top_emu=self._text_frame_margin(shape, "top"),
+                            margin_bottom_emu=self._text_frame_margin(shape, "bottom"),
                         )
                     )
 
@@ -178,3 +194,10 @@ class TemplateAnalyzer:
             candidate = f"{base_key}_m{master_index}_l{layout_index}"
         used_keys.add(candidate)
         return candidate
+
+    def _text_frame_margin(self, shape, side: str) -> int | None:
+        if not getattr(shape, "has_text_frame", False):
+            return None
+        text_frame = shape.text_frame
+        value = getattr(text_frame, f"margin_{side}", None)
+        return int(value) if value is not None else None

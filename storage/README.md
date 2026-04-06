@@ -23,6 +23,7 @@ These folders are local artifacts only. They can be cleaned, regenerated, or arc
 
 - commit template sources
 - on the single-server Timeweb deploy, templates are read directly from bundled `storage/templates` inside the backend image
+- this includes tracked source `template.pptx` files, not only `manifest.json`
 - do not commit generated presentation results
 - do not use `storage/outputs` as a document archive
 - use generated outputs only as local runtime or manual QA artifacts

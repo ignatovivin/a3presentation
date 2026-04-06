@@ -15,6 +15,7 @@ from starlette.datastructures import UploadFile
 
 from a3presentation import settings as settings_module
 from a3presentation.api import routes as routes_module
+from a3presentation.domain.template import TemplateManifest
 from a3presentation.domain.api import TextPlanRequest
 from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec
 
@@ -64,6 +65,13 @@ class ApiContractTests(unittest.TestCase):
     def test_template_details_expose_missing_template_file(self) -> None:
         response = routes_module.get_template("demo_business")
         self.assertFalse(response.has_template_file)
+
+    def test_template_details_reject_path_traversal_template_id(self) -> None:
+        with self.assertRaises(HTTPException) as error:
+            routes_module.get_template("..\\..\\outside")
+
+        self.assertEqual(error.exception.status_code, 400)
+        self.assertIn("escapes the storage root", error.exception.detail)
 
     def test_extract_text_endpoint_returns_blocks_tables_and_chart_assessments(self) -> None:
         document = Document()
@@ -129,6 +137,28 @@ class ApiContractTests(unittest.TestCase):
 
         self.assertEqual(error.exception.status_code, 404)
         self.assertIn("Template PPTX not found", error.exception.detail)
+
+    def test_upload_template_rejects_manifest_path_traversal(self) -> None:
+        manifest = TemplateManifest(
+            template_id="..\\..\\outside",
+            display_name="Broken",
+            source_pptx="template.pptx",
+        )
+        upload = UploadFile(
+            filename="template.pptx",
+            file=BytesIO(b"not-a-real-pptx"),
+        )
+
+        with self.assertRaises(HTTPException) as error:
+            asyncio.run(
+                routes_module.upload_template(
+                    manifest_json=manifest.model_dump_json(),
+                    template_file=upload,
+                )
+            )
+
+        self.assertEqual(error.exception.status_code, 400)
+        self.assertIn("escapes the storage root", error.exception.detail)
 
 
 if __name__ == "__main__":

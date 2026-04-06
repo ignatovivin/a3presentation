@@ -28,6 +28,14 @@ class PlaceholderSpec(BaseModel):
     shape_name: str | None = None
     binding: str | None = None
     max_chars: int | None = None
+    left_emu: int | None = None
+    top_emu: int | None = None
+    width_emu: int | None = None
+    height_emu: int | None = None
+    margin_left_emu: int | None = None
+    margin_right_emu: int | None = None
+    margin_top_emu: int | None = None
+    margin_bottom_emu: int | None = None
 
 
 class LayoutSpec(BaseModel):
@@ -44,6 +52,14 @@ class PrototypeTokenSpec(BaseModel):
     token: str
     binding: str
     shape_name: str | None = None
+    left_emu: int | None = None
+    top_emu: int | None = None
+    width_emu: int | None = None
+    height_emu: int | None = None
+    margin_left_emu: int | None = None
+    margin_right_emu: int | None = None
+    margin_top_emu: int | None = None
+    margin_bottom_emu: int | None = None
 
 
 class PrototypeSlideSpec(BaseModel):

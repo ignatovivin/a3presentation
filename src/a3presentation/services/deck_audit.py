@@ -6,8 +6,18 @@ from pathlib import Path
 
 from pptx import Presentation
 from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec
-from a3presentation.services.layout_capacity import LayoutCapacityProfile, profile_for_layout
+from a3presentation.services.layout_capacity import (
+    LayoutCapacityProfile,
+    geometry_policy_for_layout,
+    profile_for_layout,
+)
 from a3presentation.services.pptx_generator import PptxGenerator
+
+CONTINUATION_FONT_DELTA_TOLERANCE_PT = 2.0
+CONTINUATION_UNDERFILL_GRACE = 0.09
+CONTINUATION_AUDIT_EPSILON = 0.01
+GEOMETRY_TOLERANCE_EMU = 90000
+BODY_HEIGHT_UNDERFILL_RATIO = 0.45
 
 
 @dataclass(frozen=True)
@@ -26,6 +36,27 @@ class SlideAudit:
     has_image: bool = False
     expected_items: tuple[str, ...] = ()
     rendered_items: tuple[str, ...] = ()
+    title_top: int | None = None
+    title_height: int | None = None
+    title_width: int | None = None
+    subtitle_top: int | None = None
+    subtitle_height: int | None = None
+    subtitle_width: int | None = None
+    body_top: int | None = None
+    body_height: int | None = None
+    body_left: int | None = None
+    footer_top: int | None = None
+    footer_left: int | None = None
+    auxiliary_widths: dict[int, int] | None = None
+    auxiliary_lefts: dict[int, int] | None = None
+    auxiliary_tops: dict[int, int] | None = None
+    image_width: int | None = None
+    image_left: int | None = None
+    image_top: int | None = None
+    body_margin_left: int | None = None
+    body_margin_right: int | None = None
+    body_margin_top: int | None = None
+    body_margin_bottom: int | None = None
 
     @property
     def fill_ratio(self) -> float:
@@ -44,6 +75,12 @@ class SlideAudit:
         if not self.body_font_sizes:
             return None
         return max(self.body_font_sizes)
+
+    @property
+    def representative_font_size(self) -> float | None:
+        if not self.body_font_sizes:
+            return None
+        return min(self.body_font_sizes)
 
     @property
     def within_font_bounds(self) -> bool:
@@ -65,6 +102,18 @@ class SlideAudit:
         if not self.footer_width:
             return 0.0
         return self.footer_width / PptxGenerator.FULL_CONTENT_WIDTH_EMU
+
+    @property
+    def title_bottom(self) -> int | None:
+        if self.title_top is None or self.title_height is None:
+            return None
+        return self.title_top + self.title_height
+
+    @property
+    def subtitle_bottom(self) -> int | None:
+        if self.subtitle_top is None or self.subtitle_height is None:
+            return None
+        return self.subtitle_top + self.subtitle_height
 
 
 @dataclass(frozen=True)
@@ -99,7 +148,24 @@ def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> l
             if getattr(shape, "is_placeholder", False)
         }
         body = placeholders.get(14)
-        footer = placeholders.get(15) or placeholders.get(17)
+        footer = placeholders.get(15) or placeholders.get(17) or placeholders.get(21)
+        title = placeholders.get(0)
+        subtitle = placeholders.get(13)
+        auxiliary_widths = {
+            idx: getattr(shape, "width", None)
+            for idx, shape in placeholders.items()
+            if idx not in {0, 13, 14, 15, 17}
+        }
+        auxiliary_lefts = {
+            idx: getattr(shape, "left", None)
+            for idx, shape in placeholders.items()
+            if idx not in {0, 13, 14, 15, 17}
+        }
+        auxiliary_tops = {
+            idx: getattr(shape, "top", None)
+            for idx, shape in placeholders.items()
+            if idx not in {0, 13, 14, 15, 17}
+        }
         content_width = getattr(body, "width", None) if body is not None else None
         footer_width = getattr(footer, "width", None) if footer is not None else None
 
@@ -124,6 +190,7 @@ def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> l
         has_table = any(getattr(shape, "has_table", False) for shape in slide.shapes)
         has_chart = any(getattr(shape, "has_chart", False) for shape in slide.shapes)
         has_image = any(self_has_image(shape) for shape in slide.shapes)
+        image_shape = next((shape for shape in slide.shapes if self_has_image(shape)), None)
         if content_width is None:
             if has_table:
                 table_shape = next((shape for shape in slide.shapes if getattr(shape, "has_table", False)), None)
@@ -132,10 +199,6 @@ def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> l
                 chart_shape = next((shape for shape in slide.shapes if getattr(shape, "has_chart", False)), None)
                 content_width = getattr(chart_shape, "width", None) if chart_shape is not None else None
             elif has_image:
-                image_shape = next(
-                    (shape for shape in slide.shapes if self_has_image(shape)),
-                    None,
-                )
                 content_width = getattr(image_shape, "width", None) if image_shape is not None else None
         layout_key = slide_spec.preferred_layout_key or _infer_layout_key(slide_spec.kind.value)
         expected_items = _expected_items_for_slide(slide_spec)
@@ -155,6 +218,27 @@ def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> l
                 has_image=has_image,
                 expected_items=expected_items,
                 rendered_items=rendered_items,
+                title_top=getattr(title, "top", None) if title is not None else None,
+                title_height=getattr(title, "height", None) if title is not None else None,
+                title_width=getattr(title, "width", None) if title is not None else None,
+                subtitle_top=getattr(subtitle, "top", None) if subtitle is not None else None,
+                subtitle_height=getattr(subtitle, "height", None) if subtitle is not None else None,
+                subtitle_width=getattr(subtitle, "width", None) if subtitle is not None else None,
+                body_top=getattr(body, "top", None) if body is not None else None,
+                body_height=getattr(body, "height", None) if body is not None else None,
+                body_left=getattr(body, "left", None) if body is not None else None,
+                footer_top=getattr(footer, "top", None) if footer is not None else None,
+                footer_left=getattr(footer, "left", None) if footer is not None else None,
+                auxiliary_widths=auxiliary_widths,
+                auxiliary_lefts=auxiliary_lefts,
+                auxiliary_tops=auxiliary_tops,
+                image_width=getattr(image_shape, "width", None) if image_shape is not None else None,
+                image_left=getattr(image_shape, "left", None) if image_shape is not None else None,
+                image_top=getattr(image_shape, "top", None) if image_shape is not None else None,
+                body_margin_left=getattr(getattr(body, "text_frame", None), "margin_left", None) if body is not None and getattr(body, "has_text_frame", False) else None,
+                body_margin_right=getattr(getattr(body, "text_frame", None), "margin_right", None) if body is not None and getattr(body, "has_text_frame", False) else None,
+                body_margin_top=getattr(getattr(body, "text_frame", None), "margin_top", None) if body is not None and getattr(body, "has_text_frame", False) else None,
+                body_margin_bottom=getattr(getattr(body, "text_frame", None), "margin_bottom", None) if body is not None and getattr(body, "has_text_frame", False) else None,
             )
         )
 
@@ -175,6 +259,7 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
     violations: list[CapacityViolation] = []
 
     for audit in audits:
+        geometry = geometry_policy_for_layout(audit.layout_key)
         if not audit.within_font_bounds:
             violations.append(
                 CapacityViolation(
@@ -256,6 +341,17 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                         details=f"content_width_ratio={audit.content_width_ratio:.2f}",
                     )
                 )
+            if audit.layout_key == "image_text" and audit.image_left is not None and audit.body_left is not None and audit.content_width:
+                separation = audit.image_left - (audit.body_left + audit.content_width)
+                if separation < 300000:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="image_text_overlap",
+                            details=f"separation={separation} min=300000",
+                        )
+                    )
 
         if audit.kind in {SlideKind.TABLE.value, SlideKind.CHART.value}:
             if audit.footer_width_ratio and audit.footer_width_ratio < 0.9:
@@ -268,7 +364,250 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
                 )
 
-        if audit.kind == SlideKind.BULLETS.value and audit.expected_items:
+        if audit.layout_key in {"text_full_width", "list_full_width"}:
+            if audit.footer_width_ratio and audit.footer_width_ratio < 0.9:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="narrow_text_footer",
+                        details=f"footer_width_ratio={audit.footer_width_ratio:.2f}",
+                    )
+                )
+
+            if audit.body_left is not None and abs(audit.body_left - geometry.placeholders[14].left_emu) > GEOMETRY_TOLERANCE_EMU:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="body_left_misalignment",
+                        details=(
+                            f"body_left={audit.body_left} expected={geometry.placeholders[14].left_emu} "
+                            f"tolerance={GEOMETRY_TOLERANCE_EMU}"
+                        ),
+                    )
+                )
+            expected_margin_x = PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU
+            expected_margin_y = PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU
+            if audit.body_margin_left is not None and abs(audit.body_margin_left - expected_margin_x) > GEOMETRY_TOLERANCE_EMU:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="body_margin_mismatch",
+                        details=f"margin_left={audit.body_margin_left} expected={expected_margin_x}",
+                    )
+                )
+            if audit.body_margin_right is not None and abs(audit.body_margin_right - expected_margin_x) > GEOMETRY_TOLERANCE_EMU:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="body_margin_mismatch",
+                        details=f"margin_right={audit.body_margin_right} expected={expected_margin_x}",
+                    )
+                )
+            if audit.body_margin_top is not None and abs(audit.body_margin_top - expected_margin_y) > GEOMETRY_TOLERANCE_EMU:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="body_margin_mismatch",
+                        details=f"margin_top={audit.body_margin_top} expected={expected_margin_y}",
+                    )
+                )
+            if audit.body_margin_bottom is not None and abs(audit.body_margin_bottom - expected_margin_y) > GEOMETRY_TOLERANCE_EMU:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="body_margin_mismatch",
+                        details=f"margin_bottom={audit.body_margin_bottom} expected={expected_margin_y}",
+                    )
+                )
+
+        if audit.layout_key == "image_text":
+            if audit.image_width is not None and audit.image_width < geometry.placeholders[16].width_emu - GEOMETRY_TOLERANCE_EMU:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="narrow_image_panel",
+                        details=f"image_width={audit.image_width} min={geometry.placeholders[16].width_emu - GEOMETRY_TOLERANCE_EMU}",
+                    )
+                )
+            if audit.body_left is not None and abs(audit.body_left - geometry.placeholders[14].left_emu) > GEOMETRY_TOLERANCE_EMU:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="image_text_body_misalignment",
+                        details=f"body_left={audit.body_left} expected={geometry.placeholders[14].left_emu}",
+                    )
+                )
+
+        if audit.layout_key == "cards_3":
+            card_lefts = audit.auxiliary_lefts or {}
+            card_widths = audit.auxiliary_widths or {}
+            card_positions = [(idx, card_lefts.get(idx), card_widths.get(idx)) for idx in (11, 12, 13)]
+            if all(left is not None and width is not None for _, left, width in card_positions):
+                previous_right = None
+                for idx, left, width in card_positions:
+                    if width < geometry.placeholders[idx].width_emu - GEOMETRY_TOLERANCE_EMU:
+                        violations.append(
+                            CapacityViolation(
+                                slide_index=audit.slide_index,
+                                title=audit.title,
+                                rule="narrow_card_placeholder",
+                                details=f"idx={idx} width={width}",
+                            )
+                        )
+                    if previous_right is not None and left < previous_right + 120000:
+                        violations.append(
+                            CapacityViolation(
+                                slide_index=audit.slide_index,
+                                title=audit.title,
+                                rule="card_overlap",
+                                details=f"idx={idx} left={left} previous_right={previous_right}",
+                            )
+                        )
+                    previous_right = left + width
+
+        if audit.layout_key == "list_with_icons":
+            aux_lefts = audit.auxiliary_lefts or {}
+            aux_widths = audit.auxiliary_widths or {}
+            left_left = aux_lefts.get(12)
+            left_width = aux_widths.get(12)
+            right_left = aux_lefts.get(14)
+            right_width = aux_widths.get(14)
+            if None not in {left_left, left_width, right_left, right_width}:
+                if left_width < geometry.placeholders[12].width_emu - GEOMETRY_TOLERANCE_EMU:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="narrow_left_column",
+                            details=f"width={left_width}",
+                        )
+                    )
+                if right_width < geometry.placeholders[14].width_emu - GEOMETRY_TOLERANCE_EMU:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="narrow_right_column",
+                            details=f"width={right_width}",
+                        )
+                    )
+                if right_left < left_left + left_width + 300000:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="two_column_overlap",
+                            details=f"left_right_gap={right_left - (left_left + left_width)}",
+                        )
+                    )
+
+        if audit.layout_key == "contacts":
+            aux_lefts = audit.auxiliary_lefts or {}
+            aux_widths = audit.auxiliary_widths or {}
+            for idx in (10, 11, 12, 13):
+                expected = geometry.placeholders[idx]
+                left = aux_lefts.get(idx)
+                width = aux_widths.get(idx)
+                if left is not None and abs(left - expected.left_emu) > GEOMETRY_TOLERANCE_EMU:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="contact_block_misalignment",
+                            details=f"idx={idx} left={left} expected={expected.left_emu}",
+                        )
+                    )
+                if width is not None and width < expected.width_emu - GEOMETRY_TOLERANCE_EMU:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="narrow_contact_block",
+                            details=f"idx={idx} width={width}",
+                        )
+                    )
+
+        if audit.layout_key in {"text_full_width", "list_full_width", "image_text"}:
+            expected_body_height = geometry.placeholders[14].height_emu
+            if (
+                audit.body_height is not None
+                and audit.body_height < int(expected_body_height * BODY_HEIGHT_UNDERFILL_RATIO)
+                and audit.fill_ratio < max(audit.profile.target_fill_ratio - 0.2, 0.0)
+            ):
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="underfilled_body_height",
+                        details=f"body_height={audit.body_height} expected_min={int(expected_body_height * BODY_HEIGHT_UNDERFILL_RATIO)}",
+                    )
+                )
+
+        if audit.body_top is not None and audit.body_height is not None and audit.footer_top is not None:
+            minimum_bottom_gap = geometry.content_footer_gap_emu - GEOMETRY_TOLERANCE_EMU
+            body_bottom = audit.body_top + audit.body_height
+            footer_gap = audit.footer_top - body_bottom
+            if footer_gap < minimum_bottom_gap:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="content_footer_overlap",
+                        details=f"gap={footer_gap} min={minimum_bottom_gap}",
+                    )
+                )
+
+        if audit.title_bottom is not None and audit.body_top is not None:
+            if audit.subtitle_top is not None and audit.subtitle_height is not None:
+                title_subtitle_gap = audit.subtitle_top - audit.title_bottom
+                minimum_gap = geometry.title_content_gap_emu - GEOMETRY_TOLERANCE_EMU
+                if title_subtitle_gap < minimum_gap:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="title_subtitle_overlap",
+                            details=f"gap={title_subtitle_gap} min={minimum_gap}",
+                        )
+                    )
+                subtitle_body_gap = audit.body_top - audit.subtitle_bottom
+                if subtitle_body_gap < minimum_gap:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="subtitle_body_overlap",
+                            details=f"gap={subtitle_body_gap} min={minimum_gap}",
+                        )
+                    )
+            else:
+                title_body_gap = audit.body_top - audit.title_bottom
+                if audit.kind in {SlideKind.TABLE.value, SlideKind.CHART.value}:
+                    minimum_gap = geometry.title_content_gap_emu - GEOMETRY_TOLERANCE_EMU
+                else:
+                    minimum_gap = geometry.title_body_gap_no_subtitle_emu - GEOMETRY_TOLERANCE_EMU
+                if title_body_gap < minimum_gap:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="title_body_overlap",
+                            details=f"gap={title_body_gap} min={minimum_gap}",
+                        )
+                    )
+
+        should_check_body_order = audit.kind == SlideKind.BULLETS.value or (
+            audit.kind == SlideKind.TEXT.value and audit.expected_items and any(audit.expected_items)
+        )
+        if should_check_body_order and audit.expected_items:
             expected = [_normalize_audit_text(item) for item in audit.expected_items if _normalize_audit_text(item)]
             rendered = [_normalize_audit_text(item) for item in audit.rendered_items if _normalize_audit_text(item)]
             if rendered and expected != rendered:
@@ -285,7 +624,13 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
         fills = [item.fill_ratio for item in items]
         fill_delta = max(fills) - min(fills)
         tolerance = items[0].profile.continuation_balance_tolerance
-        if fill_delta > tolerance:
+        has_group_overflow = any(item.fill_ratio > (item.profile.max_fill_ratio + 0.02) for item in items)
+        has_material_underfill = any(
+            item.fill_ratio + CONTINUATION_AUDIT_EPSILON
+            < max(item.profile.target_fill_ratio - item.profile.continuation_balance_tolerance - CONTINUATION_UNDERFILL_GRACE, 0.0)
+            for item in items[1:]
+        )
+        if fill_delta > tolerance and (has_group_overflow or has_material_underfill):
             violations.append(
                 CapacityViolation(
                     slide_index=items[-1].slide_index,
@@ -296,8 +641,13 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
             )
 
         for item in items[1:]:
-            min_fill = max(item.profile.target_fill_ratio - item.profile.continuation_balance_tolerance, 0.0)
-            if item.fill_ratio < min_fill:
+            min_fill = max(
+                item.profile.target_fill_ratio
+                - item.profile.continuation_balance_tolerance
+                - CONTINUATION_UNDERFILL_GRACE,
+                0.0,
+            )
+            if item.fill_ratio + CONTINUATION_AUDIT_EPSILON < min_fill:
                 violations.append(
                     CapacityViolation(
                         slide_index=item.slide_index,
@@ -316,19 +666,39 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
                 )
 
+        for previous, current in zip(items, items[1:]):
+            previous_font = previous.representative_font_size
+            current_font = current.representative_font_size
+            if previous_font is None or current_font is None:
+                continue
+            delta = abs(previous_font - current_font)
+            if delta > CONTINUATION_FONT_DELTA_TOLERANCE_PT:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=current.slide_index,
+                        title=current.title,
+                        rule="continuation_font_delta",
+                        details=(
+                            f"delta={delta:.2f} tolerance={CONTINUATION_FONT_DELTA_TOLERANCE_PT:.2f} "
+                            f"previous={previous_font:.2f} current={current_font:.2f}"
+                        ),
+                    )
+                )
+
+        tracked_items = [item for item in items if item.expected_items]
         expected_group = [
             _normalize_audit_text(entry)
-            for item in items
+            for item in tracked_items
             for entry in item.expected_items
             if _normalize_audit_text(entry)
         ]
         rendered_group = [
             _normalize_audit_text(entry)
-            for item in items
+            for item in tracked_items
             for entry in item.rendered_items
             if _normalize_audit_text(entry)
         ]
-        if rendered_group and expected_group != rendered_group:
+        if expected_group and rendered_group and expected_group != rendered_group:
             violations.append(
                 CapacityViolation(
                     slide_index=items[-1].slide_index,
@@ -354,11 +724,18 @@ def self_has_image(shape) -> bool:
 
 
 def _expected_items_for_slide(slide_spec: SlideSpec) -> tuple[str, ...]:
+    if slide_spec.content_blocks:
+        has_list_like_block = any(block.items for block in slide_spec.content_blocks)
+        if slide_spec.kind == SlideKind.TEXT and not has_list_like_block:
+            return ()
+        expected: list[str] = []
+        for block in slide_spec.content_blocks:
+            if block.text and block.text.strip():
+                expected.append(block.text.strip())
+            expected.extend(item.strip() for item in block.items if item.strip())
+        return tuple(expected)
     if slide_spec.kind == SlideKind.BULLETS:
         return tuple(item.strip() for item in slide_spec.bullets if item.strip())
-    if slide_spec.kind == SlideKind.TEXT:
-        parts = [part.strip() for part in (slide_spec.text or "", slide_spec.notes or "") if part and part.strip()]
-        return tuple(parts)
     return ()
 
 

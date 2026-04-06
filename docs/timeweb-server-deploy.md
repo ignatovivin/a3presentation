@@ -6,7 +6,7 @@ This deployment mode uses one Linux server and Docker Compose.
 
 - `backend`: FastAPI application
 - `frontend`: static React build served by nginx
-- `nginx`: public reverse proxy
+- `nginx`: internal docker reverse proxy for frontend/backend
 - host `nginx` with Let's Encrypt terminates HTTPS and proxies into docker `nginx` on `127.0.0.1:8080`
 
 Public traffic:
@@ -16,6 +16,11 @@ Public traffic:
 
 This means the browser uses one origin and does not need separate CORS setup.
 For the Timeweb single-server setup, Docker publishes the internal app proxy only on `127.0.0.1:8080`, and host nginx handles public `80/443`.
+
+Current production domain:
+
+- `https://a3presentation.ru`
+- `https://www.a3presentation.ru`
 
 ## Server prerequisites
 
@@ -53,6 +58,14 @@ mkdir -p data/outputs
 bash scripts/deploy_server.sh
 ```
 
+Server deploy script behavior:
+
+- creates `data/outputs`
+- runs `docker compose -f docker-compose.server.yml down`
+- runs `docker compose -f docker-compose.server.yml up -d --build`
+
+The full restart is intentional: docker `nginx` resolves upstream container IPs on startup, so recreating only `backend` and `frontend` can leave stale upstream addresses and produce `502 Bad Gateway`.
+
 ## Why templates are not mounted separately
 
 - `storage/templates` in git is the source of truth
@@ -66,13 +79,15 @@ This avoids runtime drift between repo templates and production templates and re
 
 ```bash
 cd a3presentation
-git pull
+git fetch origin
+git checkout dev
+git reset --hard origin/dev
 bash scripts/deploy_server.sh
 ```
 
-## Optional GitHub Actions auto-deploy
+## GitHub Actions auto-deploy
 
-The repository now supports a minimal SSH deploy flow from GitHub Actions for `dev`.
+The repository now supports the production deploy flow from GitHub Actions for `dev`.
 
 Behavior:
 
@@ -81,13 +96,8 @@ Behavior:
 - if all pass, connect to Timeweb over SSH
 - hard-reset server checkout to `origin/dev`
 - run `bash scripts/deploy_server.sh`
-
-Why the deploy script does a full `docker compose down` first:
-
-- docker `nginx` resolves `backend` and `frontend` upstream container IPs at startup
-- during deploy, `backend` and `frontend` are recreated and receive new container IPs
-- if docker `nginx` is left running, it can keep stale upstream IPs and return `502 Bad Gateway`
-- recreating the whole docker app stack avoids this drift
+- wait for `http://127.0.0.1:8080/api/health`
+- on failure, print `docker compose ps` and recent container logs
 
 Required GitHub repository secrets:
 
@@ -102,26 +112,39 @@ Recommended server assumptions:
 - deploy branch on server: `dev`
 - host nginx + Let's Encrypt already configured separately
 
+## Host nginx and Let's Encrypt
+
+Host nginx listens on public `80/443` and proxies into docker `nginx` on `127.0.0.1:8080`.
+
+Recommended host nginx behavior:
+
+- redirect `http://a3presentation.ru` -> `https://a3presentation.ru`
+- serve both `a3presentation.ru` and `www.a3presentation.ru`
+- use Let's Encrypt certificates from `/etc/letsencrypt/live/a3presentation.ru/`
+
+This keeps TLS on the host and the application stack inside Docker.
+
 ## Verify
 
 Backend health:
 
 ```bash
-curl http://127.0.0.1/api/health
+curl http://127.0.0.1:8080/api/health
+curl https://a3presentation.ru/api/health
+curl https://a3presentation.ru/api/templates
 ```
 
 Or from browser:
 
 ```text
-http://YOUR_SERVER_IP/
+https://a3presentation.ru/
 ```
 
-## HTTPS
+## Operational checklist
 
-Recommended simplest next step:
+After each production deploy, verify:
 
-- point a domain to the server
-- install `certbot`
-- either terminate TLS on host nginx or switch the edge proxy to Caddy/Traefik
-
-If needed, this can be added after the first successful deploy.
+1. `curl https://a3presentation.ru/api/health`
+2. `curl https://a3presentation.ru/api/templates`
+3. open `https://a3presentation.ru` in the browser
+4. generate one presentation through the UI

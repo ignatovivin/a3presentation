@@ -58,6 +58,8 @@ def list_templates() -> list[TemplateSummary]:
 def get_template(template_id: str) -> TemplateDetailsResponse:
     try:
         manifest = template_registry.get_template(template_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -83,12 +85,15 @@ async def upload_template(
         raise HTTPException(status_code=400, detail="template_file must be a .pptx")
 
     template_bytes = await template_file.read()
-    template_path = template_registry.save_template_file(
-        template_id=manifest.template_id,
-        filename=manifest.source_pptx,
-        content=template_bytes,
-    )
-    manifest_path = template_registry.save_manifest(manifest)
+    try:
+        template_path = template_registry.save_template_file(
+            template_id=manifest.template_id,
+            filename=manifest.source_pptx,
+            content=template_bytes,
+        )
+        manifest_path = template_registry.save_manifest(manifest)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return UploadTemplateResponse(
         template_id=manifest.template_id,
         manifest_path=str(manifest_path),
@@ -107,18 +112,24 @@ async def upload_template_auto(
         raise HTTPException(status_code=400, detail="template_file must be a .pptx")
 
     template_bytes = await template_file.read()
-    template_path = template_registry.save_template_file(
-        template_id=template_id,
-        filename="template.pptx",
-        content=template_bytes,
-    )
+    try:
+        template_path = template_registry.save_template_file(
+            template_id=template_id,
+            filename="template.pptx",
+            content=template_bytes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     manifest = analyzer.analyze(
         template_id=template_id,
         template_path=template_path,
         display_name=display_name,
     )
     manifest.description = description
-    manifest_path = template_registry.save_manifest(manifest)
+    try:
+        manifest_path = template_registry.save_manifest(manifest)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return AutoUploadTemplateResponse(
         template_id=template_id,
         manifest_path=str(manifest_path),
@@ -131,6 +142,8 @@ async def upload_template_auto(
 def analyze_template(template_id: str, display_name: str | None = None) -> AnalyzeTemplateResponse:
     try:
         template_path = template_registry.get_template_pptx_path(template_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError:
         template_dir = settings.templates_dir / template_id
         if not template_dir.exists():
@@ -145,7 +158,10 @@ def analyze_template(template_id: str, display_name: str | None = None) -> Analy
         template_path=template_path,
         display_name=display_name,
     )
-    manifest_path = template_registry.save_manifest(manifest)
+    try:
+        manifest_path = template_registry.save_manifest(manifest)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return AnalyzeTemplateResponse(
         template_id=template_id,
         manifest_path=str(manifest_path),
@@ -156,6 +172,8 @@ def analyze_template(template_id: str, display_name: str | None = None) -> Analy
 def plan_from_text(payload: TextPlanRequest) -> PresentationPlan:
     try:
         template_registry.get_template(payload.template_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return planner.build_plan(
@@ -203,6 +221,8 @@ def generate_presentation(plan: PresentationPlan) -> GeneratePresentationRespons
     try:
         manifest = template_registry.get_template(plan.template_id)
         template_path = template_registry.get_template_pptx_path(plan.template_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import copy
-import json
 import math
 import re
 import zipfile
@@ -19,7 +18,14 @@ from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Pt
 
 from a3presentation.domain.chart import ChartSpec, ChartType
-from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec
+from a3presentation.domain.presentation import (
+    PresentationPlan,
+    SlideContentBlock,
+    SlideContentBlockKind,
+    SlideKind,
+    SlideSpec,
+    TableBlock,
+)
 from a3presentation.domain.template import (
     GenerationMode,
     LayoutSpec,
@@ -27,7 +33,13 @@ from a3presentation.domain.template import (
     PrototypeSlideSpec,
     TemplateManifest,
 )
-from a3presentation.services.layout_capacity import LayoutCapacityProfile, profile_for_layout
+from a3presentation.services.chart_style import CHART_STYLE_CONFIG
+from a3presentation.services.layout_capacity import (
+    LayoutCapacityProfile,
+    geometry_policy_for_layout,
+    profile_for_layout,
+    spacing_policy_for_layout,
+)
 
 
 class PptxGenerator:
@@ -55,13 +67,14 @@ class PptxGenerator:
     FULL_CONTENT_WIDTH_EMU = 11198224
     FOOTER_TOP_EMU = 6384626
     FOOTER_HEIGHT_EMU = 260000
+    DEFAULT_TEXT_MARGIN_X_EMU = 91440
+    DEFAULT_TEXT_MARGIN_Y_EMU = 45720
     _CHART_STYLE_CONFIG = None
 
     @classmethod
     def _chart_style_config(cls) -> dict:
         if cls._CHART_STYLE_CONFIG is None:
-            config_path = Path(__file__).resolve().parents[3] / "frontend" / "src" / "chart-style.json"
-            cls._CHART_STYLE_CONFIG = json.loads(config_path.read_text(encoding="utf-8"))
+            cls._CHART_STYLE_CONFIG = copy.deepcopy(CHART_STYLE_CONFIG)
         return cls._CHART_STYLE_CONFIG
 
     @classmethod
@@ -206,7 +219,9 @@ class PptxGenerator:
             target_shape = next((shape for shape in slide.shapes if shape.name == token_spec.shape_name), None)
             if target_shape is None:
                 continue
+            self._apply_shape_spec_metadata(target_shape, token_spec)
             self._fill_shape_by_binding(target_shape, token_spec.binding, slide_spec, presentation_title, layout_profile)
+            self._apply_shape_spec_metadata(target_shape, token_spec)
             used_shapes.add(token_spec.shape_name)
 
         for shape in slide.shapes:
@@ -320,8 +335,10 @@ class PptxGenerator:
                 continue
             shape = placeholders[placeholder_spec.idx]
             used_placeholder_indices.add(placeholder_spec.idx)
+            self._apply_shape_spec_metadata(shape, placeholder_spec)
             if placeholder_spec.binding:
                 self._fill_shape_by_binding(shape, placeholder_spec.binding, slide_spec, presentation_title, layout_profile)
+                self._apply_shape_spec_metadata(shape, placeholder_spec)
                 continue
             if placeholder_spec.kind == PlaceholderKind.TITLE:
                 self._set_text(shape, slide_spec.title or "", layout_profile)
@@ -335,6 +352,7 @@ class PptxGenerator:
                 self._fill_table_or_chart(shape, slide_spec)
             elif placeholder_spec.kind == PlaceholderKind.CHART:
                 self._fill_chart(shape, slide_spec)
+            self._apply_shape_spec_metadata(shape, placeholder_spec)
 
         for placeholder in slide.placeholders:
             placeholder_idx = placeholder.placeholder_format.idx
@@ -344,10 +362,39 @@ class PptxGenerator:
 
         if layout.key in {"text_full_width", "list_full_width"}:
             self._expand_text_full_width_layout(slide)
+        elif layout.key == "image_text":
+            self._expand_image_text_layout(slide)
         elif layout.key == "table":
             self._expand_table_layout(slide)
+        elif layout.key == "cards_3":
+            self._expand_cards_layout(slide)
+        elif layout.key == "list_with_icons":
+            self._expand_list_with_icons_layout(slide)
+        elif layout.key == "contacts":
+            self._expand_contacts_layout(slide)
 
         self._adjust_title_and_flow(slide, layout.key)
+
+    def _apply_shape_spec_metadata(self, shape, spec) -> None:
+        geometry_values = (spec.left_emu, spec.top_emu, spec.width_emu, spec.height_emu)
+        if all(isinstance(value, int) and value > 0 for value in geometry_values):
+            shape.left = spec.left_emu
+            shape.top = spec.top_emu
+            shape.width = spec.width_emu
+            shape.height = spec.height_emu
+
+        if not getattr(shape, "has_text_frame", False):
+            return
+
+        text_frame = shape.text_frame
+        if isinstance(spec.margin_left_emu, int) and spec.margin_left_emu >= 0:
+            text_frame.margin_left = spec.margin_left_emu
+        if isinstance(spec.margin_right_emu, int) and spec.margin_right_emu >= 0:
+            text_frame.margin_right = spec.margin_right_emu
+        if isinstance(spec.margin_top_emu, int) and spec.margin_top_emu >= 0:
+            text_frame.margin_top = spec.margin_top_emu
+        if isinstance(spec.margin_bottom_emu, int) and spec.margin_bottom_emu >= 0:
+            text_frame.margin_bottom = spec.margin_bottom_emu
 
     def _populate_cover_slide(self, slide, slide_spec: SlideSpec) -> None:
         title_shape = self._find_cover_title_shape(slide)
@@ -460,10 +507,12 @@ class PptxGenerator:
         text_frame.clear()
         text_frame.word_wrap = True
         text_frame.auto_size = MSO_AUTO_SIZE.NONE
+        self._apply_text_frame_margins(text_frame)
         lines = text.splitlines() or [text]
         for index, line in enumerate(lines):
             paragraph = text_frame.paragraphs[0] if index == 0 else text_frame.add_paragraph()
             paragraph.alignment = align
+            self._apply_paragraph_spacing(paragraph, "cover", "text_full_width")
             run = paragraph.add_run()
             run.text = line
             run.font.size = font_size
@@ -518,6 +567,9 @@ class PptxGenerator:
         return 28.0
 
     def _fill_body(self, shape, slide_spec: SlideSpec, layout_profile: LayoutCapacityProfile) -> None:
+        if slide_spec.content_blocks:
+            self._set_content_blocks(shape, slide_spec.content_blocks, layout_profile)
+            return
         if slide_spec.kind == SlideKind.BULLETS:
             if not slide_spec.bullets:
                 self._clear_placeholder(shape)
@@ -555,7 +607,93 @@ class PptxGenerator:
             return
         self._set_text(shape, slide_spec.text or "", layout_profile)
 
+    def _set_content_blocks(
+        self,
+        shape,
+        content_blocks: list[SlideContentBlock],
+        layout_profile: LayoutCapacityProfile,
+    ) -> None:
+        text_frame = shape.text_frame
+        text_frame.clear()
+
+        entries: list[tuple[str, bool, SlideContentBlockKind]] = []
+        for block in content_blocks:
+            if block.kind in {SlideContentBlockKind.PARAGRAPH, SlideContentBlockKind.CALLOUT, SlideContentBlockKind.QA_ITEM}:
+                text = (block.text or "").strip()
+                if text:
+                    entries.append((text, False, block.kind))
+                continue
+            if block.kind == SlideContentBlockKind.BULLET_LIST:
+                entries.extend((item.strip(), True, block.kind) for item in block.items if item and item.strip())
+
+        if not entries:
+            self._clear_placeholder(shape)
+            return
+
+        first = True
+        for text, is_bullet, block_kind in entries:
+            paragraph = text_frame.paragraphs[0] if first else text_frame.add_paragraph()
+            paragraph.text = text
+            if is_bullet:
+                paragraph.level = 0
+                self._apply_bullet_format(paragraph, layout_profile.layout_key)
+                self._apply_paragraph_spacing(paragraph, "body", layout_profile.layout_key)
+            else:
+                self._apply_paragraph_spacing(paragraph, "body", layout_profile.layout_key)
+            self._style_content_block_paragraph(paragraph, block_kind)
+            first = False
+
+        self._configure_body_text_frame(text_frame)
+        self._apply_body_font_size(text_frame, [text for text, _, _ in entries], shape, layout_profile)
+
+    def _style_content_block_paragraph(self, paragraph, block_kind: SlideContentBlockKind) -> None:
+        if not paragraph.runs and paragraph.text:
+            run = paragraph.add_run()
+            run.text = paragraph.text
+            paragraph.text = ""
+
+        if block_kind == SlideContentBlockKind.QA_ITEM:
+            paragraph.level = 0
+            for run in paragraph.runs:
+                run.font.bold = True
+                run.font.italic = False
+            return
+
+        if block_kind == SlideContentBlockKind.CALLOUT:
+            for run in paragraph.runs:
+                run.font.bold = True
+                run.font.italic = True
+            return
+
     def _fill_shape_by_binding(self, shape, binding: str, slide_spec: SlideSpec, presentation_title: str, layout_profile: LayoutCapacityProfile) -> None:
+        placeholder_idx = None
+        if getattr(shape, "is_placeholder", False):
+            placeholder_format = getattr(shape, "placeholder_format", None)
+            placeholder_idx = getattr(placeholder_format, "idx", None)
+
+        first_block_text = ""
+        if slide_spec.content_blocks:
+            for block in slide_spec.content_blocks:
+                candidate = (block.text or "").strip()
+                if candidate:
+                    first_block_text = candidate
+                    break
+
+        if slide_spec.content_blocks and placeholder_idx == 14 and binding in {"body", "main_text", "bullets"}:
+            self._set_content_blocks(shape, slide_spec.content_blocks, layout_profile)
+            return
+        if slide_spec.content_blocks and placeholder_idx == 15 and binding in {"secondary_text", "notes"}:
+            self._clear_placeholder(shape)
+            return
+        if slide_spec.content_blocks and placeholder_idx == 13 and binding == "subtitle":
+            subtitle_text = (slide_spec.subtitle or "").strip()
+            if not subtitle_text:
+                self._clear_placeholder(shape)
+                return
+            if first_block_text and first_block_text.startswith(subtitle_text):
+                self._clear_placeholder(shape)
+                return
+
         binding_value = self._build_token_value_map(slide_spec, presentation_title).get(binding, "")
         if binding == "table":
             self._fill_table_or_chart(shape, slide_spec)
@@ -580,6 +718,7 @@ class PptxGenerator:
         self._set_text(shape, str(binding_value), layout_profile)
 
     def _expand_text_full_width_layout(self, slide) -> None:
+        geometry = geometry_policy_for_layout("text_full_width")
         placeholders = {
             shape.placeholder_format.idx: shape
             for shape in slide.placeholders
@@ -591,41 +730,44 @@ class PptxGenerator:
         main_text = placeholders.get(14)
         secondary_text = placeholders.get(15)
 
-        title_top = 671247
-        title_height = 1120247
-
         if title is not None:
-            title.left = self.FULL_CONTENT_LEFT_EMU
-            title.top = title_top
-            title.width = self.FULL_CONTENT_WIDTH_EMU
-            title.height = max(title.height or 0, title_height)
+            policy = geometry.placeholders[0]
+            title.left = policy.left_emu
+            title.top = policy.top_emu
+            title.width = policy.width_emu
+            title.height = max(title.height or 0, policy.height_emu)
 
         if subtitle is not None:
-            subtitle.left = self.FULL_CONTENT_LEFT_EMU
-            subtitle.top = 1228230
-            subtitle.width = self.FULL_CONTENT_WIDTH_EMU
-            subtitle.height = 552402
+            policy = geometry.placeholders[13]
+            subtitle.left = policy.left_emu
+            subtitle.top = policy.top_emu
+            subtitle.width = policy.width_emu
+            subtitle.height = policy.height_emu
 
         if main_text is not None:
-            main_text.left = self.FULL_CONTENT_LEFT_EMU
-            main_text.top = 1791494
-            main_text.width = self.FULL_CONTENT_WIDTH_EMU
-            main_text.height = 1700000 if secondary_text is not None and getattr(secondary_text, "text", "").strip() else 3550000
+            policy = geometry.placeholders[14]
+            main_text.left = policy.left_emu
+            main_text.top = policy.top_emu
+            main_text.width = policy.width_emu
+            main_text.height = 1700000 if secondary_text is not None and getattr(secondary_text, "text", "").strip() else policy.height_emu
 
         if secondary_text is not None and getattr(secondary_text, "text", "").strip():
-            secondary_text.left = self.FULL_CONTENT_LEFT_EMU
-            secondary_text.top = 3800000
-            secondary_text.width = self.FULL_CONTENT_WIDTH_EMU
-            secondary_text.height = 1850000
+            policy = geometry.placeholders[15]
+            secondary_text.left = policy.left_emu
+            secondary_text.top = policy.top_emu
+            secondary_text.width = policy.width_emu
+            secondary_text.height = policy.height_emu
 
         footer = placeholders.get(17)
         if footer is not None:
-            footer.left = self.FULL_CONTENT_LEFT_EMU
-            footer.top = self.FOOTER_TOP_EMU
-            footer.width = self.FULL_CONTENT_WIDTH_EMU
-            footer.height = self.FOOTER_HEIGHT_EMU
+            policy = geometry.placeholders[17]
+            footer.left = policy.left_emu
+            footer.top = policy.top_emu
+            footer.width = policy.width_emu
+            footer.height = policy.height_emu
 
     def _expand_table_layout(self, slide) -> None:
+        geometry = geometry_policy_for_layout("table")
         placeholders = {
             shape.placeholder_format.idx: shape
             for shape in slide.placeholders
@@ -639,16 +781,18 @@ class PptxGenerator:
         footer = placeholders.get(15)
 
         if title is not None:
-            title.left = self.FULL_CONTENT_LEFT_EMU
-            title.top = 671247
-            title.width = self.FULL_CONTENT_WIDTH_EMU
-            title.height = max(title.height or 0, 584960)
+            policy = geometry.placeholders[0]
+            title.left = policy.left_emu
+            title.top = policy.top_emu
+            title.width = policy.width_emu
+            title.height = max(title.height or 0, policy.height_emu)
 
         if footer is not None:
-            footer.left = self.FULL_CONTENT_LEFT_EMU
-            footer.top = self.FOOTER_TOP_EMU
-            footer.width = self.FULL_CONTENT_WIDTH_EMU
-            footer.height = self.FOOTER_HEIGHT_EMU
+            policy = geometry.placeholders[15]
+            footer.left = policy.left_emu
+            footer.top = policy.top_emu
+            footer.width = policy.width_emu
+            footer.height = policy.height_emu
 
         if subtitle is None or not getattr(subtitle, "text", "").strip():
             return
@@ -660,17 +804,94 @@ class PptxGenerator:
         if has_side_notes:
             return
 
-        subtitle.left = self.FULL_CONTENT_LEFT_EMU
-        subtitle.top = 1228230
-        subtitle.width = self.FULL_CONTENT_WIDTH_EMU
-        subtitle.height = 700000
+        policy = geometry.placeholders[13]
+        subtitle.left = policy.left_emu
+        subtitle.top = policy.top_emu
+        subtitle.width = policy.width_emu
+        subtitle.height = policy.height_emu
+
+    def _expand_image_text_layout(self, slide) -> None:
+        geometry = geometry_policy_for_layout("image_text")
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        for idx, policy in geometry.placeholders.items():
+            shape = placeholders.get(idx)
+            if shape is None:
+                continue
+            shape.left = policy.left_emu
+            shape.top = policy.top_emu
+            shape.width = policy.width_emu
+            shape.height = policy.height_emu
+
+    def _expand_cards_layout(self, slide) -> None:
+        geometry = geometry_policy_for_layout("cards_3")
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        for idx, policy in geometry.placeholders.items():
+            shape = placeholders.get(idx)
+            if shape is None:
+                continue
+            shape.left = policy.left_emu
+            shape.top = policy.top_emu
+            shape.width = policy.width_emu
+            shape.height = policy.height_emu
+
+    def _expand_list_with_icons_layout(self, slide) -> None:
+        geometry = geometry_policy_for_layout("list_with_icons")
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        for idx, policy in geometry.placeholders.items():
+            shape = placeholders.get(idx)
+            if shape is None:
+                continue
+            shape.left = policy.left_emu
+            shape.top = policy.top_emu
+            shape.width = policy.width_emu
+            shape.height = policy.height_emu
+
+    def _expand_contacts_layout(self, slide) -> None:
+        geometry = geometry_policy_for_layout("contacts")
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        for idx, policy in geometry.placeholders.items():
+            shape = placeholders.get(idx)
+            if shape is None:
+                continue
+            shape.left = policy.left_emu
+            shape.top = policy.top_emu
+            shape.width = policy.width_emu
+            shape.height = policy.height_emu
 
     def _adjust_title_and_flow(self, slide, layout_key: str) -> None:
         if layout_key in {"text_full_width", "list_full_width"}:
             self._stack_text_content(slide, layout_key)
             return
+        if layout_key == "image_text":
+            self._stack_image_text_content(slide, layout_key)
+            return
         if layout_key == "table":
             self._stack_table_content(slide, layout_key)
+            return
+        if layout_key == "cards_3":
+            self._stack_cards_content(slide, layout_key)
+            return
+        if layout_key == "list_with_icons":
+            self._stack_two_column_content(slide, layout_key)
+            return
+        if layout_key == "contacts":
+            self._stack_contacts_content(slide, layout_key)
             return
 
         placeholders = {
@@ -710,6 +931,7 @@ class PptxGenerator:
             shape.top += delta
 
     def _stack_text_content(self, slide, layout_key: str) -> None:
+        geometry = geometry_policy_for_layout(layout_key)
         placeholders = {
             shape.placeholder_format.idx: shape
             for shape in slide.placeholders
@@ -732,33 +954,49 @@ class PptxGenerator:
             required_height = self._estimate_title_height_emu(title, title_text, font_size_pt)
             title.height = max(self._minimum_title_height_emu(layout_key), required_height)
 
+        if subtitle is not None and self._subtitle_duplicates_body(subtitle, body):
+            self._clear_placeholder(subtitle)
+            subtitle = None
+
         has_subtitle = subtitle is not None and getattr(subtitle, "text", "").strip()
-        title_gap = self.TITLE_CONTENT_GAP_EMU if has_subtitle else self.TITLE_BODY_GAP_NO_SUBTITLE_EMU
+        title_gap = geometry.title_content_gap_emu if has_subtitle else geometry.title_body_gap_no_subtitle_emu
         cursor = title.top + title.height + title_gap
 
         if has_subtitle:
             subtitle_text = subtitle.text.strip()
             subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 18.0))
             subtitle.top = cursor
-            cursor = subtitle.top + subtitle.height + self.TITLE_CONTENT_GAP_EMU
+            cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
 
         secondary_has_text = secondary is not None and getattr(secondary, "text", "").strip()
-        available_bottom = footer.top - self.CONTENT_FOOTER_GAP_EMU
+        available_bottom = footer.top - geometry.content_footer_gap_emu
 
         if secondary_has_text and secondary is not None:
             secondary_text = secondary.text.strip()
             secondary.height = max(secondary.height or 0, self._estimate_text_height_emu(secondary_text, secondary.width, 16.0))
             secondary.height = min(secondary.height, max(700000, available_bottom - cursor - 900000))
             body.top = cursor
-            body.height = max(900000, secondary.top - self.TITLE_CONTENT_GAP_EMU - body.top)
-            secondary.top = body.top + body.height + self.TITLE_CONTENT_GAP_EMU
+            body.height = max(900000, secondary.top - geometry.title_content_gap_emu - body.top)
+            secondary.top = body.top + body.height + geometry.title_content_gap_emu
             secondary.height = max(700000, min(secondary.height, available_bottom - secondary.top))
             return
 
         body.top = cursor
         body.height = max(900000, available_bottom - body.top)
 
+    def _subtitle_duplicates_body(self, subtitle, body) -> bool:
+        subtitle_text = (getattr(subtitle, "text", "") or "").strip()
+        body_text = (getattr(body, "text", "") or "").strip()
+        if not subtitle_text or not body_text:
+            return False
+        if body_text.startswith(subtitle_text):
+            return True
+        if len(subtitle_text) >= 24 and body_text.startswith(subtitle_text[:-1]):
+            return True
+        return False
+
     def _stack_table_content(self, slide, layout_key: str) -> None:
+        geometry = geometry_policy_for_layout(layout_key)
         placeholders = {
             shape.placeholder_format.idx: shape
             for shape in slide.placeholders
@@ -780,7 +1018,7 @@ class PptxGenerator:
             required_height = self._estimate_title_height_emu(title, title_text, font_size_pt)
             title.height = max(self._minimum_title_height_emu(layout_key), required_height)
 
-        cursor = title.top + title.height + self.TITLE_CONTENT_GAP_EMU
+        cursor = title.top + title.height + geometry.title_content_gap_emu
         if subtitle is not None and getattr(subtitle, "text", "").strip():
             subtitle_text = subtitle.text.strip()
             subtitle_font_size = self._table_subtitle_font_size_points(subtitle_text)
@@ -788,10 +1026,164 @@ class PptxGenerator:
             self._configure_subtitle_text_frame(subtitle)
             subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 16.0))
             subtitle.top = cursor
-            cursor = subtitle.top + subtitle.height + self.TITLE_CONTENT_GAP_EMU
+            cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
 
         table.top = cursor
-        table.height = max(900000, footer.top - self.CONTENT_FOOTER_GAP_EMU - table.top)
+        table.height = max(900000, footer.top - geometry.content_footer_gap_emu - table.top)
+
+    def _stack_image_text_content(self, slide, layout_key: str) -> None:
+        geometry = geometry_policy_for_layout(layout_key)
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        title = placeholders.get(0)
+        body = placeholders.get(14)
+        footer = placeholders.get(17)
+        subtitle = placeholders.get(13)
+        secondary = placeholders.get(15)
+        image = placeholders.get(16)
+
+        if title is None or body is None or footer is None:
+            return
+
+        title_text = (getattr(title, "text", "") or "").strip()
+        if title_text:
+            font_size_pt = self._fit_title_font_size_points(title_text, title.width, layout_key)
+            self._apply_font_size(title, font_size_pt)
+            self._configure_title_text_frame(title)
+            required_height = self._estimate_title_height_emu(title, title_text, font_size_pt)
+            title.height = max(self._minimum_title_height_emu(layout_key), required_height)
+
+        has_subtitle = subtitle is not None and getattr(subtitle, "text", "").strip()
+        title_gap = geometry.title_content_gap_emu if has_subtitle else geometry.title_body_gap_no_subtitle_emu
+        cursor = title.top + title.height + title_gap
+        if has_subtitle:
+            subtitle_text = subtitle.text.strip()
+            self._configure_subtitle_text_frame(subtitle)
+            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 16.0))
+            subtitle.top = cursor
+            cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
+
+        available_bottom = footer.top - geometry.content_footer_gap_emu
+        if image is not None:
+            image.top = cursor
+            image.height = max(1200000, available_bottom - image.top)
+
+        secondary_has_text = secondary is not None and getattr(secondary, "text", "").strip()
+        if secondary_has_text and secondary is not None:
+            secondary_text = secondary.text.strip()
+            secondary.height = max(secondary.height or 0, self._estimate_text_height_emu(secondary_text, secondary.width, 16.0))
+            secondary.height = min(secondary.height, max(700000, available_bottom - cursor - 900000))
+            body.top = cursor
+            body.height = max(900000, secondary.top - geometry.title_content_gap_emu - body.top)
+            secondary.top = body.top + body.height + geometry.title_content_gap_emu
+            secondary.height = max(700000, min(secondary.height, available_bottom - secondary.top))
+            return
+
+        body.top = cursor
+        body.height = max(900000, available_bottom - body.top)
+
+    def _stack_cards_content(self, slide, layout_key: str) -> None:
+        geometry = geometry_policy_for_layout(layout_key)
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        title = placeholders.get(0)
+        footer = placeholders.get(15)
+        cards = [placeholders.get(idx) for idx in (11, 12, 13)]
+        cards = [card for card in cards if card is not None]
+        if title is None or footer is None or not cards:
+            return
+
+        title_text = (getattr(title, "text", "") or "").strip()
+        if title_text:
+            font_size_pt = self._fit_title_font_size_points(title_text, title.width, layout_key)
+            self._apply_font_size(title, font_size_pt)
+            self._configure_title_text_frame(title)
+            required_height = self._estimate_title_height_emu(title, title_text, font_size_pt)
+            title.height = max(self._minimum_title_height_emu(layout_key), required_height)
+
+        cursor = title.top + title.height + geometry.title_body_gap_no_subtitle_emu
+        base_top = min(card.top for card in cards)
+        delta = max(0, cursor - base_top)
+        max_height = max(900000, footer.top - geometry.content_footer_gap_emu - (base_top + delta))
+        for card in cards:
+            card.top += delta
+            card.height = min(card.height, max_height)
+
+    def _stack_two_column_content(self, slide, layout_key: str) -> None:
+        geometry = geometry_policy_for_layout(layout_key)
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        title = placeholders.get(0)
+        subtitle = placeholders.get(13)
+        left = placeholders.get(12)
+        right = placeholders.get(14)
+        footer = placeholders.get(21)
+        if title is None or left is None or right is None or footer is None:
+            return
+
+        title_text = (getattr(title, "text", "") or "").strip()
+        if title_text:
+            font_size_pt = self._fit_title_font_size_points(title_text, title.width, layout_key)
+            self._apply_font_size(title, font_size_pt)
+            self._configure_title_text_frame(title)
+            required_height = self._estimate_title_height_emu(title, title_text, font_size_pt)
+            title.height = max(self._minimum_title_height_emu(layout_key), required_height)
+
+        has_subtitle = subtitle is not None and getattr(subtitle, "text", "").strip()
+        title_gap = geometry.title_content_gap_emu if has_subtitle else geometry.title_body_gap_no_subtitle_emu
+        cursor = title.top + title.height + title_gap
+        if has_subtitle:
+            subtitle_text = subtitle.text.strip()
+            self._configure_subtitle_text_frame(subtitle)
+            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 16.0))
+            subtitle.top = cursor
+            cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
+
+        content_indices = [12, 14, 15, 16, 17, 18, 19, 20]
+        content_shapes = [placeholders[idx] for idx in content_indices if idx in placeholders]
+        if not content_shapes:
+            return
+        base_top = min(shape.top for shape in content_shapes)
+        delta = max(0, cursor - base_top)
+        max_height = max(900000, footer.top - geometry.content_footer_gap_emu - (base_top + delta))
+        for shape in content_shapes:
+            shape.top += delta
+            if shape.placeholder_format.idx in {12, 14}:
+                shape.height = min(shape.height, max_height)
+
+    def _stack_contacts_content(self, slide, layout_key: str) -> None:
+        geometry = geometry_policy_for_layout(layout_key)
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        for idx in (10, 11, 12, 13):
+            shape = placeholders.get(idx)
+            policy = geometry.placeholders.get(idx)
+            if shape is None or policy is None:
+                continue
+            text = (getattr(shape, "text", "") or "").strip()
+            if not text:
+                continue
+            font_size_pt = 18.0 if idx == 10 else 14.0
+            if len(text) >= (60 if idx == 10 else 40):
+                font_size_pt -= 2.0
+            self._apply_font_size(shape, font_size_pt)
+            self._configure_subtitle_text_frame(shape)
+            shape.left = policy.left_emu
+            shape.top = policy.top_emu
+            shape.width = policy.width_emu
+            shape.height = policy.height_emu
 
     def _title_font_size_points(self, layout_key: str) -> float:
         if layout_key == "table":
@@ -818,6 +1210,9 @@ class PptxGenerator:
         text_frame = shape.text_frame
         text_frame.word_wrap = True
         text_frame.auto_size = MSO_AUTO_SIZE.NONE
+        self._apply_text_frame_margins(text_frame)
+        for paragraph in text_frame.paragraphs:
+            self._apply_paragraph_spacing(paragraph, "subtitle", "text_full_width")
 
     def _minimum_title_height_emu(self, layout_key: str) -> int:
         if layout_key == "table":
@@ -852,6 +1247,9 @@ class PptxGenerator:
         text_frame = shape.text_frame
         text_frame.word_wrap = True
         text_frame.auto_size = MSO_AUTO_SIZE.SHAPE_TO_FIT_TEXT
+        self._apply_text_frame_margins(text_frame)
+        for paragraph in text_frame.paragraphs:
+            self._apply_paragraph_spacing(paragraph, "title", "text_full_width")
 
     def _estimate_title_height_emu(self, shape, text: str, font_size_pt: float) -> int:
         text_frame = shape.text_frame
@@ -929,7 +1327,7 @@ class PptxGenerator:
                     for col_index, value in enumerate(row):
                         if col_index < col_count:
                             table.cell(row_index, col_index).text = value
-                final_height = self._format_table(table, headers, rows, graphic_frame.width, graphic_frame.height)
+                final_height = self._format_table(table, slide_spec.table, graphic_frame.width, graphic_frame.height)
                 graphic_frame.height = final_height
                 return
             except (AttributeError, TypeError, ValueError):
@@ -949,7 +1347,7 @@ class PptxGenerator:
                     break
                 for col_index, value in enumerate(row[:max_cols]):
                     table.cell(row_index, col_index).text = value
-            final_height = self._format_table(table, headers, rows, shape.width, shape.height)
+            final_height = self._format_table(table, slide_spec.table, shape.width, shape.height)
             shape.height = final_height
             return
 
@@ -1347,7 +1745,8 @@ class PptxGenerator:
             paragraph.text = item
             if item:
                 paragraph.level = 0
-                self._apply_bullet_format(paragraph)
+                self._apply_bullet_format(paragraph, layout_profile.layout_key)
+                self._apply_paragraph_spacing(paragraph, "body", layout_profile.layout_key)
             first = False
         self._configure_body_text_frame(text_frame)
         self._apply_body_font_size(text_frame, items, shape, layout_profile)
@@ -1355,6 +1754,19 @@ class PptxGenerator:
     def _configure_body_text_frame(self, text_frame) -> None:
         text_frame.word_wrap = True
         text_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        self._apply_text_frame_margins(text_frame)
+
+    def _apply_paragraph_spacing(self, paragraph, role: str, layout_key: str) -> None:
+        spacing = spacing_policy_for_layout(layout_key)
+        role_policy = getattr(spacing, role)
+        paragraph.line_spacing = role_policy.line_spacing
+        paragraph.space_after = Pt(role_policy.space_after_pt)
+
+    def _apply_text_frame_margins(self, text_frame) -> None:
+        text_frame.margin_left = self.DEFAULT_TEXT_MARGIN_X_EMU
+        text_frame.margin_right = self.DEFAULT_TEXT_MARGIN_X_EMU
+        text_frame.margin_top = self.DEFAULT_TEXT_MARGIN_Y_EMU
+        text_frame.margin_bottom = self.DEFAULT_TEXT_MARGIN_Y_EMU
 
     def _apply_body_font_size(self, text_frame, items: list[str], shape, layout_profile: LayoutCapacityProfile) -> None:
         non_empty_items = [item.strip() for item in items if item and item.strip()]
@@ -1390,6 +1802,7 @@ class PptxGenerator:
                 run = paragraph.add_run()
                 run.text = paragraph.text
                 paragraph.text = ""
+            self._apply_paragraph_spacing(paragraph, "body", layout_profile.layout_key)
             paragraph.font.size = font_size
             for run in paragraph.runs:
                 run.font.size = font_size
@@ -1414,7 +1827,8 @@ class PptxGenerator:
             for run in paragraph.runs:
                 run.font.size = font_size
 
-    def _apply_bullet_format(self, paragraph) -> None:
+    def _apply_bullet_format(self, paragraph, layout_key: str) -> None:
+        spacing = spacing_policy_for_layout(layout_key).bullet
         paragraph_properties = paragraph._p.get_or_add_pPr()
         for child in list(paragraph_properties):
             if child.tag.endswith("}buNone") or child.tag.endswith("}buChar") or child.tag.endswith("}buAutoNum"):
@@ -1423,10 +1837,20 @@ class PptxGenerator:
         bullet = OxmlElement("a:buChar")
         bullet.set("char", "•")
         paragraph_properties.insert(0, bullet)
-        paragraph_properties.set("marL", "342900")
-        paragraph_properties.set("indent", "-171450")
+        paragraph_properties.set("marL", str(spacing.margin_left_emu))
+        paragraph_properties.set("indent", str(spacing.indent_emu))
 
-    def _format_table(self, table, headers: list[str], rows: list[list[str]], target_width: int, target_height: int) -> int:
+    def _format_table(self, table, table_block: TableBlock | None, target_width: int, target_height: int) -> int:
+        if table_block is None:
+            headers: list[str] = []
+            rows: list[list[str]] = []
+            header_fill_colors: list[str | None] = []
+            row_fill_colors: list[list[str | None]] = []
+        else:
+            headers = table_block.headers
+            rows = table_block.rows
+            header_fill_colors = table_block.header_fill_colors
+            row_fill_colors = table_block.row_fill_colors
         all_rows = [headers, *rows] if headers else rows
         column_stats = self._column_stats(headers, rows)
         max_lengths = [item["max_len"] for item in column_stats]
@@ -1454,7 +1878,24 @@ class PptxGenerator:
         for row_index, row in enumerate(table.rows):
             is_header = headers and row_index == 0
             for col_index, cell in enumerate(row.cells):
-                self._style_table_cell(cell, is_header=is_header, font_size=font_size, margins=margins)
+                fill_color = (
+                    header_fill_colors[col_index]
+                    if is_header and col_index < len(header_fill_colors)
+                    else (
+                        row_fill_colors[row_index - 1][col_index]
+                        if not is_header
+                        and row_index - 1 < len(row_fill_colors)
+                        and col_index < len(row_fill_colors[row_index - 1])
+                        else None
+                    )
+                )
+                self._style_table_cell(
+                    cell,
+                    is_header=is_header,
+                    font_size=font_size,
+                    margins=margins,
+                    fill_color=fill_color,
+                )
         return max(sum(row.height for row in table.rows), 600000)
 
     def _column_stats(self, headers: list[str], rows: list[list[str]]) -> list[dict[str, float]]:
@@ -1593,10 +2034,19 @@ class PptxGenerator:
             return (60000, 60000, 30000, 30000)
         return (80000, 80000, 40000, 40000)
 
-    def _style_table_cell(self, cell, *, is_header: bool, font_size: Pt, margins: tuple[int, int, int, int]) -> None:
+    def _style_table_cell(
+        self,
+        cell,
+        *,
+        is_header: bool,
+        font_size: Pt,
+        margins: tuple[int, int, int, int],
+        fill_color: str | None = None,
+    ) -> None:
         fill = cell.fill
         fill.solid()
-        fill.fore_color.rgb = RGBColor(0x08, 0x1C, 0x4F) if is_header else RGBColor(0xEB, 0xF3, 0xFE)
+        resolved_fill = self._table_fill_rgb(fill_color, is_header=is_header)
+        fill.fore_color.rgb = resolved_fill
 
         text_frame = cell.text_frame
         text_frame.word_wrap = True
@@ -1606,7 +2056,23 @@ class PptxGenerator:
             for run in paragraph.runs:
                 run.font.size = font_size
                 run.font.bold = bool(is_header)
-                run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF) if is_header else RGBColor(0x08, 0x1C, 0x4F)
+                run.font.color.rgb = self._table_text_rgb_for_fill(resolved_fill, is_header=is_header)
+
+    def _table_fill_rgb(self, fill_color: str | None, *, is_header: bool) -> RGBColor:
+        if fill_color:
+            normalized = fill_color.strip().lstrip("#").upper()
+            if re.fullmatch(r"[0-9A-F]{6}", normalized):
+                return RGBColor.from_string(normalized)
+        return RGBColor(0x08, 0x1C, 0x4F) if is_header else RGBColor(0xEB, 0xF3, 0xFE)
+
+    def _table_text_rgb_for_fill(self, fill_rgb: RGBColor, *, is_header: bool) -> RGBColor:
+        red, green, blue = fill_rgb[0], fill_rgb[1], fill_rgb[2]
+        luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255
+        if luminance < 0.45:
+            return RGBColor(0xFF, 0xFF, 0xFF)
+        if is_header:
+            return RGBColor(0x08, 0x1C, 0x4F)
+        return RGBColor(0x08, 0x1C, 0x4F)
 
     def _clear_placeholder(self, shape) -> None:
         if getattr(shape, "has_text_frame", False):

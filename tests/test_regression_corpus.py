@@ -185,12 +185,17 @@ class RegressionCorpusTests(unittest.TestCase):
         raw_text = "\n".join(block.text or "" for block in blocks)
         plan = planner.build_plan("corp_light_v1", raw_text, None, [], blocks)
 
-        flattened = [
-            item
-            for slide in plan.slides
-            if (slide.title or "").startswith("Модель взаимодействия с поставщиками")
-            for item in slide.bullets
-        ]
+        flattened = []
+        for slide in plan.slides:
+            if not (slide.title or "").startswith("Модель взаимодействия с поставщиками"):
+                continue
+            if slide.content_blocks:
+                for block in slide.content_blocks:
+                    if block.text and block.text.strip():
+                        flattened.append(block.text.strip())
+                    flattened.extend(item.strip() for item in block.items if item.strip())
+                continue
+            flattened.extend(item for item in slide.bullets if item.strip())
         self.assertTrue(flattened)
         self.assertLess(
             next(index for index, item in enumerate(flattened) if item.startswith("Первый абзац")),
@@ -449,6 +454,44 @@ class RegressionCorpusTests(unittest.TestCase):
         violations = find_capacity_violations(audits)
         self.assertEqual(violations, [])
 
+    def test_report_docx_prefers_text_flow_for_narrative_sections(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("narrative-report.docx", self._build_narrative_report_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        narrative_slides = [slide for slide in plan.slides if (slide.title or "").startswith("1. Контекст рынка")]
+        self.assertTrue(narrative_slides)
+        self.assertTrue(all(slide.kind == SlideKind.TEXT for slide in narrative_slides))
+        self.assertGreaterEqual(len(narrative_slides), 2)
+
+    def test_report_docx_skips_reference_tail_from_main_deck(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("report-with-refs.docx", self._build_report_with_reference_tail_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        payload = "\n".join(
+            part
+            for slide in plan.slides
+            for part in [slide.title or "", slide.subtitle or "", slide.text or "", slide.notes or "", *slide.bullets]
+            if part
+        )
+        self.assertNotIn("https://example.com/source-1", payload)
+        self.assertNotIn("https://example.com/source-2", payload)
+        self.assertTrue(any((slide.title or "").startswith("2. Выводы") for slide in plan.slides))
+
+    def test_report_docx_does_not_add_appendix_from_false_semantic_facts(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("report-with-refs.docx", self._build_report_with_reference_tail_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        self.assertFalse(any("Приложение" in (slide.title or "") for slide in plan.slides))
+
     def test_chart_heavy_docx_generates_chart_slide_and_preserves_text_capacity_contract(self) -> None:
         extractor = DocumentTextExtractor()
         planner = TextToPlanService()
@@ -534,9 +577,16 @@ class RegressionCorpusTests(unittest.TestCase):
         )
 
         competitor_slides = [slide for slide in plan.slides if (slide.title or "").startswith("3.3 Карта конкурентов")]
-        self.assertEqual(len(competitor_slides), 1)
-        self.assertEqual(competitor_slides[0].kind, SlideKind.BULLETS)
-        self.assertGreaterEqual(len(competitor_slides[0].bullets), 4)
+        self.assertLessEqual(len(competitor_slides), 2)
+        self.assertTrue(all(slide.kind == SlideKind.TEXT for slide in competitor_slides))
+        payload = " ".join(
+            part
+            for slide in competitor_slides
+            for part in [slide.text or "", slide.notes or ""]
+            if part
+        )
+        self.assertIn("Конкурентные преимущества А3", payload)
+        self.assertIn("Главные риски", payload)
 
     def test_planner_keeps_short_quarter_plan_on_single_slide(self) -> None:
         planner = TextToPlanService()
@@ -628,6 +678,46 @@ class RegressionCorpusTests(unittest.TestCase):
         document.add_paragraph(
             "Компания должна восприниматься как инфраструктурный игрок, ускоряющий финансовые процессы клиентов."
         )
+        return self._save_document(document)
+
+    def _build_narrative_report_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("A3")
+        document.add_paragraph("Стратегический обзор")
+        document.add_heading("1. Контекст рынка", level=1)
+        document.add_paragraph(
+            "Рынок регулярных платежей растет за счет цифровых каналов, но одновременно становится чувствительным к "
+            "устойчивости SLA, скорости вывода новых поставщиков и способности платформы масштабировать сопровождение "
+            "без линейного роста ручных операций."
+        )
+        document.add_paragraph(
+            "Для A3 это означает необходимость разделять публичный охват каталога, который важен для внешнего позиционирования, "
+            "и управляемый слой глубоких интеграций, где каждая новая связь увеличивает нагрузку на процессы, безопасность и "
+            "юридический контур."
+        )
+        document.add_paragraph(
+            "Если не разделять эти два контура, управленческие решения начинают опираться на смешанную метрику, а длинный "
+            "хвост малодеятельных поставщиков маскирует реальные ограничения по unit-экономике, качеству сервиса и "
+            "операционной устойчивости."
+        )
+        document.add_heading("2. Выводы", level=1)
+        document.add_paragraph("Нарративный отчет должен оставаться текстовым, а не распадаться на список из предложений.")
+        return self._save_document(document)
+
+    def _build_report_with_reference_tail_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("A3")
+        document.add_paragraph("Стратегический обзор")
+        document.add_heading("1. Контекст", level=1)
+        document.add_paragraph(
+            "Основной текст раздела должен попасть в презентацию, а технический хвост со ссылками не должен раздувать колоду."
+        )
+        document.add_heading("2. Выводы", level=1)
+        document.add_paragraph("Нужно сохранить только смысловые выводы и убрать голые ссылки из основной части презентации.")
+        document.add_paragraph("[1] https://example.com/source-1")
+        document.add_paragraph("https://example.com/source-1")
+        document.add_paragraph("[2] https://example.com/source-2")
+        document.add_paragraph("https://example.com/source-2")
         return self._save_document(document)
 
     def _build_form_docx(self) -> bytes:

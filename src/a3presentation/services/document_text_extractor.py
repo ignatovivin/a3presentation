@@ -23,6 +23,11 @@ class DocumentTextExtractor:
     LIST_TEXT_PREFIXES = ("- ", "• ", "– ", "— ", "* ")
     OUTLINE_HEADING_PATTERN = re.compile(r"^(?P<number>\d+(?:\.\d+)*)[.)]?\s+.+$")
     QUARTER_HEADING_PATTERN = re.compile(r"^Q[1-4](?:\s+\d{4})?(?:\s*[-—–:].+)?$", re.IGNORECASE)
+    STRUCTURED_LABEL_PATTERN = re.compile(r"^\s*[^:]{1,80}:\s+\S")
+    CONTINUATION_START_PATTERN = re.compile(r"^(?:[a-zа-яё0-9(«\"'—–-]|и\b|или\b|по\b|для\b|который\b)")
+    URL_ONLY_PATTERN = re.compile(r"^(?:https?://|www\.)\S+$", re.IGNORECASE)
+    REFERENCE_LINE_PATTERN = re.compile(r"^(?:\[\d+\]\s*)+(?:https?://\S+)?$", re.IGNORECASE)
+    TERMINAL_PUNCTUATION = (".", "!", "?", ";")
 
     def extract(self, filename: str, content: bytes) -> tuple[str, list[TableBlock], list[DocumentBlock]]:
         extension = Path(filename).suffix.lower()
@@ -113,6 +118,7 @@ class DocumentTextExtractor:
         if list_buffer:
             blocks.append(DocumentBlock(kind="list", items=list_buffer.copy()))
 
+        blocks = self._merge_narrative_paragraph_blocks(blocks)
         return self._blocks_to_text(blocks), tables, blocks
 
     def _extract_plain_text_blocks(self, text: str, *, markdown: bool) -> list[DocumentBlock]:
@@ -156,6 +162,8 @@ class DocumentTextExtractor:
             match = re.match(r"^(#{1,6})\s+(.+)$", line)
             if match:
                 return len(match.group(1))
+            if re.match(r"^\s*\d+[.)]\s+.+$", line):
+                return None
         normalized = line.strip()
         if len(normalized) <= 90 and normalized == normalized.upper() and any(char.isalpha() for char in normalized):
             return 1
@@ -166,11 +174,11 @@ class DocumentTextExtractor:
 
     def _plain_text_list_item(self, line: str, markdown: bool) -> str | None:
         if markdown:
-            match = re.match(r"^\s*(?:[-*+]|\\d+[.)])\s+(.+)$", line)
+            match = re.match(r"^\s*(?:[-*+]|\d+[.)])\s+(.+)$", line)
             if match:
                 return match.group(1).strip()
         else:
-            match = re.match(r"^\s*(?:[-*•]|\\d+[.)])\s+(.+)$", line)
+            match = re.match(r"^\s*(?:[-*•]|\d+[.)])\s+(.+)$", line)
             if match:
                 return match.group(1).strip()
         return None
@@ -185,13 +193,26 @@ class DocumentTextExtractor:
 
     def _normalize_table(self, table: Table) -> TableBlock | None:
         rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-        normalized_rows = [row for row in rows if any(cell for cell in row)]
+        fill_rows = [[self._table_cell_fill_color(cell) for cell in row.cells] for row in table.rows]
+        normalized_pairs = [
+            (row, fill_row)
+            for row, fill_row in zip(rows, fill_rows, strict=False)
+            if any(cell for cell in row)
+        ]
+        normalized_rows = [row for row, _ in normalized_pairs]
         if not normalized_rows:
             return None
 
         headers = normalized_rows[0]
         body_rows = normalized_rows[1:] if len(normalized_rows) > 1 else []
-        return TableBlock(headers=headers, rows=body_rows)
+        header_fill_colors = normalized_pairs[0][1] if normalized_pairs else []
+        body_fill_colors = [fill_row for _, fill_row in normalized_pairs[1:]] if len(normalized_pairs) > 1 else []
+        return TableBlock(
+            headers=headers,
+            header_fill_colors=header_fill_colors,
+            rows=body_rows,
+            row_fill_colors=body_fill_colors,
+        )
 
     def _classify_paragraph(self, paragraph: Paragraph, text: str) -> tuple[str, int | None]:
         style_name = (paragraph.style.name if paragraph.style is not None else "").strip().lower()
@@ -348,3 +369,132 @@ class DocumentTextExtractor:
                 )
             )
         return blocks
+
+    def _merge_narrative_paragraph_blocks(self, blocks: list[DocumentBlock]) -> list[DocumentBlock]:
+        if not blocks:
+            return blocks
+
+        merged: list[DocumentBlock] = []
+        for block in blocks:
+            if (
+                merged
+                and self._should_merge_paragraph_blocks(merged[-1], block)
+            ):
+                previous = merged[-1]
+                merged[-1] = DocumentBlock(
+                    kind=previous.kind,
+                    text=self._merge_paragraph_text(previous.text or "", block.text or ""),
+                    level=previous.level,
+                    style_name=previous.style_name,
+                    style_id=previous.style_id,
+                    items=previous.items.copy(),
+                    table=previous.table,
+                    hyperlinks=[*previous.hyperlinks, *[link for link in block.hyperlinks if link not in previous.hyperlinks]],
+                    run_count=(previous.run_count or 0) + (block.run_count or 0),
+                    image_name=previous.image_name,
+                    image_content_type=previous.image_content_type,
+                    image_base64=previous.image_base64,
+                )
+                continue
+            merged.append(block)
+        return merged
+
+    def _should_merge_paragraph_blocks(self, previous: DocumentBlock, current: DocumentBlock) -> bool:
+        if previous.kind != "paragraph" or current.kind != "paragraph":
+            return False
+        previous_text = (previous.text or "").strip()
+        current_text = (current.text or "").strip()
+        if not previous_text or not current_text:
+            return False
+        if previous.table is not None or current.table is not None:
+            return False
+        if previous.image_base64 or current.image_base64:
+            return False
+        if previous.hyperlinks or current.hyperlinks:
+            return False
+        if self._looks_like_structured_label(previous_text) or self._looks_like_structured_label(current_text):
+            return False
+        if self._looks_like_outline_heading(previous_text) or self._looks_like_outline_heading(current_text):
+            return False
+        if self._looks_like_list_text(previous_text) or self._looks_like_list_text(current_text):
+            return False
+        if self._looks_like_reference_line(previous_text) or self._looks_like_reference_line(current_text):
+            return False
+        if (previous.style_name or "").strip().lower() not in {"", "normal"}:
+            return False
+        if (current.style_name or "").strip().lower() not in {"", "normal"}:
+            return False
+
+        normalized_previous = re.sub(r"\s+", " ", previous_text)
+        normalized_current = re.sub(r"\s+", " ", current_text)
+        if len(normalized_previous) > 220 or len(normalized_current) > 220:
+            return False
+        if normalized_previous.endswith(self.TERMINAL_PUNCTUATION):
+            return False
+        if normalized_previous.endswith(":"):
+            return True
+        if normalized_previous.endswith(("—", "–", "-", ",")):
+            return True
+        if self.CONTINUATION_START_PATTERN.match(normalized_current):
+            return True
+        return False
+
+    def _merge_paragraph_text(self, previous: str, current: str) -> str:
+        left = re.sub(r"\s+", " ", previous.strip())
+        right = re.sub(r"\s+", " ", current.strip())
+        if not left:
+            return right
+        if not right:
+            return left
+        return f"{left} {right}".strip()
+
+    def _looks_like_structured_label(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", text.strip())
+        if not normalized:
+            return False
+        if len(normalized) > 140:
+            return False
+        match = self.STRUCTURED_LABEL_PATTERN.match(normalized)
+        if not match:
+            return False
+        label = normalized.split(":", 1)[0].strip()
+        if len(label) > 48:
+            return False
+        if len(label.split()) > 6:
+            return False
+        if any(char in label for char in ".?!;"):
+            return False
+        return True
+
+    def _looks_like_outline_heading(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", text.strip())
+        return bool(self.OUTLINE_HEADING_PATTERN.match(normalized) or self.QUARTER_HEADING_PATTERN.match(normalized))
+
+    def _looks_like_list_text(self, text: str) -> bool:
+        normalized = text.strip()
+        return normalized.startswith(self.LIST_TEXT_PREFIXES)
+
+    def _looks_like_reference_line(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", text.strip())
+        if not normalized:
+            return False
+        return bool(self.URL_ONLY_PATTERN.match(normalized) or self.REFERENCE_LINE_PATTERN.match(normalized))
+
+    def _table_cell_fill_color(self, cell) -> str | None:
+        tc_pr = getattr(cell._tc, "tcPr", None)
+        if tc_pr is None:
+            return None
+
+        shading = tc_pr.find(qn("w:shd"))
+        if shading is None:
+            return None
+
+        fill = shading.get(qn("w:fill")) or shading.get("fill")
+        if not fill:
+            return None
+        normalized = fill.strip().lstrip("#").upper()
+        if normalized in {"AUTO", "NIL", "NONE", "FFFFFF"}:
+            return None
+        if re.fullmatch(r"[0-9A-F]{6}", normalized) is None:
+            return None
+        return normalized

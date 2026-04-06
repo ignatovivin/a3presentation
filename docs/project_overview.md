@@ -20,7 +20,8 @@ The target workflow is:
 5. The PowerPoint generator renders the plan into a branded `.pptx` using the corporate PowerPoint template.
 
 This is not a generic "any presentation style" tool.
-It is intentionally narrow and optimized for a fixed corporate presentation style and a fixed set of slide types.
+It is intentionally focused on structured business decks, a controlled set of slide types, and a template-aware rendering pipeline.
+The current built-in corporate template is important, but it must not be treated as a permanent constant because users and companies can upload their own templates.
 
 ## Stack
 
@@ -46,6 +47,7 @@ It is intentionally narrow and optimized for a fixed corporate presentation styl
 - Local filesystem
 - Templates stored in `storage/templates`
 - Generated presentations stored in `storage/outputs`
+- Production outputs on Timeweb stored in `data/outputs`
 
 ## Main Project Structure
 
@@ -154,12 +156,15 @@ Main files:
 - [template_registry.py](C:\Project\a3presentation\src\a3presentation\services\template_registry.py)
 - [manifest.json](C:\Project\a3presentation\storage\templates\corp_light_v1\manifest.json)
 
-The project now works around a single main corporate template:
+The project currently ships with one main built-in template:
 
 - `corp_light_v1`
 
-The user does not need to think in terms of multiple template choices.
-Instead, the system chooses among slide types inside one presentation style.
+But the architecture is moving toward template-aware generation rather than hard-coding one fixed template forever.
+Users and companies may upload their own templates, and analyzer/manifest metadata should drive generator and audit behavior for those templates too.
+
+The user does not need to think in terms of internal layout mapping.
+Instead, the system chooses among logical slide types and then resolves them against the active template.
 
 The manifest defines which PowerPoint layouts correspond to which logical slide type.
 
@@ -173,6 +178,15 @@ For example:
 - `cards_3`
 - `list_with_icons`
 - `contacts`
+
+## Working rules for analysis and implementation
+
+This project should be evolved under these constraints:
+
+- fixes must target the general mechanism, not one document or one slide
+- every significant planner/generator/audit change must be checked against document classes, not one regression case
+- the active template must not be assumed to be permanently fixed
+- if the next implementation step is safe and follows directly from the current task, it should be executed without stopping for redundant confirmation
 
 ## PowerPoint Generation
 
@@ -325,6 +339,8 @@ The most important end-to-end capabilities are working:
 - PowerPoint file validity
 - frontend smoke and visual checks
 - backend quality-contract suite for deck-level layout safety
+- production deployment on Timeweb with Let's Encrypt HTTPS
+- GitHub Actions SSH auto-deploy for `dev`
 
 ## Current Verification Layers
 
@@ -335,11 +351,21 @@ The most important end-to-end capabilities are working:
 - dedicated `quality-contracts` runner
 - frontend `playwright` smoke and visual checks
 
+## Production Runtime
+
+Current production topology:
+
+- host nginx on Ubuntu terminates HTTPS for `a3presentation.ru`
+- host nginx proxies to docker nginx on `127.0.0.1:8080`
+- docker nginx routes `/` to frontend and `/api/*` to backend
+- backend reads bundled templates from `/app/storage/templates`
+- runtime outputs are persisted in `data/outputs`
+- pushes to `dev` can auto-deploy through GitHub Actions after all checks pass
+
 ## Remaining Improvements
 
 These are no longer core blockers, but they can improve quality further:
 
-- move `quality-contracts` into a dedicated CI gate
 - extend deck-audit further for more layout-specific geometry rules
 - expand visual snapshots for more frontend and generated-slide scenarios
 - introduce template-specific typography rules per layout

@@ -5,15 +5,24 @@ import unittest
 from pathlib import Path
 
 from pptx import Presentation
+from pptx.shapes.autoshape import Shape
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE, XL_MARKER_STYLE
 from pptx.enum.text import MSO_AUTO_SIZE
 
 from a3presentation.domain.api import ChartOverride, DocumentBlock
 from a3presentation.domain.chart import ChartConfidence, ChartSeries, ChartSpec, ChartType
-from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec, TableBlock
+from a3presentation.domain.presentation import (
+    PresentationPlan,
+    SlideContentBlock,
+    SlideContentBlockKind,
+    SlideKind,
+    SlideSpec,
+    TableBlock,
+)
+from a3presentation.services.layout_capacity import TEXT_FULL_WIDTH_PROFILE
 from a3presentation.services.pptx_generator import PptxGenerator
-from a3presentation.services.planner import TextToPlanService
+from a3presentation.services.planner import ContinuationUnit, Section, TextToPlanService
 from a3presentation.services.template_registry import TemplateRegistry
 from a3presentation.settings import get_settings
 
@@ -145,6 +154,199 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertIn("Надежность и предсказуемость", tail_payload)
         self.assertTrue(any(slide.kind in {SlideKind.TEXT, SlideKind.BULLETS} for slide in rebalanced))
 
+    def test_slide_to_continuation_units_rechunks_long_text_content_blocks(self) -> None:
+        service = TextToPlanService()
+        long_text = (
+            "Первый абзац описывает стратегический контекст, ограничения интеграций и требования к SLA для high-touch слоя. "
+            "Второй абзац переносит фокус на экономику сопровождения, объясняет рост нагрузки на команды и связь с unit-экономикой. "
+            "Третий абзац фиксирует, почему слишком длинный paragraph нельзя оставлять атомарным при continuation rebalance, "
+            "иначе последний слайд группы получается недозаполненным и визуально слабым."
+        )
+        slide = SlideSpec(
+            kind=SlideKind.TEXT,
+            title="Длинный narrative",
+            content_blocks=[
+                SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text=long_text),
+            ],
+            preferred_layout_key="text_full_width",
+        )
+
+        units = service._slide_to_continuation_units(slide)
+
+        self.assertGreaterEqual(len(units), 2)
+        self.assertTrue(all(unit.kind == "paragraph" for unit in units))
+        self.assertEqual(" ".join(unit.text for unit in units), long_text)
+
+    def test_split_large_text_section_rebalances_short_tail_via_finer_text_units(self) -> None:
+        service = TextToPlanService()
+        section = Section(
+            title="Длинный narrative",
+            paragraphs=[
+                "A" * 299,
+                "B" * 299,
+                "C" * 446,
+                "D" * 426,
+                "E" * 420,
+                "F" * 441,
+                "G" * 108,
+            ],
+        )
+
+        slides = service._split_large_section(section)
+
+        self.assertGreaterEqual(len(slides), 2)
+        self.assertEqual(slides[-1].kind, SlideKind.TEXT)
+        self.assertLessEqual(len(slides), 7)
+
+    def test_compact_continuation_slides_merges_short_leading_text_slide(self) -> None:
+        service = TextToPlanService()
+        slides = [
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел", text="A" * 140, preferred_layout_key="text_full_width"),
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел (2)", text="B" * 320, preferred_layout_key="text_full_width"),
+        ]
+
+        compacted = service._compact_continuation_slides(slides, "Раздел", "")
+
+        self.assertEqual(len(compacted), 1)
+        self.assertEqual(compacted[0].title, "Раздел")
+        self.assertGreaterEqual(len(compacted[0].text or "") + len(compacted[0].notes or ""), 460)
+
+    def test_compact_continuation_slides_merges_short_single_bullet_tail(self) -> None:
+        service = TextToPlanService()
+        slides = [
+            SlideSpec(
+                kind=SlideKind.BULLETS,
+                title="Раздел",
+                bullets=["Очень короткий хвост"],
+                content_blocks=[SlideContentBlock(kind=SlideContentBlockKind.BULLET_LIST, items=["Очень короткий хвост"])],
+                preferred_layout_key="list_full_width",
+            ),
+            SlideSpec(
+                kind=SlideKind.BULLETS,
+                title="Раздел (2)",
+                bullets=["Первый тезис", "Второй тезис", "Третий тезис"],
+                content_blocks=[
+                    SlideContentBlock(
+                        kind=SlideContentBlockKind.BULLET_LIST,
+                        items=["Первый тезис", "Второй тезис", "Третий тезис"],
+                    )
+                ],
+                preferred_layout_key="list_full_width",
+            ),
+        ]
+
+        compacted = service._compact_continuation_slides(slides, "Раздел", "")
+
+        self.assertEqual(len(compacted), 1)
+        self.assertEqual(compacted[0].title, "Раздел")
+        self.assertGreaterEqual(len(compacted[0].bullets), 4)
+
+    def test_preferred_textual_layout_keeps_mixed_paragraph_dominant_slide_in_text_layout(self) -> None:
+        service = TextToPlanService()
+        layout_key = service._preferred_textual_layout_key(
+            [
+                SlideContentBlock(
+                    kind=SlideContentBlockKind.PARAGRAPH,
+                    text="Плотный narrative-блок объясняет логику сегмента, ограничения роста и экономику сопровождения.",
+                ),
+                SlideContentBlock(
+                    kind=SlideContentBlockKind.PARAGRAPH,
+                    text="Второй абзац продолжает narrative и должен оставаться в text layout, а не в широком bullet layout.",
+                ),
+                SlideContentBlock(
+                    kind=SlideContentBlockKind.BULLET_LIST,
+                    items=["Один уточняющий тезис"],
+                ),
+            ],
+            total_chars=240,
+        )
+
+        self.assertEqual(layout_key, "text_full_width")
+
+    def test_continuation_units_fit_single_slide_uses_text_capacity_for_mixed_text_render(self) -> None:
+        service = TextToPlanService()
+        units = [
+            ContinuationUnit(
+                kind="bullet",
+                text="Предсказуемость процесса онбординга и сопровождения должна работать как продуктовый оффер.",
+            ),
+            ContinuationUnit(
+                kind="paragraph",
+                text="Ключевой внешний тезис объясняет, что ограничение управляемого слоя не уменьшает масштаб компании, если отдельно показывать охват каталога и число глубоко интегрированных поставщиков.",
+            ),
+            ContinuationUnit(
+                kind="paragraph",
+                text="Внутренний тезис связывает это с unit-экономикой, cost-to-serve и необходимостью считать маржинальный вклад каждого нового поставщика по сегментам.",
+            ),
+            ContinuationUnit(
+                kind="paragraph",
+                text="Завершающий абзац добавляет требования к данным, операционным метрикам и логике распределения затрат, из-за чего такой mixed bucket уже не должен считаться помещающимся в один text slide.",
+            ),
+        ]
+
+        self.assertFalse(service._continuation_units_fit_single_slide(units))
+
+    def test_rebalance_continuation_buckets_fills_short_leading_text_bucket(self) -> None:
+        service = TextToPlanService()
+        buckets = [
+            [ContinuationUnit(kind="paragraph", text="A" * 128)],
+            [
+                ContinuationUnit(kind="paragraph", text="B" * 220),
+                ContinuationUnit(kind="paragraph", text="C" * 220),
+            ],
+        ]
+
+        rebalanced = service._rebalance_continuation_buckets(buckets, max_chars=900, max_weight=12.25)
+
+        self.assertEqual(len(rebalanced[0]), 2)
+        self.assertEqual(sum(len(unit.text) for unit in rebalanced[0]), 348)
+        self.assertEqual(len(rebalanced[1]), 1)
+
+    def test_rebalance_continuation_groups_does_not_shift_later_section_ranges(self) -> None:
+        service = TextToPlanService()
+        slides = [
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел A", subtitle="Подзаголовок A", text="A" * 180, preferred_layout_key="text_full_width"),
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел A (2)", text="B" * 120, preferred_layout_key="text_full_width"),
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел A (3)", text="C" * 120, preferred_layout_key="text_full_width"),
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел B", subtitle="Подзаголовок B", text="D" * 220, preferred_layout_key="text_full_width"),
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел B (2)", text="E" * 220, preferred_layout_key="text_full_width"),
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел B (3)", text="F" * 220, preferred_layout_key="text_full_width"),
+        ]
+
+        rebalanced = service._rebalance_continuation_groups(slides)
+        titles = [service._base_slide_title(slide.title) for slide in rebalanced]
+
+        self.assertIn("Раздел A", titles)
+        self.assertIn("Раздел B", titles)
+        first_b_index = titles.index("Раздел B")
+        self.assertTrue(all(title == "Раздел A" for title in titles[:first_b_index]))
+        self.assertTrue(all(title == "Раздел B" for title in titles[first_b_index:]))
+
+    def test_chunk_text_for_slides_keeps_short_inline_heading_with_following_paragraph(self) -> None:
+        service = TextToPlanService()
+        first_paragraph = (
+            "А3 оперирует в уникальной нише на стыке инфраструктурных финтех-решений для регулярных платежей. "
+            "Конкурентное поле формируют косвенные игроки, которые закрывают отдельные сегменты цепочки ценности, "
+            "но не воспроизводят модель А3 целиком. Этот абзац специально сделан достаточно длинным, чтобы раздел "
+            "ушел в continuation-режим и планировщик делил его на несколько текстовых слайдов."
+        )
+        second_paragraph = (
+            "Ни один конкурент не воспроизводит модель А3 целиком: мультибанковская сеть, агрегация поставщиков "
+            "и прямой доступ к инфраструктурным государственным сервисам формируют барьер входа. Главные риски "
+            "связаны с крупными банками, которые строят собственную инфраструктуру, поэтому дальше нужен отдельный "
+            "смысловой блок с преимуществами и митигацией."
+        )
+        chunks = service._refine_text_continuation_units(
+            [first_paragraph, "Конкурентные преимущества А3", second_paragraph]
+        )
+        batches = service._chunk_text_for_slides(chunks)
+        self.assertGreaterEqual(len(batches), 2)
+        first_slide_payload = " ".join(batches[0])
+        second_slide_payload = " ".join(batches[1])
+
+        self.assertNotIn("Конкурентные преимущества А3", first_slide_payload)
+        self.assertIn("Конкурентные преимущества А3", second_slide_payload)
+
     def test_cover_meta_stays_compact_for_long_first_section(self) -> None:
         service = TextToPlanService()
         blocks = [
@@ -180,6 +382,64 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertLessEqual(len((cover.notes or "").splitlines()), 2)
         self.assertNotIn("многозначна", cover.notes or "")
         self.assertNotIn("как минимум три уровня", cover.notes or "")
+
+    def test_long_lead_paragraph_is_not_promoted_to_default_subtitle(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="heading", text="Раздел стратегии", level=1),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "Это длинный вводный narrative-абзац, который объясняет контекст, ограничения, экономику и "
+                    "операционные последствия, поэтому он не должен превращаться в subtitle."
+                ),
+            ),
+            DocumentBlock(kind="paragraph", text="Второй абзац продолжает аналитическую мысль."),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title="Раздел стратегии",
+            blocks=blocks,
+        )
+
+        self.assertEqual(plan.slides[1].title, "Раздел стратегии")
+        self.assertFalse(plan.slides[1].subtitle)
+
+    def test_first_content_section_does_not_repeat_cover_title_when_subheading_exists(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="heading", text="Большая стратегическая презентация", level=1),
+            DocumentBlock(kind="subheading", text='Контекст задачи и что именно считать "поставщиком"', level=2),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    'В регулярных платежах метрика "количество поставщиков" почти всегда многозначна и требует '
+                    "явного определения на уровне методологии."
+                ),
+            ),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "Второй абзац нужен, чтобы первая содержательная секция точно рендерилась как самостоятельный "
+                    "content slide, а не схлопывалась в пограничный короткий кейс."
+                ),
+            ),
+            DocumentBlock(kind="subheading", text="Следующий раздел", level=2),
+            DocumentBlock(kind="paragraph", text="Второй раздел нужен для проверки структуры."),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title="Большая стратегическая презентация",
+            blocks=blocks,
+        )
+
+        self.assertEqual(plan.slides[0].title, "Большая стратегическая презентация")
+        self.assertEqual(plan.slides[1].title, 'Контекст задачи и что именно считать "поставщиком"')
+        self.assertNotEqual(plan.slides[1].title, plan.slides[0].title)
 
     def test_cover_keeps_short_meta_lines_when_present(self) -> None:
         service = TextToPlanService()
@@ -298,17 +558,152 @@ class TextToPlanServiceTests(unittest.TestCase):
             blocks=blocks,
         )
 
-        flattened = [
-            item
-            for slide in plan.slides
-            if (slide.title or "").startswith("Контур взаимодействия")
-            for item in slide.bullets
-        ]
+        flattened = []
+        for slide in plan.slides:
+            if not (slide.title or "").startswith("Контур взаимодействия"):
+                continue
+            if slide.content_blocks:
+                for block in slide.content_blocks:
+                    if block.text and block.text.strip():
+                        flattened.append(block.text.strip())
+                    flattened.extend(item.strip() for item in block.items if item.strip())
+                continue
+            flattened.extend(item for item in slide.bullets if item.strip())
         intro_index = next(index for index, item in enumerate(flattened) if item.startswith("Вводный абзац"))
         list_index = next(index for index, item in enumerate(flattened) if item.startswith("Первый список"))
         outro_index = next(index for index, item in enumerate(flattened) if item.startswith("Заключающий абзац"))
         self.assertLess(intro_index, list_index)
         self.assertLess(list_index, outro_index)
+        mixed_slides = [
+            slide for slide in plan.slides if (slide.title or "").startswith("Контур взаимодействия") and slide.content_blocks
+        ]
+        self.assertTrue(mixed_slides)
+        flattened_kinds = [block.kind for slide in mixed_slides for block in slide.content_blocks]
+        self.assertIn(SlideContentBlockKind.PARAGRAPH, flattened_kinds)
+        self.assertIn(SlideContentBlockKind.BULLET_LIST, flattened_kinds)
+
+    def test_planner_marks_question_and_callout_content_blocks(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="title", text="Стратегия платформы"),
+            DocumentBlock(kind="heading", text="Ключевые развилки", level=1),
+            DocumentBlock(kind="paragraph", text="Вопрос: почему нужен второй контур инфраструктуры?"),
+            DocumentBlock(kind="paragraph", text="Важно: без резервного контура SLA для критичных платежей останется хрупким."),
+            DocumentBlock(kind="paragraph", text="Итог: это решение уменьшает риск простоя в критическом платёжном контуре."),
+            DocumentBlock(kind="heading", text="Следующий раздел", level=1),
+            DocumentBlock(kind="paragraph", text="Короткий завершающий блок."),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title=None,
+            tables=[],
+            blocks=blocks,
+        )
+
+        target_slides = [slide for slide in plan.slides if (slide.title or "").startswith("Ключевые развилки")]
+        self.assertTrue(target_slides)
+        block_kinds = [block.kind for slide in target_slides for block in slide.content_blocks]
+        self.assertIn(SlideContentBlockKind.QA_ITEM, block_kinds)
+        self.assertIn(SlideContentBlockKind.CALLOUT, block_kinds)
+
+    def test_semantic_question_and_callout_section_prefers_text_layout(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="title", text="Стратегия платформы"),
+            DocumentBlock(kind="heading", text="FAQ и выводы", level=1),
+            DocumentBlock(kind="paragraph", text="Вопрос: почему нужен второй контур инфраструктуры?"),
+            DocumentBlock(kind="paragraph", text="Важно: резервный контур удерживает SLA в часы пиковой нагрузки."),
+            DocumentBlock(kind="paragraph", text="Итог: архитектура снижает риск простоя без усложнения операционной модели."),
+            DocumentBlock(kind="heading", text="Следующий раздел", level=1),
+            DocumentBlock(kind="paragraph", text="Короткий завершающий блок."),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title=None,
+            tables=[],
+            blocks=blocks,
+        )
+
+        target_slides = [slide for slide in plan.slides if (slide.title or "").startswith("FAQ и выводы")]
+        self.assertEqual(len(target_slides), 1)
+        slide = target_slides[0]
+        self.assertEqual(slide.kind, SlideKind.TEXT)
+        self.assertEqual(slide.preferred_layout_key, "text_full_width")
+        self.assertEqual(
+            [block.kind for block in slide.content_blocks],
+            [
+                SlideContentBlockKind.QA_ITEM,
+                SlideContentBlockKind.CALLOUT,
+                SlideContentBlockKind.CALLOUT,
+            ],
+        )
+
+    def test_semantic_question_and_callout_with_bullets_prefers_list_layout(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="title", text="Стратегия платформы"),
+            DocumentBlock(kind="heading", text="Разбор сценария", level=1),
+            DocumentBlock(kind="paragraph", text="Вопрос: где основной источник операционного риска?"),
+            DocumentBlock(kind="list", items=["Пиковая нагрузка на платежный шлюз.", "Единая точка отказа в процессинге."]),
+            DocumentBlock(kind="paragraph", text="Важно: резервирование нужно внедрять до масштабирования канала."),
+            DocumentBlock(kind="heading", text="Следующий раздел", level=1),
+            DocumentBlock(kind="paragraph", text="Короткий завершающий блок."),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title=None,
+            tables=[],
+            blocks=blocks,
+        )
+
+        target_slides = [slide for slide in plan.slides if (slide.title or "").startswith("Разбор сценария")]
+        self.assertTrue(target_slides)
+        self.assertTrue(all(slide.preferred_layout_key == "list_full_width" for slide in target_slides))
+        self.assertTrue(any(block.kind == SlideContentBlockKind.QA_ITEM for slide in target_slides for block in slide.content_blocks))
+        self.assertTrue(any(block.kind == SlideContentBlockKind.BULLET_LIST for slide in target_slides for block in slide.content_blocks))
+
+    def test_mixed_continuation_with_paragraph_dominance_stays_text_slide(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="title", text="Стратегия платформы"),
+            DocumentBlock(kind="heading", text="Гибридный раздел", level=1),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "Первый длинный абзац задает контекст, объясняет управленческую проблему и формирует narrative, "
+                    "который не должен автоматически превращаться в bullet list."
+                ),
+            ),
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "Второй длинный абзац продолжает аналитическую мысль, связывает экономику поставщика с архитектурой "
+                    "продукта и по смыслу должен остаться paragraph flow."
+                ),
+            ),
+            DocumentBlock(kind="list", items=["Короткий тезис.", "Еще один тезис."]),
+            DocumentBlock(kind="heading", text="Следующий раздел", level=1),
+            DocumentBlock(kind="paragraph", text="Короткий завершающий блок."),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title=None,
+            tables=[],
+            blocks=blocks,
+        )
+
+        target_slides = [slide for slide in plan.slides if (slide.title or "").startswith("Гибридный раздел")]
+        self.assertTrue(target_slides)
+        self.assertEqual(target_slides[0].kind, SlideKind.TEXT)
+        self.assertTrue(any(block.kind == SlideContentBlockKind.BULLET_LIST for block in target_slides[0].content_blocks))
 
     def test_first_section_with_tables_is_not_swallowed_by_cover(self) -> None:
         service = TextToPlanService()
@@ -342,6 +737,29 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(plan.slides), 3)
         self.assertEqual(plan.slides[0].preferred_layout_key, "cover")
         self.assertTrue(any(slide.table is not None for slide in plan.slides[1:]))
+
+    def test_planner_skips_appendix_like_source_section_from_main_deck(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="title", text="Стратегический обзор"),
+            DocumentBlock(kind="heading", text="1. Контекст", level=1),
+            DocumentBlock(kind="paragraph", text="Основной narrative раздел должен остаться в deck."),
+            DocumentBlock(kind="heading", text="Какие источники данных использовать", level=1),
+            DocumentBlock(kind="paragraph", text="https://example.com/source-1"),
+            DocumentBlock(kind="paragraph", text="https://example.com/source-2"),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title=None,
+            tables=[],
+            blocks=blocks,
+        )
+
+        titles = [slide.title or "" for slide in plan.slides]
+        self.assertTrue(any(title.startswith("1. Контекст") for title in titles))
+        self.assertFalse(any("Какие источники данных использовать" in title for title in titles))
 
     def test_non_narrative_document_uses_safe_fallback_planner(self) -> None:
         service = TextToPlanService()
@@ -850,6 +1268,40 @@ class TextToPlanServiceTests(unittest.TestCase):
             self.assertLessEqual(body_runs[0].font.size.pt, 13)
             self.assertEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
+    def test_generator_styles_qa_and_callout_blocks_differently(self) -> None:
+        generator = PptxGenerator()
+        presentation = Presentation(str(self.template_path))
+        slide = presentation.slides[0]
+        shape: Shape = slide.shapes.add_textbox(0, 0, 6_000_000, 3_000_000)
+
+        generator._set_content_blocks(
+            shape,
+            [
+                SlideContentBlock(kind=SlideContentBlockKind.QA_ITEM, text="Почему нужен второй контур инфраструктуры?"),
+                SlideContentBlock(
+                    kind=SlideContentBlockKind.CALLOUT,
+                    text="Важно: резервный контур снижает риск простоя в критическом платёжном контуре.",
+                ),
+                SlideContentBlock(
+                    kind=SlideContentBlockKind.BULLET_LIST,
+                    items=["Первый операционный тезис.", "Второй операционный тезис."],
+                ),
+            ],
+            TEXT_FULL_WIDTH_PROFILE,
+        )
+
+        paragraphs = [paragraph for paragraph in shape.text_frame.paragraphs if paragraph.text.strip()]
+        self.assertGreaterEqual(len(paragraphs), 4)
+        qa_run = paragraphs[0].runs[0]
+        callout_run = paragraphs[1].runs[0]
+        bullet_run = paragraphs[2].runs[0]
+
+        self.assertTrue(qa_run.font.bold)
+        self.assertFalse(bool(qa_run.font.italic))
+        self.assertTrue(callout_run.font.bold)
+        self.assertTrue(callout_run.font.italic)
+        self.assertFalse(bool(bullet_run.font.italic))
+
     def test_generator_keeps_footer_in_bottom_zone(self) -> None:
         plan = PresentationPlan(
             template_id="corp_light_v1",
@@ -1238,6 +1690,25 @@ class TextToPlanServiceTests(unittest.TestCase):
             self.assertLessEqual(title_runs[0].font.size.pt, 46)
             self.assertGreater(meta.top, title.top + title.height)
             self.assertGreaterEqual(title.height, 1422646)
+
+    def test_split_table_for_slides_preserves_fill_colors_across_chunks(self) -> None:
+        service = TextToPlanService()
+        table = TableBlock(
+            headers=["Поставщик", "Статус"],
+            header_fill_colors=["1F4E79", "1F4E79"],
+            rows=[[f"Поставщик {index}", f"Статус {index}"] for index in range(1, 14)],
+            row_fill_colors=[
+                [None, "D9EAF7"] if index % 2 else ["FDE7D7", None]
+                for index in range(1, 14)
+            ],
+        )
+
+        chunks = service._split_table_for_slides(table)
+
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertTrue(all(chunk.header_fill_colors == ["1F4E79", "1F4E79"] for chunk in chunks))
+        flattened_row_fill_colors = [row for chunk in chunks for row in chunk.row_fill_colors]
+        self.assertEqual(flattened_row_fill_colors, table.row_fill_colors)
 
 
 if __name__ == "__main__":

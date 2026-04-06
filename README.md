@@ -44,6 +44,14 @@ examples/              Example manifests and presentation plans
 ```
 
 Storage rules are documented in [storage/README.md](/C:/Project/a3presentation/storage/README.md).
+Analysis and troubleshooting workflow is documented in [docs/analysis_rule.md](/C:/Project/a3presentation/docs/analysis_rule.md).
+Document-class quality expectations are documented in [docs/document_class_matrix.md](/C:/Project/a3presentation/docs/document_class_matrix.md).
+
+Working standard:
+
+- fixes must be global, not tuned to one file or one slide
+- current template must not be treated as a constant because users and companies can upload their own templates
+- after analysis, the next safe implementation step should be executed automatically without asking for redundant confirmation
 
 ## Local run
 
@@ -80,7 +88,7 @@ yarn verify
 
 ## Railway deployment
 
-Recommended production target: Railway.
+Railway remains a valid deployment target for split frontend/backend hosting.
 
 Deploy the project as two services inside one Railway project:
 
@@ -108,7 +116,7 @@ Railway-specific notes:
 
 ## Timeweb Cloud Server
 
-If you want the whole system on one VPS, use the server deployment mode.
+The current production setup runs on a single Timeweb VPS.
 
 Guide:
 
@@ -123,6 +131,23 @@ bash scripts/deploy_server.sh
 On Timeweb server deploys, backend reads versioned templates directly from `/app/storage/templates` inside the image.
 Only runtime outputs stay on the persistent host volume.
 The server compose publishes docker nginx on `127.0.0.1:8080`, because public `80/443` are handled by host nginx with Let's Encrypt.
+Production domain:
+
+- `https://a3presentation.ru`
+- `https://www.a3presentation.ru`
+
+Current production deployment flow:
+
+1. push verified code into `dev`
+2. GitHub Actions runs backend, quality-contracts, frontend verify, and frontend smoke
+3. if all checks pass, `deploy-timeweb` connects to the server over SSH
+4. server checkout is hard-reset to `origin/dev`
+5. `bash scripts/deploy_server.sh` recreates the full docker app stack
+
+Current production checks:
+
+- `https://a3presentation.ru/api/health`
+- `https://a3presentation.ru/api/templates`
 
 ## Test and verification
 
@@ -156,9 +181,9 @@ yarn test:smoke
 yarn test:visual
 ```
 
-GitHub Actions should run backend tests, frontend verification, and the dedicated quality-contract gate on pushes and pull requests for `dev`, `test`, and `main`.
+GitHub Actions runs backend tests, frontend verification, and the dedicated quality-contract gate on pushes and pull requests for `dev`, `test`, and `main`.
 Frontend smoke tests are also suitable as a separate CI gate.
-For production-like server deploys, pushes to `dev` can also trigger an SSH deploy job to Timeweb after all checks pass.
+For the actual production server, pushes to `dev` trigger an SSH deploy job to Timeweb after all checks pass.
 
 ## API entry points
 
@@ -196,8 +221,8 @@ curl -X POST http://127.0.0.1:8000/presentations/generate ^
 ## Current focus
 
 - hardening the semantic and planning pipeline
-- expanding regression coverage for real documents
-- improving layout safety for dense content
-- keeping planner, generator, and quality contracts aligned
+- expanding regression coverage for real documents and document classes
+- improving layout safety for dense content and generated decks
+- keeping planner, generator, deck audit, and production deploy contracts aligned
 - preserving mixed-content order across extractor, planner, generator, and deck audit
 - keeping generated artifacts out of the repository

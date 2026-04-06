@@ -5,7 +5,14 @@ import re
 from dataclasses import dataclass, field
 
 from a3presentation.domain.api import ChartOverride, DocumentBlock
-from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec, TableBlock
+from a3presentation.domain.presentation import (
+    PresentationPlan,
+    SlideContentBlock,
+    SlideContentBlockKind,
+    SlideKind,
+    SlideSpec,
+    TableBlock,
+)
 from a3presentation.domain.semantic import DocumentKind, SemanticDocument, SemanticImage, SemanticSection
 from a3presentation.services.layout_capacity import (
     LIST_FULL_WIDTH_PROFILE,
@@ -43,6 +50,12 @@ class TextToPlanService:
     EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
     PHONE_PATTERN = re.compile(r"(\+?\d[\d\s().-]{7,}\d)")
     HEADING_PATTERN = re.compile(r"^(\d+(\.\d+)*[.)]?\s+.+|[А-ЯA-Z].{0,90})$")
+    URL_ONLY_PATTERN = re.compile(r"^(?:https?://|www\.)\S+$", re.IGNORECASE)
+    REFERENCE_LINE_PATTERN = re.compile(r"^(?:\[\d+\]\s*)+(?:https?://\S+)?$", re.IGNORECASE)
+    APPENDIX_HEADING_PATTERN = re.compile(
+        r"\b(?:источники?|references?|reference|литература|bibliography|appendix|приложение)\b",
+        re.IGNORECASE,
+    )
     CARD_BULLET_MAX_CHARS = 100
     CARD_BULLET_COUNT = 3
     LIST_BATCH_SIZE = LIST_FULL_WIDTH_PROFILE.max_items
@@ -67,6 +80,11 @@ class TextToPlanService:
 
     def _text_primary_char_budget(self) -> int:
         return self.text_profile.max_primary_chars
+
+    def _continuation_primary_char_budget(self, subtitle: str = "") -> int:
+        if subtitle.strip():
+            return min(self.text_profile.max_chars - 120, 380)
+        return min(self.text_profile.max_chars - 60, 460)
 
     def _bullet_slide_item_budget(self) -> int:
         return self.list_profile.max_items
@@ -99,6 +117,7 @@ class TextToPlanService:
         document_kind = semantic_document.kind.value
 
         cover_title, cover_meta = self._build_cover(plan_title, sections, blocks or [])
+        sections = self._detach_cover_title_from_first_section(sections, cover_title)
         slides: list[SlideSpec] = [
             SlideSpec(
                 kind=SlideKind.TITLE,
@@ -203,6 +222,7 @@ class TextToPlanService:
             subtitle=slide.subtitle,
             text=slide.text,
             bullets=slide.bullets,
+            content_blocks=slide.content_blocks,
             left_bullets=slide.left_bullets,
             right_bullets=slide.right_bullets,
             chart=override.selected_chart.model_copy(deep=True),
@@ -236,7 +256,7 @@ class TextToPlanService:
 
     def _section_from_semantic(self, section: SemanticSection) -> Section:
         content_blocks: list[SectionContentBlock] = [
-            SectionContentBlock(kind="paragraph", text=paragraph)
+            SectionContentBlock(kind=self._classify_content_block_kind(paragraph), text=paragraph)
             for paragraph in section.paragraphs
         ]
         if section.bullets:
@@ -371,7 +391,7 @@ class TextToPlanService:
                     current = None
                     return
             if not current.subtitle and current.paragraphs:
-                current.subtitle = current.paragraphs[0][:120]
+                current.subtitle = self._derive_default_subtitle(current.paragraphs)
             sections.append(current)
             current = None
 
@@ -416,6 +436,8 @@ class TextToPlanService:
 
             if block.kind == "list" and block.items:
                 items = [item.strip()[:220] for item in block.items if item.strip()]
+                if self._is_reference_list(items):
+                    continue
                 current.bullet_lists.append(items)
                 current.content_blocks.append(SectionContentBlock(kind="list", items=tuple(items)))
                 continue
@@ -423,8 +445,12 @@ class TextToPlanService:
             if block.text:
                 text = block.text.strip()
                 if text:
+                    if self._should_skip_reference_tail_text(text):
+                        continue
                     current.paragraphs.append(text[:1200])
-                    current.content_blocks.append(SectionContentBlock(kind="paragraph", text=text[:1200]))
+                    current.content_blocks.append(
+                        SectionContentBlock(kind=self._classify_content_block_kind(text[:1200]), text=text[:1200])
+                    )
 
         flush()
         return [section for section in sections if section.title]
@@ -448,7 +474,7 @@ class TextToPlanService:
                     current = None
                     return
             if not current.subtitle and current.paragraphs:
-                current.subtitle = current.paragraphs[0][:120]
+                current.subtitle = self._derive_default_subtitle(current.paragraphs)
             sections.append(current)
             current = None
 
@@ -476,12 +502,17 @@ class TextToPlanService:
                     current.content_blocks.append(SectionContentBlock(kind="list", items=(normalized_bullet[:220],)))
             else:
                 current.paragraphs.append(line[:1200])
-                current.content_blocks.append(SectionContentBlock(kind="paragraph", text=line[:1200]))
+                current.content_blocks.append(
+                    SectionContentBlock(kind=self._classify_content_block_kind(line[:1200]), text=line[:1200])
+                )
 
         flush()
         return sections
 
     def _section_to_slides(self, section: Section) -> list[SlideSpec]:
+        if self._is_appendix_like_section(section):
+            return []
+
         section_lines = [*section.paragraphs, *[item for bullet_list in section.bullet_lists for item in bullet_list]]
         slides: list[SlideSpec] = []
 
@@ -502,6 +533,39 @@ class TextToPlanService:
             if slide is not None:
                 slides.append(slide)
         return slides
+
+    def _detach_cover_title_from_first_section(self, sections: list[Section], cover_title: str) -> list[Section]:
+        if not sections:
+            return sections
+
+        first = sections[0]
+        if not first.title or not cover_title:
+            return sections
+        if self._normalize_line(first.title) != self._normalize_line(cover_title):
+            return sections
+        if not (first.subtitle or "").strip():
+            return sections
+
+        adjusted_first = Section(
+            title=first.subtitle.strip()[:120],
+            level=max(first.level + 1, 2),
+            subtitle=(first.paragraphs[0][:120] if first.paragraphs else ""),
+            paragraphs=first.paragraphs.copy(),
+            bullet_lists=[items.copy() for items in first.bullet_lists],
+            tables=first.tables.copy(),
+            images=first.images.copy(),
+            content_blocks=first.content_blocks.copy(),
+        )
+        return [adjusted_first, *sections[1:]]
+
+    def _is_appendix_like_section(self, section: Section) -> bool:
+        title = self._normalize_line(section.title or "")
+        if not title:
+            return False
+        lowered = title.lower()
+        if "какие источники данных" in lowered:
+            return True
+        return bool(self.APPENDIX_HEADING_PATTERN.search(title))
 
     def _build_table_slides(self, section: Section) -> list[SlideSpec]:
         slides: list[SlideSpec] = []
@@ -597,7 +661,22 @@ class TextToPlanService:
                 chunks[-2].append(trailing_row)
                 chunks.pop()
 
-        return [TableBlock(headers=table.headers, rows=chunk) for chunk in chunks]
+        chunked_fill_colors: list[list[list[str | None]]] = []
+        row_offset = 0
+        for chunk in chunks:
+            chunk_length = len(chunk)
+            chunked_fill_colors.append(table.row_fill_colors[row_offset : row_offset + chunk_length])
+            row_offset += chunk_length
+
+        return [
+            TableBlock(
+                headers=table.headers,
+                header_fill_colors=table.header_fill_colors.copy(),
+                rows=chunk,
+                row_fill_colors=chunk_fill_colors,
+            )
+            for chunk, chunk_fill_colors in zip(chunks, chunked_fill_colors, strict=False)
+        ]
 
     def _estimate_table_row_weight(self, row: list[str], col_count: int) -> float:
         max_length = max((len(cell or "") for cell in row), default=0)
@@ -633,7 +712,7 @@ class TextToPlanService:
             and max_bullet_len <= self.CARD_BULLET_MAX_CHARS
         ):
             return True
-        if bullet_count <= self.list_profile.max_items and total_chars <= self.list_profile.max_chars:
+        if bullet_count > 0 and bullet_count <= self.list_profile.max_items and total_chars <= self.list_profile.max_chars:
             return True
         return False
 
@@ -646,6 +725,7 @@ class TextToPlanService:
                 kind=SlideKind.BULLETS,
                 title=section.title,
                 bullets=bullets,
+                content_blocks=self._content_blocks_from_units(units),
                 preferred_layout_key="cards_3",
             )
 
@@ -654,13 +734,23 @@ class TextToPlanService:
 
         if len(text) <= self._text_slide_char_budget():
             primary_text, secondary_text = self._split_text_for_slide(text)
-            subtitle = self._normalize_subtitle(section.subtitle or "", primary_text)
+            content_blocks = [
+                SlideContentBlock(kind=SlideContentBlockKind(self._classify_content_block_kind(block.text)), text=block.text)
+                for block in section.content_blocks
+                if block.kind in {"paragraph", "callout", "qa_item"} and block.text.strip()
+            ] or self._paragraph_blocks_from_parts(primary_text, secondary_text)
+            subtitle = self._sanitize_content_subtitle(
+                self._normalize_subtitle(section.subtitle or "", primary_text),
+                content_blocks,
+                fallback_text=primary_text,
+            )
             return SlideSpec(
                 kind=SlideKind.TEXT,
                 title=section.title,
                 subtitle=subtitle,
                 text=primary_text,
                 notes=secondary_text,
+                content_blocks=content_blocks,
                 preferred_layout_key="text_full_width",
             )
 
@@ -669,6 +759,7 @@ class TextToPlanService:
             kind=SlideKind.BULLETS,
             title=section.title,
             bullets=sentences[: self._bullet_slide_item_budget()],
+            content_blocks=[self._list_block(sentences[: self._bullet_slide_item_budget()])],
             preferred_layout_key="list_full_width",
         )
 
@@ -679,32 +770,32 @@ class TextToPlanService:
 
         if all(unit.kind == "paragraph" for unit in units):
             slides: list[SlideSpec] = []
-            batches = self._chunk_text_for_slides([unit.text for unit in units])
+            text_units = self._refine_text_continuation_units([unit.text for unit in units])
+            batches = self._chunk_text_for_slides(text_units)
             for index, batch in enumerate(batches):
                 slide_title = section.title if index == 0 else f"{section.title} ({index + 1})"
-                if len(batch) <= 2 and len(" ".join(batch)) <= self._text_slide_char_budget():
-                    merged = " ".join(batch)
-                    primary_text, secondary_text = self._split_text_for_slide(merged)
-                    subtitle = self._normalize_subtitle(section.subtitle or "", primary_text)
-                    slides.append(
-                        SlideSpec(
-                            kind=SlideKind.TEXT,
-                            title=slide_title,
-                            subtitle=subtitle,
-                            text=primary_text,
-                            notes=secondary_text,
-                            preferred_layout_key="text_full_width",
-                        )
+                content_blocks = self._paragraph_blocks_from_parts(*batch)
+                merged = " ".join(batch)
+                primary_text, secondary_text = self._split_text_for_slide(
+                    merged,
+                    primary_budget=self._continuation_primary_char_budget(section.subtitle or ""),
+                )
+                subtitle = self._sanitize_content_subtitle(
+                    self._normalize_subtitle(section.subtitle or "", primary_text),
+                    content_blocks,
+                    fallback_text=primary_text,
+                )
+                slides.append(
+                    SlideSpec(
+                        kind=SlideKind.TEXT,
+                        title=slide_title,
+                        subtitle=subtitle,
+                        text=primary_text,
+                        notes=secondary_text,
+                        content_blocks=content_blocks,
+                        preferred_layout_key="text_full_width",
                     )
-                else:
-                    slides.append(
-                        SlideSpec(
-                            kind=SlideKind.BULLETS,
-                            title=slide_title,
-                            bullets=batch[: self.list_profile.max_items],
-                            preferred_layout_key="list_full_width",
-                        )
-                    )
+                )
             return slides
 
         slides = []
@@ -719,10 +810,10 @@ class TextToPlanService:
         if section.content_blocks:
             units: list[ContinuationUnit] = []
             for block in section.content_blocks:
-                if block.kind == "paragraph" and block.text.strip():
+                if block.kind in {"paragraph", "callout", "qa_item"} and block.text.strip():
                     units.extend(
                         ContinuationUnit(kind="paragraph", text=chunk)
-                        for chunk in self._sentence_chunks(block.text.strip())
+                        for chunk in self._paragraph_chunks_for_text_flow(block.text.strip())
                         if chunk.strip()
                     )
                 elif block.kind == "list":
@@ -736,7 +827,7 @@ class TextToPlanService:
         units = [
             ContinuationUnit(kind="paragraph", text=chunk)
             for paragraph in section.paragraphs
-            for chunk in self._sentence_chunks(self._normalize_line(paragraph))
+            for chunk in self._paragraph_chunks_for_text_flow(self._normalize_line(paragraph))
             if chunk.strip()
         ]
         units.extend(
@@ -801,24 +892,114 @@ class TextToPlanService:
         batches: list[list[str]] = []
         current_batch: list[str] = []
         current_weight = 0.0
+        current_chars = 0
 
         for chunk in chunks:
             chunk_weight = self._estimate_text_chunk_weight(chunk)
+            if (
+                current_batch
+                and len(current_batch) > 1
+                and self._looks_like_inline_section_heading(current_batch[-1])
+                and not self._looks_like_inline_section_heading(chunk)
+                and current_chars >= int(self.text_profile.max_chars * 0.45)
+            ):
+                trailing_heading = current_batch.pop()
+                batches.append(current_batch)
+                current_batch = [trailing_heading]
+                current_weight = self._estimate_text_chunk_weight(trailing_heading)
+                current_chars = len(trailing_heading)
+
             if current_batch and (
                 len(current_batch) >= self.text_profile.max_items
                 or current_weight + chunk_weight > self._text_slide_weight_budget()
+                or current_chars + len(chunk) > self.text_profile.max_chars
             ):
-                batches.append(current_batch)
-                current_batch = []
-                current_weight = 0.0
+                if (
+                    len(current_batch) > 1
+                    and self._looks_like_inline_section_heading(current_batch[-1])
+                    and not self._looks_like_inline_section_heading(chunk)
+                ):
+                    trailing_heading = current_batch.pop()
+                    batches.append(current_batch)
+                    current_batch = [trailing_heading]
+                    current_weight = self._estimate_text_chunk_weight(trailing_heading)
+                    current_chars = len(trailing_heading)
+                else:
+                    batches.append(current_batch)
+                    current_batch = []
+                    current_weight = 0.0
+                    current_chars = 0
 
             current_batch.append(chunk)
             current_weight += chunk_weight
+            current_chars += len(chunk)
 
         if current_batch:
             batches.append(current_batch)
 
-        return batches
+        return self._rebalance_text_batches(batches)
+
+    def _refine_text_continuation_units(self, chunks: list[str]) -> list[str]:
+        refined: list[str] = []
+        for chunk in chunks:
+            refined.extend(
+                part
+                for part in self._paragraph_chunks_for_text_flow(
+                    chunk,
+                    max_chars=self._text_primary_char_budget(),
+                )
+                if part.strip()
+            )
+        return refined or [chunk for chunk in chunks if chunk.strip()]
+
+    def _rebalance_text_batches(self, batches: list[list[str]]) -> list[list[str]]:
+        if len(batches) <= 1:
+            return batches
+
+        min_tail_chars = max(int(self.text_profile.target_fill_ratio * self.text_profile.max_chars) - 160, 180)
+        rebalanced = [batch.copy() for batch in batches if batch]
+        if len(rebalanced) <= 1:
+            return rebalanced
+
+        for index in range(len(rebalanced) - 1):
+            current = rebalanced[index]
+            next_batch = rebalanced[index + 1]
+            if len(current) <= 1 or not next_batch:
+                continue
+            trailing_chunk = current[-1].strip()
+            if not self._looks_like_inline_section_heading(trailing_chunk):
+                continue
+            if self._looks_like_inline_section_heading(next_batch[0]):
+                continue
+            projected_next = [trailing_chunk, *next_batch]
+            projected_chars = sum(len(chunk) for chunk in projected_next)
+            projected_weight = sum(self._estimate_text_chunk_weight(chunk) for chunk in projected_next)
+            if projected_chars > self.text_profile.max_chars or projected_weight > self._text_slide_weight_budget():
+                continue
+            next_batch.insert(0, current.pop())
+
+        for index in range(len(rebalanced) - 1, 0, -1):
+            current = rebalanced[index]
+            if not current:
+                continue
+            current_chars = sum(len(chunk) for chunk in current)
+            if current_chars >= min_tail_chars:
+                continue
+
+            previous = rebalanced[index - 1]
+            while len(previous) > 1 and current_chars < min_tail_chars:
+                candidate = previous[-1]
+                candidate_chars = len(candidate)
+                current_weight = sum(self._estimate_text_chunk_weight(chunk) for chunk in current)
+                candidate_weight = self._estimate_text_chunk_weight(candidate)
+                projected_chars = current_chars + candidate_chars
+                projected_weight = current_weight + candidate_weight
+                if projected_chars > self.text_profile.max_chars or projected_weight > self._text_slide_weight_budget():
+                    break
+                current.insert(0, previous.pop())
+                current_chars = projected_chars
+
+        return [batch for batch in rebalanced if batch]
 
     def _paragraphs_as_bullets(self, paragraphs: list[str]) -> list[str]:
         items: list[str] = []
@@ -828,6 +1009,90 @@ class TextToPlanService:
                 continue
             items.extend(self._sentence_chunks(normalized))
         return items
+
+    def _paragraph_chunks_for_text_flow(self, text: str, *, max_chars: int | None = None) -> list[str]:
+        normalized = self._normalize_line(text)
+        if not normalized:
+            return []
+        chunk_limit = max_chars or self.text_profile.max_chars
+        if len(normalized) <= chunk_limit:
+            return [normalized]
+
+        parts = [part.strip() for part in re.split(r"(?<=[.!?;:])\s+", normalized) if part.strip()]
+        if len(parts) <= 1:
+            return self._hard_wrap_text_chunks(normalized, chunk_limit)
+
+        chunks: list[str] = []
+        current = ""
+        for part in parts:
+            candidate = f"{current} {part}".strip() if current else part
+            if len(candidate) <= chunk_limit:
+                current = candidate
+                continue
+            if current:
+                chunks.append(current)
+            if len(part) <= chunk_limit:
+                current = part
+            else:
+                hard_chunks = self._hard_wrap_text_chunks(part, chunk_limit)
+                chunks.extend(hard_chunks[:-1])
+                current = hard_chunks[-1]
+        if current:
+            chunks.append(current)
+        return chunks
+
+    def _merge_heading_like_text_chunks(self, chunks: list[str]) -> list[str]:
+        return [chunk.strip() for chunk in chunks if chunk.strip()]
+
+    def _looks_like_inline_section_heading(self, text: str) -> bool:
+        normalized = self._normalize_line(text)
+        if not normalized:
+            return False
+        if len(normalized) > 80:
+            return False
+        if normalized.endswith((".", "!", "?", ";", ":")):
+            return False
+        if self._outline_heading_level(normalized) is not None:
+            return False
+        if self._looks_like_structured_label(normalized):
+            return False
+        words = normalized.split()
+        if not 2 <= len(words) <= 8:
+            return False
+        if any(word.startswith(("http://", "https://", "www.")) for word in words):
+            return False
+        letters = [char for char in normalized if char.isalpha()]
+        if not letters:
+            return False
+        uppercase_ratio = sum(1 for char in letters if char.isupper()) / len(letters)
+        return uppercase_ratio <= 0.45
+
+    def _hard_wrap_text_chunks(self, text: str, max_chars: int) -> list[str]:
+        chunks: list[str] = []
+        remaining = text.strip()
+        while remaining:
+            if len(remaining) <= max_chars:
+                chunks.append(remaining)
+                break
+            split_at = remaining.rfind(" ", 0, max_chars)
+            if split_at < int(max_chars * 0.5):
+                split_at = max_chars
+            chunks.append(remaining[:split_at].strip())
+            remaining = remaining[split_at:].strip()
+        return chunks
+
+    def _should_skip_reference_tail_text(self, text: str) -> bool:
+        normalized = self._normalize_line(text)
+        if not normalized:
+            return True
+        if self.URL_ONLY_PATTERN.match(normalized):
+            return True
+        if self.REFERENCE_LINE_PATTERN.match(normalized):
+            return True
+        return False
+
+    def _is_reference_list(self, items: list[str]) -> bool:
+        return bool(items) and all(self._should_skip_reference_tail_text(item) for item in items)
 
     def _estimate_text_chunk_weight(self, chunk: str) -> float:
         normalized = (chunk or "").strip()
@@ -860,18 +1125,19 @@ class TextToPlanService:
             weight += 0.2
         return weight
 
-    def _split_text_for_slide(self, text: str) -> tuple[str, str]:
+    def _split_text_for_slide(self, text: str, *, primary_budget: int | None = None) -> tuple[str, str]:
         normalized = text.strip()
-        if len(normalized) <= self._text_primary_char_budget():
+        effective_primary_budget = min(primary_budget or self._text_primary_char_budget(), self.text_profile.max_chars)
+        if len(normalized) <= effective_primary_budget:
             return normalized, ""
 
-        split_at = normalized.rfind(". ", 0, self._text_primary_char_budget())
+        split_at = normalized.rfind(". ", 0, effective_primary_budget)
         if split_at == -1:
-            split_at = normalized.rfind("; ", 0, self._text_primary_char_budget())
+            split_at = normalized.rfind("; ", 0, effective_primary_budget)
         if split_at == -1:
-            split_at = normalized.rfind(", ", 0, self._text_primary_char_budget())
-        if split_at == -1 or split_at < int(self._text_primary_char_budget() * 0.55):
-            split_at = self._text_primary_char_budget()
+            split_at = normalized.rfind(", ", 0, effective_primary_budget)
+        if split_at == -1 or split_at < int(effective_primary_budget * 0.55):
+            split_at = effective_primary_budget
         else:
             split_at += 1
 
@@ -892,6 +1158,60 @@ class TextToPlanService:
             return ""
         if len(normalized_subtitle) >= 24 and normalized_text.startswith(normalized_subtitle[:-1]):
             return ""
+        return normalized_subtitle[:120]
+
+    def _derive_default_subtitle(self, paragraphs: list[str]) -> str:
+        if not paragraphs:
+            return ""
+        candidate = self._normalize_line(paragraphs[0])[:120]
+        if self._looks_like_explicit_subtitle(candidate):
+            return candidate
+        return ""
+
+    def _looks_like_explicit_subtitle(self, text: str) -> bool:
+        normalized = self._normalize_line(text)
+        if not normalized:
+            return False
+        if len(normalized) > 110:
+            return False
+        if len(normalized.split()) > 14:
+            return False
+        sentence_like_punctuation = normalized.count(".") + normalized.count(";") + normalized.count("?") + normalized.count("!")
+        if sentence_like_punctuation >= 2:
+            return False
+        return True
+
+    def _sanitize_content_subtitle(
+        self,
+        subtitle: str,
+        content_blocks: list[SlideContentBlock],
+        fallback_text: str = "",
+    ) -> str:
+        normalized_subtitle = (subtitle or "").strip()
+        if not normalized_subtitle:
+            return ""
+        if not self._looks_like_explicit_subtitle(normalized_subtitle):
+            return ""
+
+        first_block_text = next(
+            (
+                (block.text or "").strip()
+                for block in content_blocks
+                if block.kind in {
+                    SlideContentBlockKind.PARAGRAPH,
+                    SlideContentBlockKind.CALLOUT,
+                    SlideContentBlockKind.QA_ITEM,
+                }
+                and (block.text or "").strip()
+            ),
+            "",
+        )
+        lead_text = first_block_text or (fallback_text or "").strip()
+        if lead_text:
+            if lead_text.startswith(normalized_subtitle):
+                return ""
+            if len(normalized_subtitle) >= 24 and lead_text.startswith(normalized_subtitle[:-1]):
+                return ""
         return normalized_subtitle[:120]
 
     def _should_use_cards_layout(self, title: str, bullets: list[str]) -> bool:
@@ -1007,6 +1327,9 @@ class TextToPlanService:
             text="\n".join(section.paragraphs[1:3]) if len(section.paragraphs) > 1 else "",
             left_bullets=[self._first_phone(all_lines)],
             right_bullets=[self._first_email(all_lines)],
+            content_blocks=self._paragraph_blocks_from_parts(
+                "\n".join(section.paragraphs[1:3]) if len(section.paragraphs) > 1 else ""
+            ),
             preferred_layout_key="contacts",
         )
 
@@ -1029,6 +1352,7 @@ class TextToPlanService:
                     kind=SlideKind.BULLETS,
                     title=f"{plan_title} - обзор",
                     bullets=summary_items[: self._bullet_slide_item_budget()],
+                    content_blocks=[self._list_block(summary_items[: self._bullet_slide_item_budget()])],
                     preferred_layout_key="list_full_width",
                 )
             )
@@ -1042,6 +1366,7 @@ class TextToPlanService:
                     title=title[:120],
                     text=primary_text,
                     notes=secondary_text,
+                    content_blocks=self._paragraph_blocks_from_parts(primary_text, secondary_text),
                     preferred_layout_key="text_full_width",
                 )
             )
@@ -1076,6 +1401,7 @@ class TextToPlanService:
                         title=plan_title,
                         text=primary_text,
                         notes=secondary_text,
+                        content_blocks=self._paragraph_blocks_from_parts(primary_text, secondary_text),
                         preferred_layout_key="text_full_width",
                     )
                 )
@@ -1095,6 +1421,7 @@ class TextToPlanService:
                     kind=SlideKind.BULLETS,
                     title=f"{plan_title} - профиль",
                     bullets=summary_items[: self.RESUME_SUMMARY_MAX_ITEMS],
+                    content_blocks=[self._list_block(summary_items[: self.RESUME_SUMMARY_MAX_ITEMS])],
                     preferred_layout_key="list_full_width",
                 )
             )
@@ -1115,6 +1442,7 @@ class TextToPlanService:
                     title=current_title,
                     text=primary_text,
                     notes=secondary_text,
+                    content_blocks=self._paragraph_blocks_from_parts(primary_text, secondary_text),
                     preferred_layout_key="text_full_width",
                 )
             )
@@ -1321,6 +1649,7 @@ class TextToPlanService:
                     kind=SlideKind.BULLETS,
                     title=f"{plan_title} - Приложение",
                     bullets=appendix_items[: self._bullet_slide_item_budget()],
+                    content_blocks=[self._list_block(appendix_items[: self._bullet_slide_item_budget()])],
                     preferred_layout_key="list_full_width",
                 )
             )
@@ -1328,6 +1657,9 @@ class TextToPlanService:
         return normalized_slides
 
     def _appendix_items(self, semantic_document: SemanticDocument) -> list[str]:
+        if semantic_document.kind == DocumentKind.REPORT:
+            return []
+
         items: list[str] = []
         for fact in semantic_document.facts[:3]:
             items.append(f"{fact.label}: {fact.value}"[:120])
@@ -1397,6 +1729,7 @@ class TextToPlanService:
             title=self._base_slide_title(previous.title),
             subtitle=previous.subtitle or current.subtitle,
             bullets=merged_bullets,
+            content_blocks=[self._list_block(merged_bullets)],
             preferred_layout_key="list_full_width",
         )
 
@@ -1407,6 +1740,11 @@ class TextToPlanService:
             text_parts = [part.strip() for part in (slide.text or "", slide.notes or "") if part and part.strip()]
             if not text_parts:
                 return []
+            total_chars = sum(len(part) for part in text_parts)
+            if total_chars > 180:
+                return None
+            if slide.content_blocks and len(slide.content_blocks) > 1:
+                return None
             return self._sentence_chunks(" ".join(text_parts))
         return None
 
@@ -1462,7 +1800,7 @@ class TextToPlanService:
                     grouped_ranges.append((group_start, index))
                 group_start = index
 
-        for start, end in grouped_ranges:
+        for start, end in reversed(grouped_ranges):
             group = rebalanced[start:end]
             rebuilt = self._rebalance_single_continuation_group(group)
             rebalanced[start:end] = rebuilt
@@ -1473,6 +1811,7 @@ class TextToPlanService:
         if len(slides) <= 1:
             return slides
 
+        all_text = all(slide.kind == SlideKind.TEXT for slide in slides)
         units: list[ContinuationUnit] = []
         subtitle = ""
         base_title = self._base_slide_title(slides[0].title)
@@ -1488,11 +1827,40 @@ class TextToPlanService:
 
         total_weight = sum(self._continuation_unit_weight(unit) for unit in units)
         total_chars = sum(len(unit.text) for unit in units)
-        min_by_items = math.ceil(len(units) / max(self._bullet_slide_item_budget(), 1))
-        min_by_chars = math.ceil(total_chars / max(self.list_profile.max_chars, 1))
-        min_by_weight = math.ceil(total_weight / max(self._list_slide_weight_budget() + 1.75, 1.0))
+        if all_text:
+            batches = self._chunk_text_for_slides(
+                self._refine_text_continuation_units([unit.text for unit in units if unit.text.strip()])
+            )
+            rebuilt: list[SlideSpec] = []
+            for index, batch in enumerate(batches):
+                if not batch:
+                    continue
+                slide_title = base_title if index == 0 else f"{base_title} ({index + 1})"
+                slide_subtitle = subtitle if index == 0 else ""
+                content_blocks = self._paragraph_blocks_from_parts(*batch)
+                merged = " ".join(batch)
+                primary_text, secondary_text = self._split_text_for_slide(merged)
+                rebuilt.append(
+                    SlideSpec(
+                        kind=SlideKind.TEXT,
+                        title=slide_title,
+                        subtitle=slide_subtitle,
+                        text=primary_text,
+                        notes=secondary_text,
+                        content_blocks=content_blocks,
+                        preferred_layout_key="text_full_width",
+                    )
+                )
+            return self._compact_continuation_slides(rebuilt or slides, base_title, subtitle)
+
+        else:
+            min_by_items = math.ceil(len(units) / max(self._bullet_slide_item_budget(), 1))
+            min_by_chars = math.ceil(total_chars / max(self.list_profile.max_chars, 1))
+            min_by_weight = math.ceil(total_weight / max(self._list_slide_weight_budget() + 1.75, 1.0))
+            max_chars = self.list_profile.max_chars
+            max_weight = self._list_slide_weight_budget() + 1.25
         target_slide_count = min(len(slides), max(1, min_by_items, min_by_chars, min_by_weight))
-        buckets = self._pack_continuation_units(units, target_slide_count)
+        buckets = self._pack_continuation_units(units, target_slide_count, max_chars=max_chars, max_weight=max_weight)
 
         rebuilt: list[SlideSpec] = []
         for index, bucket in enumerate(buckets):
@@ -1502,9 +1870,33 @@ class TextToPlanService:
             slide_subtitle = subtitle if index == 0 else ""
             rebuilt.append(self._build_continuation_slide(slide_title, slide_subtitle, bucket))
 
-        return rebuilt or slides
+        return self._compact_continuation_slides(rebuilt or slides, base_title, subtitle)
 
     def _slide_to_continuation_units(self, slide: SlideSpec) -> list[ContinuationUnit]:
+        if slide.content_blocks:
+            units: list[ContinuationUnit] = []
+            for block in slide.content_blocks:
+                if block.kind in {
+                    SlideContentBlockKind.PARAGRAPH,
+                    SlideContentBlockKind.CALLOUT,
+                    SlideContentBlockKind.QA_ITEM,
+                }:
+                    text = (block.text or "").strip()
+                    if text:
+                        units.extend(
+                            ContinuationUnit(kind="paragraph", text=chunk)
+                            for chunk in self._paragraph_chunks_for_text_flow(
+                                text,
+                                max_chars=self._text_primary_char_budget(),
+                            )
+                            if chunk.strip()
+                        )
+                    continue
+                if block.kind == SlideContentBlockKind.BULLET_LIST:
+                    units.extend(ContinuationUnit(kind="bullet", text=item.strip()) for item in block.items if item.strip())
+            if units:
+                return units
+
         if slide.kind == SlideKind.BULLETS:
             return [ContinuationUnit(kind="bullet", text=item.strip()) for item in slide.bullets if item.strip()]
 
@@ -1514,12 +1906,115 @@ class TextToPlanService:
             for part in text_parts:
                 units.extend(
                     ContinuationUnit(kind="paragraph", text=chunk)
-                    for chunk in self._sentence_chunks(part)
+                    for chunk in self._paragraph_chunks_for_text_flow(part)
                     if chunk.strip()
                 )
             return units
 
         return []
+
+    def _slide_payload_chars(self, slide: SlideSpec) -> int:
+        return sum(
+            len(part)
+            for part in [slide.text or "", slide.notes or "", *slide.bullets]
+            if part and part.strip()
+        )
+
+    def _continuation_units_render_limits(self, units: list[ContinuationUnit]) -> tuple[int, float, int | None]:
+        if not units:
+            return self.text_profile.max_chars, self._text_slide_weight_budget(), None
+
+        content_blocks = self._content_blocks_from_units(units)
+        total_chars = sum(len(unit.text) for unit in units)
+        has_bullets = any(unit.kind == "bullet" for unit in units)
+        if not has_bullets:
+            return self.text_profile.max_chars, self._text_slide_weight_budget(), None
+
+        preferred_layout_key = self._preferred_textual_layout_key(content_blocks, total_chars=total_chars)
+        paragraph_block_count = sum(
+            1
+            for block in content_blocks
+            if block.kind in {
+                SlideContentBlockKind.PARAGRAPH,
+                SlideContentBlockKind.CALLOUT,
+                SlideContentBlockKind.QA_ITEM,
+            }
+            and (block.text or "").strip()
+        )
+        bullet_item_count = sum(
+            len(block.items) for block in content_blocks if block.kind == SlideContentBlockKind.BULLET_LIST
+        )
+        if paragraph_block_count >= bullet_item_count and paragraph_block_count > 0:
+            if preferred_layout_key == "text_full_width":
+                return self.text_profile.max_chars, self._text_slide_weight_budget(), None
+            return (
+                self.list_profile.max_chars,
+                self._list_slide_weight_budget() + 1.25,
+                self._bullet_slide_item_budget(),
+            )
+
+        return (
+            self.list_profile.max_chars,
+            self._list_slide_weight_budget() + 1.25,
+            self._bullet_slide_item_budget(),
+        )
+
+    def _continuation_bucket_min_payload_chars(self, units: list[ContinuationUnit]) -> int:
+        max_chars, _, _ = self._continuation_units_render_limits(units)
+        if max_chars <= self.text_profile.max_chars:
+            return max(int(self.text_profile.target_fill_ratio * max_chars) - 240, 150)
+        return max(int(self.list_profile.target_fill_ratio * max_chars) - 260, 160)
+
+    def _continuation_units_fit_single_slide(self, units: list[ContinuationUnit]) -> bool:
+        if not units:
+            return False
+        max_chars, max_weight, max_items = self._continuation_units_render_limits(units)
+        total_chars = sum(len(unit.text) for unit in units)
+        total_weight = sum(self._continuation_unit_weight(unit) for unit in units)
+        if max_items is not None and len(units) > max_items:
+            return False
+        return total_chars <= max_chars and total_weight <= max_weight
+
+    def _compact_continuation_slides(
+        self,
+        slides: list[SlideSpec],
+        base_title: str,
+        subtitle: str,
+    ) -> list[SlideSpec]:
+        if len(slides) <= 1:
+            return slides
+
+        compacted = slides.copy()
+        min_payload_chars = 180
+        index = 0
+        while index < len(compacted):
+            slide = compacted[index]
+            payload_chars = self._slide_payload_chars(slide)
+            if payload_chars >= min_payload_chars:
+                index += 1
+                continue
+
+            neighbor_index = index + 1 if index + 1 < len(compacted) else index - 1
+            if neighbor_index < 0 or neighbor_index >= len(compacted):
+                index += 1
+                continue
+
+            merged_units = self._slide_to_continuation_units(compacted[min(index, neighbor_index)]) + self._slide_to_continuation_units(compacted[max(index, neighbor_index)])
+            if not self._continuation_units_fit_single_slide(merged_units):
+                index += 1
+                continue
+
+            slide_title = base_title if min(index, neighbor_index) == 0 else compacted[min(index, neighbor_index)].title
+            slide_subtitle = subtitle if min(index, neighbor_index) == 0 else ""
+            merged_slide = self._build_continuation_slide(slide_title, slide_subtitle, merged_units)
+            compacted[min(index, neighbor_index)] = merged_slide
+            del compacted[max(index, neighbor_index)]
+            index = max(min(index, neighbor_index) - 1, 0)
+
+        for idx, slide in enumerate(compacted):
+            slide.title = base_title if idx == 0 else f"{base_title} ({idx + 1})"
+            slide.subtitle = subtitle if idx == 0 else ""
+        return compacted
 
     def _continuation_unit_weight(self, unit: ContinuationUnit) -> float:
         if unit.kind == "paragraph":
@@ -1530,6 +2025,9 @@ class TextToPlanService:
         self,
         units: list[ContinuationUnit],
         slide_count: int,
+        *,
+        max_chars: int,
+        max_weight: float,
     ) -> list[list[ContinuationUnit]]:
         if slide_count <= 1 or len(units) <= 1:
             return [units]
@@ -1552,15 +2050,24 @@ class TextToPlanService:
             target_chars = remaining_chars / max(remaining_buckets, 1)
             projected_weight = current_weight + unit_weight
             projected_chars = current_chars + unit_chars
+            projected_bucket = [*current, unit]
             enough_units_left = remaining_units > remaining_buckets
+            projected_overflow = (
+                projected_weight > max_weight
+                or projected_chars > max_chars
+                or not self._continuation_units_fit_single_slide(projected_bucket)
+            )
             should_wrap = (
                 bool(current)
-                and enough_units_left
                 and (
-                    (current_weight >= target_weight * 0.92)
-                    or (current_chars >= target_chars * 0.92)
-                    or projected_weight > (self._list_slide_weight_budget() + 1.25)
-                    or projected_chars > self.list_profile.max_chars
+                    projected_overflow
+                    or (
+                        enough_units_left
+                        and (
+                            (current_weight >= target_weight * 0.92)
+                            or (current_chars >= target_chars * 0.92)
+                        )
+                    )
                 )
             )
 
@@ -1584,7 +2091,61 @@ class TextToPlanService:
         if current:
             buckets.append(current)
 
-        return buckets
+        return self._rebalance_continuation_buckets(buckets, max_chars=max_chars, max_weight=max_weight)
+
+    def _rebalance_continuation_buckets(
+        self,
+        buckets: list[list[ContinuationUnit]],
+        *,
+        max_chars: int,
+        max_weight: float,
+    ) -> list[list[ContinuationUnit]]:
+        if len(buckets) <= 1:
+            return buckets
+
+        rebalanced = [bucket.copy() for bucket in buckets if bucket]
+        if len(rebalanced) <= 1:
+            return rebalanced
+
+        for index in range(len(rebalanced) - 1, 0, -1):
+            current = rebalanced[index]
+            previous = rebalanced[index - 1]
+            current_chars = sum(len(unit.text) for unit in current)
+            min_tail_chars = self._continuation_bucket_min_payload_chars(current)
+            if current_chars >= min_tail_chars:
+                continue
+
+            current_weight = sum(self._continuation_unit_weight(unit) for unit in current)
+            while len(previous) > 1 and current_chars < min_tail_chars:
+                candidate = previous[-1]
+                candidate_chars = len(candidate.text)
+                candidate_weight = self._continuation_unit_weight(candidate)
+                projected_bucket = [*([*current]), candidate]
+                if not self._continuation_units_fit_single_slide(projected_bucket):
+                    break
+                current.insert(0, previous.pop())
+                current_chars += candidate_chars
+                current_weight += candidate_weight
+
+        for index in range(len(rebalanced) - 1):
+            current = rebalanced[index]
+            next_bucket = rebalanced[index + 1]
+            current_chars = sum(len(unit.text) for unit in current)
+            min_current_chars = self._continuation_bucket_min_payload_chars(current)
+            while len(next_bucket) > 1 and current_chars < min_current_chars:
+                candidate = next_bucket[0]
+                projected_bucket = [*current, candidate]
+                remainder_bucket = next_bucket[1:]
+                if not self._continuation_units_fit_single_slide(projected_bucket):
+                    break
+                if remainder_bucket and sum(len(unit.text) for unit in remainder_bucket) < self._continuation_bucket_min_payload_chars(
+                    remainder_bucket
+                ):
+                    break
+                current.append(next_bucket.pop(0))
+                current_chars += len(candidate.text)
+
+        return [bucket for bucket in rebalanced if bucket]
 
     def _build_continuation_slide(
         self,
@@ -1592,28 +2153,161 @@ class TextToPlanService:
         subtitle: str,
         units: list[ContinuationUnit],
     ) -> SlideSpec:
+        content_blocks = self._content_blocks_from_units(units)
+        normalized_subtitle = self._sanitize_content_subtitle(subtitle, content_blocks)
         has_bullets = any(unit.kind == "bullet" for unit in units)
         total_chars = sum(len(unit.text) for unit in units)
         paragraphs = [unit.text for unit in units]
+        preferred_layout_key = self._preferred_textual_layout_key(content_blocks, total_chars=total_chars)
+        paragraph_block_count = sum(
+            1
+            for block in content_blocks
+            if block.kind in {
+                SlideContentBlockKind.PARAGRAPH,
+                SlideContentBlockKind.CALLOUT,
+                SlideContentBlockKind.QA_ITEM,
+            }
+            and (block.text or "").strip()
+        )
+        bullet_item_count = sum(len(block.items) for block in content_blocks if block.kind == SlideContentBlockKind.BULLET_LIST)
 
-        if not has_bullets and len(paragraphs) <= 2 and total_chars <= self._text_slide_char_budget():
+        if not has_bullets:
             merged = " ".join(paragraphs)
-            primary_text, secondary_text = self._split_text_for_slide(merged)
+            primary_text, secondary_text = self._split_text_for_slide(
+                merged,
+                primary_budget=self._continuation_primary_char_budget(normalized_subtitle),
+            )
             return SlideSpec(
                 kind=SlideKind.TEXT,
                 title=title,
-                subtitle=subtitle,
+                subtitle=normalized_subtitle,
                 text=primary_text,
                 notes=secondary_text,
+                content_blocks=content_blocks,
                 preferred_layout_key="text_full_width",
+            )
+
+        if has_bullets and paragraph_block_count >= bullet_item_count and paragraph_block_count > 0:
+            merged = " ".join(paragraphs)
+            primary_text, secondary_text = self._split_text_for_slide(
+                merged,
+                primary_budget=self._continuation_primary_char_budget(normalized_subtitle),
+            )
+            return SlideSpec(
+                kind=SlideKind.TEXT,
+                title=title,
+                subtitle=normalized_subtitle,
+                text=primary_text,
+                notes=secondary_text,
+                content_blocks=content_blocks,
+                preferred_layout_key=preferred_layout_key,
             )
 
         return SlideSpec(
             kind=SlideKind.BULLETS,
             title=title,
             bullets=[unit.text for unit in units],
+            content_blocks=content_blocks,
             preferred_layout_key="list_full_width",
         )
+
+    def _paragraph_blocks_from_parts(self, *parts: str) -> list[SlideContentBlock]:
+        return [
+            SlideContentBlock(kind=SlideContentBlockKind(self._classify_content_block_kind(part)), text=part.strip())
+            for part in parts
+            if part and part.strip()
+        ]
+
+    def _list_block(self, items: list[str]) -> SlideContentBlock:
+        return SlideContentBlock(
+            kind=SlideContentBlockKind.BULLET_LIST,
+            items=[item.strip() for item in items if item and item.strip()],
+        )
+
+    def _content_blocks_from_units(self, units: list[ContinuationUnit]) -> list[SlideContentBlock]:
+        blocks: list[SlideContentBlock] = []
+        bullet_buffer: list[str] = []
+
+        def flush_bullets() -> None:
+            nonlocal bullet_buffer
+            if bullet_buffer:
+                blocks.append(self._list_block(bullet_buffer))
+                bullet_buffer = []
+
+        for unit in units:
+            if unit.kind == "paragraph":
+                flush_bullets()
+                text = unit.text.strip()
+                if text:
+                    blocks.append(SlideContentBlock(kind=SlideContentBlockKind(self._classify_content_block_kind(text)), text=text))
+                continue
+            if unit.kind == "bullet":
+                text = unit.text.strip()
+                if text:
+                    bullet_buffer.append(text)
+
+        flush_bullets()
+        return blocks
+
+    def _preferred_textual_layout_key(
+        self,
+        content_blocks: list[SlideContentBlock],
+        *,
+        total_chars: int,
+    ) -> str:
+        bullet_items = sum(len(block.items) for block in content_blocks if block.kind == SlideContentBlockKind.BULLET_LIST)
+        paragraph_like_chars = sum(
+            len((block.text or "").strip())
+            for block in content_blocks
+            if block.kind in {
+                SlideContentBlockKind.PARAGRAPH,
+                SlideContentBlockKind.CALLOUT,
+                SlideContentBlockKind.QA_ITEM,
+            }
+        )
+        if bullet_items:
+            if bullet_items <= 1 and paragraph_like_chars >= 180:
+                return "text_full_width"
+            if bullet_items <= 2 and paragraph_like_chars >= 260 and total_chars <= self.list_profile.max_chars:
+                return "text_full_width"
+            return "list_full_width"
+
+        paragraph_like_blocks = [
+            block
+            for block in content_blocks
+            if block.kind in {
+                SlideContentBlockKind.PARAGRAPH,
+                SlideContentBlockKind.CALLOUT,
+                SlideContentBlockKind.QA_ITEM,
+            }
+            and (block.text or "").strip()
+        ]
+        if not paragraph_like_blocks:
+            return "text_full_width"
+
+        if len(paragraph_like_blocks) <= 2 and total_chars <= self._text_slide_char_budget():
+            return "text_full_width"
+
+        emphasized_blocks = sum(
+            1 for block in paragraph_like_blocks if block.kind in {SlideContentBlockKind.CALLOUT, SlideContentBlockKind.QA_ITEM}
+        )
+        if emphasized_blocks and len(paragraph_like_blocks) <= 4 and total_chars <= self.text_profile.max_chars:
+            return "text_full_width"
+
+        return "list_full_width"
+
+    def _classify_content_block_kind(self, text: str) -> str:
+        normalized = self._normalize_line(text)
+        lowered = normalized.lower()
+        if not normalized:
+            return "paragraph"
+        if self._looks_like_inline_section_heading(normalized):
+            return "callout"
+        if normalized.endswith("?") or lowered.startswith(("q:", "q.", "вопрос:", "question:")):
+            return "qa_item"
+        if any(lowered.startswith(prefix) for prefix in ("важно:", "итог:", "вывод:", "риск:", "note:", "warning:")):
+            return "callout"
+        return "paragraph"
 
     def _chunk_items(self, items: list[str], size: int) -> list[list[str]]:
         return [items[index : index + size] for index in range(0, len(items), size)]
@@ -1638,6 +2332,12 @@ class TextToPlanService:
 
     def _is_heading(self, line: str) -> bool:
         return len(line) <= 90 and bool(self.HEADING_PATTERN.match(line.strip()))
+
+    def _outline_heading_level(self, text: str) -> int | None:
+        match = re.match(r"^(?P<number>\d+(?:\.\d+)*)[.)]?\s+.+$", text.strip())
+        if match is None:
+            return None
+        return max(1, min(len(match.group("number").split(".")), 3))
 
     def _looks_like_short_item(self, line: str) -> bool:
         return len(line) <= 120 and not line.endswith(".")

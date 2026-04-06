@@ -89,6 +89,41 @@ class SemanticPipelineTests(unittest.TestCase):
         )
         self.assertIn(semantic_document.kind, {DocumentKind.REPORT, DocumentKind.MIXED})
 
+    def test_normalizer_ignores_long_narrative_colon_paragraph_as_fact(self) -> None:
+        normalizer = SemanticDocumentNormalizer()
+        blocks = [
+            DocumentBlock(
+                kind="paragraph",
+                text=(
+                    "Отсюда следует ключевой вывод для стратегии А3: лимит 5000 поставщиков имеет смысл только "
+                    "для управляемого слоя, а внешний охват каталога должен оставаться широким."
+                ),
+            ),
+        ]
+
+        semantic_document = normalizer.normalize(
+            raw_text="\n".join(block.text or "" for block in blocks),
+            blocks=blocks,
+            tables=[],
+        )
+
+        self.assertEqual(semantic_document.facts, [])
+
+    def test_normalizer_does_not_treat_year_range_as_contact(self) -> None:
+        normalizer = SemanticDocumentNormalizer()
+        blocks = [
+            DocumentBlock(kind="paragraph", text="2023-2024"),
+            DocumentBlock(kind="paragraph", text="Годовой обзор"),
+        ]
+
+        semantic_document = normalizer.normalize(
+            raw_text="\n".join(block.text or "" for block in blocks),
+            blocks=blocks,
+            tables=[],
+        )
+
+        self.assertEqual(semantic_document.contacts, [])
+
     def test_planner_creates_image_slide_from_semantic_content(self) -> None:
         service = TextToPlanService()
         blocks = [

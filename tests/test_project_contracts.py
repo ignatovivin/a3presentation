@@ -7,13 +7,24 @@ from io import BytesIO
 from pathlib import Path
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from pptx import Presentation
+from pptx.dml.color import RGBColor
 from starlette.datastructures import UploadFile
 
 from a3presentation.api import routes as routes_module
 from a3presentation.domain.api import TextPlanRequest
 from a3presentation.domain.chart import ChartConfidence, ChartSeries, ChartSpec, ChartType
-from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec, TableBlock
+from a3presentation.domain.presentation import (
+    PresentationPlan,
+    SlideContentBlock,
+    SlideContentBlockKind,
+    SlideKind,
+    SlideSpec,
+    TableBlock,
+)
+from a3presentation.domain.template import GenerationMode, PlaceholderKind
 from a3presentation.services.deck_audit import (
     SlideAudit,
     audit_generated_presentation,
@@ -24,7 +35,9 @@ from a3presentation.services.document_text_extractor import DocumentTextExtracto
 from a3presentation.services.layout_capacity import (
     LIST_FULL_WIDTH_PROFILE,
     TEXT_FULL_WIDTH_PROFILE,
+    geometry_policy_for_layout,
     profile_for_layout,
+    spacing_policy_for_layout,
 )
 from a3presentation.services.planner import TextToPlanService
 from a3presentation.services.pptx_generator import PptxGenerator
@@ -155,6 +168,175 @@ class ProjectContractTests(unittest.TestCase):
                     presentation = Presentation(str(output_path))
                     self.assertEqual(len(presentation.slides), len(plan.slides))
 
+    def test_template_analyzer_extracts_placeholder_geometry_for_uploaded_layouts(self) -> None:
+        manifests = self.registry.list_templates()
+
+        for manifest in manifests:
+            template_path = self.settings.templates_dir / manifest.template_id / manifest.source_pptx
+            if not template_path.exists():
+                continue
+
+            with self.subTest(template_id=manifest.template_id):
+                analyzed_manifest = self.analyzer.analyze(
+                    template_id=manifest.template_id,
+                    template_path=template_path,
+                    display_name=manifest.display_name,
+                )
+
+                analyzed_placeholders = [
+                    placeholder
+                    for layout in analyzed_manifest.layouts
+                    for placeholder in layout.placeholders
+                ]
+                self.assertTrue(analyzed_placeholders)
+                self.assertTrue(
+                    any(self._has_geometry_metadata(placeholder) for placeholder in analyzed_placeholders)
+                )
+                self.assertTrue(
+                    any(
+                        placeholder.kind in {PlaceholderKind.TITLE, PlaceholderKind.SUBTITLE, PlaceholderKind.BODY}
+                        and self._has_text_margin_metadata(placeholder)
+                        for placeholder in analyzed_placeholders
+                    )
+                )
+
+    def test_template_analyzer_extracts_shape_geometry_for_uploaded_prototype_tokens(self) -> None:
+        manifests = self.registry.list_templates()
+
+        for manifest in manifests:
+            template_path = self.settings.templates_dir / manifest.template_id / manifest.source_pptx
+            if not template_path.exists():
+                continue
+
+            analyzed_manifest = self.analyzer.analyze(
+                template_id=manifest.template_id,
+                template_path=template_path,
+                display_name=manifest.display_name,
+            )
+            if analyzed_manifest.generation_mode.value != "prototype":
+                continue
+
+            with self.subTest(template_id=manifest.template_id):
+                tokens = [
+                    token
+                    for prototype in analyzed_manifest.prototype_slides
+                    for token in prototype.tokens
+                ]
+                self.assertTrue(tokens)
+                self.assertTrue(any(self._has_geometry_metadata(token) for token in tokens))
+                self.assertTrue(
+                    any(
+                        token.binding in {"title", "subtitle", "text", "body", "main_text", "secondary_text", "cover_title"}
+                        and self._has_text_margin_metadata(token)
+                        for token in tokens
+                    )
+                )
+
+    def test_generator_applies_analyzer_geometry_metadata_for_uploaded_layout_templates(self) -> None:
+        template_id = "razmeshchenie_soglasiy"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+        analyzed_manifest = self.analyzer.analyze(
+            template_id=template_id,
+            template_path=template_path,
+            display_name="Размещение согласий",
+        )
+        analyzed_manifest.generation_mode = GenerationMode.LAYOUT
+        layout = next(layout for layout in analyzed_manifest.layouts if "text" in layout.supported_slide_kinds)
+        body_placeholder = next(placeholder for placeholder in layout.placeholders if placeholder.kind == PlaceholderKind.BODY)
+        body_placeholder.left_emu = 777777
+        body_placeholder.top_emu = 1888888
+        body_placeholder.width_emu = 5555555
+        body_placeholder.height_emu = 2222222
+        body_placeholder.margin_left_emu = 11111
+        body_placeholder.margin_right_emu = 22222
+        body_placeholder.margin_top_emu = 33333
+        body_placeholder.margin_bottom_emu = 44444
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Uploaded Layout Geometry",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="",
+                    text="Текст должен следовать analyzer-derived placeholder metadata.",
+                    preferred_layout_key=layout.key,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=analyzed_manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        shape = next(placeholder for placeholder in slide.placeholders if placeholder.placeholder_format.idx == body_placeholder.idx)
+        self.assertEqual(shape.left, body_placeholder.left_emu)
+        self.assertEqual(shape.top, body_placeholder.top_emu)
+        self.assertEqual(shape.width, body_placeholder.width_emu)
+        self.assertEqual(shape.height, body_placeholder.height_emu)
+        self.assertEqual(shape.text_frame.margin_left, body_placeholder.margin_left_emu)
+        self.assertEqual(shape.text_frame.margin_right, body_placeholder.margin_right_emu)
+        self.assertEqual(shape.text_frame.margin_top, body_placeholder.margin_top_emu)
+        self.assertEqual(shape.text_frame.margin_bottom, body_placeholder.margin_bottom_emu)
+
+    def test_generator_applies_manifest_geometry_metadata_for_uploaded_prototype_templates(self) -> None:
+        template_id = "razmeshchenie_soglasiy"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+        manifest = self.registry.get_template(template_id)
+        prototype = manifest.prototype_slides[0]
+        bound_text_token = next(
+            token
+            for token in prototype.tokens
+            if token.binding in {"cover_meta", "subtitle", "text", "body", "main_text", "secondary_text", "presentation_name"}
+        )
+        bound_text_token.left_emu = 999999
+        bound_text_token.top_emu = 2111111
+        bound_text_token.width_emu = 4444444
+        bound_text_token.height_emu = 1234567
+        bound_text_token.margin_left_emu = 21000
+        bound_text_token.margin_right_emu = 22000
+        bound_text_token.margin_top_emu = 23000
+        bound_text_token.margin_bottom_emu = 24000
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Uploaded Prototype Geometry",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TITLE,
+                    title="Заголовок",
+                    notes="Метаданные prototype token shape должны примениться к cloned slide.",
+                    preferred_layout_key=prototype.key,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        shape = next(shape for shape in slide.shapes if shape.name == bound_text_token.shape_name)
+        self.assertEqual(shape.left, bound_text_token.left_emu)
+        self.assertEqual(shape.top, bound_text_token.top_emu)
+        self.assertEqual(shape.width, bound_text_token.width_emu)
+        self.assertEqual(shape.height, bound_text_token.height_emu)
+        self.assertEqual(shape.text_frame.margin_left, bound_text_token.margin_left_emu)
+        self.assertEqual(shape.text_frame.margin_right, bound_text_token.margin_right_emu)
+        self.assertEqual(shape.text_frame.margin_top, bound_text_token.margin_top_emu)
+        self.assertEqual(shape.text_frame.margin_bottom, bound_text_token.margin_bottom_emu)
+
     def test_full_pipeline_contract_for_mixed_docx_document(self) -> None:
         document = Document()
         document.add_paragraph("A3")
@@ -243,6 +425,36 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(self.planner.text_profile.max_primary_chars, self.planner.TEXT_PRIMARY_MAX_CHARS)
         self.assertLessEqual(self.planner.text_profile.min_font_pt, self.planner.text_profile.max_font_pt)
         self.assertLessEqual(self.planner.list_profile.min_font_pt, self.planner.list_profile.max_font_pt)
+
+    def test_layout_geometry_policies_keep_full_width_contracts(self) -> None:
+        text_policy = geometry_policy_for_layout("text_full_width")
+        list_policy = geometry_policy_for_layout("list_full_width")
+        table_policy = geometry_policy_for_layout("table")
+        image_policy = geometry_policy_for_layout("image_text")
+        cards_policy = geometry_policy_for_layout("cards_3")
+        icons_policy = geometry_policy_for_layout("list_with_icons")
+        contacts_policy = geometry_policy_for_layout("contacts")
+
+        self.assertEqual(text_policy.placeholders[0].width_emu, 11198224)
+        self.assertEqual(text_policy.placeholders[14].width_emu, 11198224)
+        self.assertEqual(text_policy.placeholders[17].top_emu, 6384626)
+        self.assertEqual(list_policy.placeholders[14].width_emu, text_policy.placeholders[14].width_emu)
+        self.assertEqual(table_policy.placeholders[15].width_emu, 11198224)
+        self.assertEqual(image_policy.placeholders[16].width_emu, 4990840)
+        self.assertEqual(cards_policy.placeholders[11].width_emu, cards_policy.placeholders[12].width_emu)
+        self.assertEqual(icons_policy.placeholders[21].top_emu, 6384626)
+        self.assertEqual(contacts_policy.placeholders[10].width_emu, 3724275)
+
+    def test_layout_spacing_policies_keep_bullet_indent_contracts(self) -> None:
+        text_spacing = spacing_policy_for_layout("text_full_width")
+        list_spacing = spacing_policy_for_layout("list_full_width")
+
+        self.assertEqual(text_spacing.bullet.margin_left_emu, 342900)
+        self.assertEqual(text_spacing.bullet.indent_emu, -171450)
+        self.assertEqual(text_spacing.body.line_spacing, 1.1)
+        self.assertEqual(text_spacing.body.space_after_pt, 6.0)
+        self.assertGreater(list_spacing.bullet.margin_left_emu, text_spacing.bullet.margin_left_emu)
+        self.assertLess(list_spacing.bullet.indent_emu, text_spacing.bullet.indent_emu)
 
     def test_deck_audit_reports_body_font_sizes_within_layout_profile_bounds(self) -> None:
         plan = PresentationPlan(
@@ -372,6 +584,88 @@ class ProjectContractTests(unittest.TestCase):
         self.assertIn("continuation_balance", violation_rules)
         self.assertIn("underfilled_continuation", violation_rules)
 
+    def test_deck_audit_does_not_flag_borderline_underfilled_continuation(self) -> None:
+        audits = [
+            SlideAudit(
+                slide_index=1,
+                title="Раздел",
+                kind=SlideKind.TEXT.value,
+                layout_key="text_full_width",
+                body_char_count=458,
+                body_font_sizes=(14.0,),
+                profile=TEXT_FULL_WIDTH_PROFILE,
+            ),
+            SlideAudit(
+                slide_index=2,
+                title="Раздел (2)",
+                kind=SlideKind.TEXT.value,
+                layout_key="text_full_width",
+                body_char_count=291,
+                body_font_sizes=(14.0,),
+                profile=TEXT_FULL_WIDTH_PROFILE,
+            ),
+        ]
+
+        violations = find_capacity_violations(audits)
+
+        violation_rules = {violation.rule for violation in violations}
+        self.assertNotIn("underfilled_continuation", violation_rules)
+        self.assertNotIn("continuation_balance", violation_rules)
+
+    def test_deck_audit_keeps_balance_violation_for_materially_underfilled_group(self) -> None:
+        audits = [
+            SlideAudit(
+                slide_index=1,
+                title="Раздел",
+                kind=SlideKind.BULLETS.value,
+                layout_key="list_full_width",
+                body_char_count=720,
+                body_font_sizes=(14.0,),
+                profile=LIST_FULL_WIDTH_PROFILE,
+            ),
+            SlideAudit(
+                slide_index=2,
+                title="Раздел (2)",
+                kind=SlideKind.BULLETS.value,
+                layout_key="list_full_width",
+                body_char_count=270,
+                body_font_sizes=(14.0,),
+                profile=LIST_FULL_WIDTH_PROFILE,
+            ),
+        ]
+
+        violations = find_capacity_violations(audits)
+
+        violation_rules = {violation.rule for violation in violations}
+        self.assertIn("underfilled_continuation", violation_rules)
+        self.assertIn("continuation_balance", violation_rules)
+
+    def test_deck_audit_does_not_flag_borderline_bullet_tail(self) -> None:
+        audits = [
+            SlideAudit(
+                slide_index=1,
+                title="Раздел",
+                kind=SlideKind.BULLETS.value,
+                layout_key="list_full_width",
+                body_char_count=507,
+                body_font_sizes=(14.0,),
+                profile=LIST_FULL_WIDTH_PROFILE,
+            ),
+            SlideAudit(
+                slide_index=2,
+                title="Раздел (2)",
+                kind=SlideKind.BULLETS.value,
+                layout_key="list_full_width",
+                body_char_count=474,
+                body_font_sizes=(14.0,),
+                profile=LIST_FULL_WIDTH_PROFILE,
+            ),
+        ]
+
+        violations = find_capacity_violations(audits)
+
+        self.assertNotIn("underfilled_continuation", {violation.rule for violation in violations})
+
     def test_deck_audit_keeps_expected_bullet_order_for_mixed_slide(self) -> None:
         plan = PresentationPlan(
             template_id="corp_light_v1",
@@ -411,6 +705,424 @@ class ProjectContractTests(unittest.TestCase):
         violations = find_capacity_violations(audits)
         self.assertNotIn("content_order_mismatch", {violation.rule for violation in violations})
 
+    def test_deck_audit_uses_content_blocks_for_mixed_paragraph_and_list_order(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Mixed Blocks",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Mixed Blocks", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.BULLETS,
+                    title="Смешанный контейнер",
+                    bullets=[
+                        "Вводный абзац задает контекст.",
+                        "Первый тезис фиксирует массовый каталог.",
+                        "Второй тезис фиксирует SLA-контур.",
+                        "Финальный абзац завершает аргументацию.",
+                    ],
+                    content_blocks=[
+                        SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text="Вводный абзац задает контекст."),
+                        SlideContentBlock(
+                            kind=SlideContentBlockKind.BULLET_LIST,
+                            items=[
+                                "Первый тезис фиксирует массовый каталог.",
+                                "Второй тезис фиксирует SLA-контур.",
+                            ],
+                        ),
+                        SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text="Финальный абзац завершает аргументацию."),
+                    ],
+                    preferred_layout_key="list_full_width",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        mixed_audit = next(audit for audit in audits if audit.title == "Смешанный контейнер")
+        self.assertEqual(
+            tuple(item.strip() for item in mixed_audit.rendered_items if item.strip()),
+            (
+                "Вводный абзац задает контекст.",
+                "Первый тезис фиксирует массовый каталог.",
+                "Второй тезис фиксирует SLA-контур.",
+                "Финальный абзац завершает аргументацию.",
+            ),
+        )
+        violations = find_capacity_violations(audits)
+        self.assertNotIn("content_order_mismatch", {violation.rule for violation in violations})
+
+    def test_template_binding_keeps_content_blocks_for_text_slide_with_list_layout(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Binding Content Blocks",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Binding Content Blocks", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Смешанный narrative",
+                    text="Вводный абзац задает контекст.",
+                    content_blocks=[
+                        SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text="Вводный абзац задает контекст."),
+                        SlideContentBlock(
+                            kind=SlideContentBlockKind.BULLET_LIST,
+                            items=[
+                                "Первый тезис описывает охват каталога.",
+                                "Второй тезис описывает SLA-контур.",
+                            ],
+                        ),
+                    ],
+                    preferred_layout_key="list_full_width",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        target_audit = next(audit for audit in audits if audit.title == "Смешанный narrative")
+        self.assertEqual(
+            tuple(item.strip() for item in target_audit.rendered_items if item.strip()),
+            (
+                "Вводный абзац задает контекст.",
+                "Первый тезис описывает охват каталога.",
+                "Второй тезис описывает SLA-контур.",
+            ),
+        )
+        violations = find_capacity_violations(audits)
+        self.assertNotIn("content_order_mismatch", {violation.rule for violation in violations})
+
+    def test_template_binding_does_not_duplicate_notes_when_content_blocks_fill_body(self) -> None:
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="No Duplicate Tail",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="No Duplicate Tail", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Narrative",
+                    text="Первый абзац задает контекст.",
+                    notes="Хвост не должен дублироваться отдельным placeholder.",
+                    content_blocks=[
+                        SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text="Первый абзац задает контекст."),
+                        SlideContentBlock(
+                            kind=SlideContentBlockKind.PARAGRAPH,
+                            text="Хвост не должен дублироваться отдельным placeholder.",
+                        ),
+                    ],
+                    preferred_layout_key="text_full_width",
+                ),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[1]
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        self.assertIn(14, placeholders)
+        self.assertIn("Хвост не должен дублироваться", placeholders[14].text)
+        self.assertNotIn(15, placeholders)
+
+    def test_template_binding_clears_duplicate_subtitle_when_body_already_starts_with_it(self) -> None:
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="No Duplicate Subtitle",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="No Duplicate Subtitle", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Narrative",
+                    subtitle="Первый абзац задает контекст.",
+                    text="Первый абзац задает контекст.",
+                    content_blocks=[
+                        SlideContentBlock(
+                            kind=SlideContentBlockKind.PARAGRAPH,
+                            text="Первый абзац задает контекст. Дальше идет основной текст без отдельного subtitle-повтора.",
+                        ),
+                    ],
+                    preferred_layout_key="text_full_width",
+                ),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[1]
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        } 
+        self.assertNotIn(13, placeholders)
+
+    def test_generator_clears_duplicate_subtitle_for_plain_text_slide(self) -> None:
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="No Plain Duplicate Subtitle",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="No Plain Duplicate Subtitle", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Narrative",
+                    subtitle="Первый абзац задает контекст и открывает раздел.",
+                    text="Первый абзац задает контекст и открывает раздел. Дальше идет основной narrative без отдельного подзаголовка.",
+                    preferred_layout_key="text_full_width",
+                ),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[1]
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        self.assertNotIn(13, placeholders)
+        self.assertIn(14, placeholders)
+
+    def test_deck_audit_ignores_text_only_continuations_when_tracking_group_order(self) -> None:
+        audits = [
+            SlideAudit(
+                slide_index=2,
+                title="Группа",
+                kind=SlideKind.TEXT.value,
+                layout_key="text_full_width",
+                body_char_count=320,
+                body_font_sizes=(16.0,),
+                profile=profile_for_layout("text_full_width"),
+                expected_items=(),
+                rendered_items=("Вводный narrative блок.",),
+            ),
+            SlideAudit(
+                slide_index=3,
+                title="Группа (2)",
+                kind=SlideKind.BULLETS.value,
+                layout_key="list_full_width",
+                body_char_count=220,
+                body_font_sizes=(14.0,),
+                profile=profile_for_layout("list_full_width"),
+                expected_items=("Первый тезис.", "Второй тезис."),
+                rendered_items=("Первый тезис.", "Второй тезис."),
+            ),
+            SlideAudit(
+                slide_index=4,
+                title="Группа (3)",
+                kind=SlideKind.TEXT.value,
+                layout_key="text_full_width",
+                body_char_count=280,
+                body_font_sizes=(16.0,),
+                profile=profile_for_layout("text_full_width"),
+                expected_items=(),
+                rendered_items=("Финальный narrative блок.",),
+            ),
+        ]
+
+        violations = find_capacity_violations(audits)
+        self.assertNotIn("continuation_order_mismatch", {violation.rule for violation in violations})
+
+    def test_deck_audit_accepts_question_and_appendix_style_slide_without_order_violations(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Question Appendix",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Question Appendix", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.BULLETS,
+                    title="Частые вопросы и выводы",
+                    bullets=[
+                        "Почему нужен второй контур инфраструктуры?",
+                        "Важно: без резервного контура SLA для критичных платежей останется хрупким.",
+                        "Итог: резервный контур снижает риск простоя и упрощает масштабирование.",
+                    ],
+                    content_blocks=[
+                        SlideContentBlock(kind=SlideContentBlockKind.QA_ITEM, text="Почему нужен второй контур инфраструктуры?"),
+                        SlideContentBlock(
+                            kind=SlideContentBlockKind.CALLOUT,
+                            text="Важно: без резервного контура SLA для критичных платежей останется хрупким.",
+                        ),
+                        SlideContentBlock(
+                            kind=SlideContentBlockKind.CALLOUT,
+                            text="Итог: резервный контур снижает риск простоя и упрощает масштабирование.",
+                        ),
+                    ],
+                    preferred_layout_key="list_full_width",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_deck_audit_accepts_semantic_text_layout_for_question_and_callout_blocks(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Semantic Text Layout",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Semantic Text Layout", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="FAQ и выводы",
+                    text="Вопрос: почему нужен второй контур инфраструктуры?",
+                    notes=(
+                        "Важно: резервный контур удерживает SLA в часы пиковой нагрузки. "
+                        "Итог: архитектура снижает риск простоя без усложнения операционной модели."
+                    ),
+                    content_blocks=[
+                        SlideContentBlock(
+                            kind=SlideContentBlockKind.QA_ITEM,
+                            text="Вопрос: почему нужен второй контур инфраструктуры?",
+                        ),
+                        SlideContentBlock(
+                            kind=SlideContentBlockKind.CALLOUT,
+                            text="Важно: резервный контур удерживает SLA в часы пиковой нагрузки.",
+                        ),
+                        SlideContentBlock(
+                            kind=SlideContentBlockKind.CALLOUT,
+                            text="Итог: архитектура снижает риск простоя без усложнения операционной модели.",
+                        ),
+                    ],
+                    preferred_layout_key="text_full_width",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        self.assertEqual(len(audits), 1)
+        self.assertTrue(audits[0].body_font_sizes)
+        violations = find_capacity_violations(audits)
+        self.assertNotIn("content_order_mismatch", {violation.rule for violation in violations})
+
+    def test_manifests_keep_generic_text_or_bullet_layout_for_semantic_blocks(self) -> None:
+        manifests = self.registry.list_templates()
+        self.assertGreaterEqual(len(manifests), 1)
+
+        for manifest in manifests:
+            layout_keys = {layout.key for layout in manifest.layouts}
+            supported_slide_kinds = {
+                supported_kind
+                for layout in manifest.layouts
+                for supported_kind in layout.supported_slide_kinds
+            }
+            with self.subTest(template_id=manifest.template_id):
+                if {"text", "bullets"} & supported_slide_kinds:
+                    self.assertTrue(
+                        any(
+                            layout_key in layout_keys
+                            for layout_key in {"text_full_width", "list_full_width", "content", "слайд_с_перечислением"}
+                        )
+                    )
+
+    def test_deck_audit_accepts_long_title_and_dense_body_without_capacity_regression(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Long Title Dense Body",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Long Title Dense Body", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title=(
+                        "Очень длинный заголовок, который одновременно фиксирует стратегическую развилку, "
+                        "операционные ограничения и требования к инфраструктуре платежной платформы"
+                    ),
+                    text=(
+                        "Первый плотный абзац объясняет, почему устойчивость SLA зависит от второго контура, "
+                        "какие ограничения есть у текущей архитектуры и как это влияет на масштабирование продукта. "
+                        "Второй плотный абзац связывает инфраструктурные решения с коммерческой логикой, "
+                        "переговорной позицией с банками и требованиями к государственным интеграциям."
+                    ),
+                    notes=(
+                        "Третий плотный абзац фиксирует риски внедрения, требования к операционной модели и "
+                        "критерии, по которым можно считать архитектурное решение успешным после запуска."
+                    ),
+                    preferred_layout_key="text_full_width",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
     def test_deck_audit_flags_continuation_order_mismatch(self) -> None:
         audits = [
             SlideAudit(
@@ -441,6 +1153,129 @@ class ProjectContractTests(unittest.TestCase):
         rules = {violation.rule for violation in violations}
         self.assertIn("content_order_mismatch", rules)
         self.assertIn("continuation_order_mismatch", rules)
+
+    def test_deck_audit_flags_large_font_jump_between_continuation_slides(self) -> None:
+        audits = [
+            SlideAudit(
+                slide_index=2,
+                title="Раздел",
+                kind=SlideKind.TEXT.value,
+                layout_key="text_full_width",
+                body_char_count=320,
+                body_font_sizes=(16.0,),
+                profile=profile_for_layout("text_full_width"),
+                expected_items=("Первый блок",),
+                rendered_items=("Первый блок",),
+            ),
+            SlideAudit(
+                slide_index=3,
+                title="Раздел (2)",
+                kind=SlideKind.TEXT.value,
+                layout_key="text_full_width",
+                body_char_count=300,
+                body_font_sizes=(12.0,),
+                profile=profile_for_layout("text_full_width"),
+                expected_items=("Второй блок",),
+                rendered_items=("Второй блок",),
+            ),
+        ]
+
+        violations = find_capacity_violations(audits)
+        self.assertIn("continuation_font_delta", {violation.rule for violation in violations})
+
+    def test_deck_audit_accepts_small_font_delta_between_continuation_slides(self) -> None:
+        audits = [
+            SlideAudit(
+                slide_index=2,
+                title="Раздел",
+                kind=SlideKind.TEXT.value,
+                layout_key="text_full_width",
+                body_char_count=320,
+                body_font_sizes=(14.0,),
+                profile=profile_for_layout("text_full_width"),
+                expected_items=("Первый блок",),
+                rendered_items=("Первый блок",),
+            ),
+            SlideAudit(
+                slide_index=3,
+                title="Раздел (2)",
+                kind=SlideKind.TEXT.value,
+                layout_key="text_full_width",
+                body_char_count=300,
+                body_font_sizes=(13.0,),
+                profile=profile_for_layout("text_full_width"),
+                expected_items=("Второй блок",),
+                rendered_items=("Второй блок",),
+            ),
+        ]
+
+        violations = find_capacity_violations(audits)
+        self.assertNotIn("continuation_font_delta", {violation.rule for violation in violations})
+
+    def test_deck_audit_flags_title_body_overlap_for_text_slide(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Раздел",
+            kind=SlideKind.TEXT.value,
+            layout_key="text_full_width",
+            body_char_count=140,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("text_full_width"),
+            title_top=671247,
+            title_height=900000,
+            body_top=1700000,
+            body_height=2800000,
+            footer_top=6384626,
+            footer_width=11198224,
+            body_left=442913,
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("title_body_overlap", {violation.rule for violation in violations})
+
+    def test_deck_audit_flags_subtitle_body_overlap_for_text_slide(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Раздел",
+            kind=SlideKind.TEXT.value,
+            layout_key="text_full_width",
+            body_char_count=140,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("text_full_width"),
+            title_top=671247,
+            title_height=800000,
+            subtitle_top=1600000,
+            subtitle_height=400000,
+            body_top=2050000,
+            body_height=2500000,
+            footer_top=6384626,
+            footer_width=11198224,
+            body_left=442913,
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("subtitle_body_overlap", {violation.rule for violation in violations})
+
+    def test_deck_audit_flags_narrow_footer_for_text_layout(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Раздел",
+            kind=SlideKind.TEXT.value,
+            layout_key="text_full_width",
+            body_char_count=320,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("text_full_width"),
+            title_top=671247,
+            title_height=800000,
+            body_top=1900000,
+            body_height=3600000,
+            footer_top=6384626,
+            footer_width=int(PptxGenerator.FULL_CONTENT_WIDTH_EMU * 0.75),
+            body_left=442913,
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("narrow_text_footer", {violation.rule for violation in violations})
 
     def test_deck_audit_accepts_balanced_dense_slides_without_capacity_violations(self) -> None:
         plan = PresentationPlan(
@@ -523,6 +1358,43 @@ class ProjectContractTests(unittest.TestCase):
         violations = find_capacity_violations(audits)
         self.assertEqual(violations, [])
 
+    def test_generator_preserves_table_cell_fill_colors_from_table_block(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Table Fill Colors",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Table Fill Colors", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TABLE,
+                    title="Цветная таблица",
+                    table=TableBlock(
+                        headers=["Показатель", "Значение"],
+                        header_fill_colors=["1F4E79", "1F4E79"],
+                        rows=[["Выручка", "120"], ["Маржа", "24%"]],
+                        row_fill_colors=[[None, "D9EAF7"], ["FDE7D7", None]],
+                    ),
+                    preferred_layout_key="table",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[1]
+        table = next(shape.table for shape in slide.shapes if getattr(shape, "has_table", False))
+        self.assertEqual(table.cell(0, 0).fill.fore_color.rgb, RGBColor(0x1F, 0x4E, 0x79))
+        self.assertEqual(table.cell(1, 1).fill.fore_color.rgb, RGBColor(0xD9, 0xEA, 0xF7))
+        self.assertEqual(table.cell(2, 0).fill.fore_color.rgb, RGBColor(0xFD, 0xE7, 0xD7))
+
     def test_deck_audit_validates_chart_layout_geometry(self) -> None:
         plan = PresentationPlan(
             template_id="corp_light_v1",
@@ -602,6 +1474,342 @@ class ProjectContractTests(unittest.TestCase):
         violations = find_capacity_violations(audits)
         self.assertEqual(violations, [])
 
+    def test_deck_audit_validates_cards_layout_geometry(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Cards Geometry",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Cards Geometry", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.BULLETS,
+                    title="Три направления роста",
+                    bullets=["Усилить ядро платформы", "Ускорить интеграции", "Повысить retention"],
+                    preferred_layout_key="cards_3",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        card_audit = next(audit for audit in audits if audit.layout_key == "cards_3")
+        violations = find_capacity_violations(audits)
+        self.assertTrue(card_audit.auxiliary_widths)
+        self.assertEqual([v.rule for v in violations if v.slide_index == card_audit.slide_index], [])
+
+    def test_deck_audit_validates_two_column_layout_geometry(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Two Column Geometry",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Two Column Geometry", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TWO_COLUMN,
+                    title="Модель взаимодействия",
+                    subtitle="Колонки и иконки должны сохранять рабочую сетку",
+                    left_bullets=["Контекст проекта", "Ограничения", "Допущения"],
+                    right_bullets=["Шаг 1", "Шаг 2", "Шаг 3", "Шаг 4"],
+                    preferred_layout_key="list_with_icons",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        two_column_audit = next(audit for audit in audits if audit.layout_key == "list_with_icons")
+        violations = find_capacity_violations(audits)
+        self.assertTrue(two_column_audit.auxiliary_widths)
+        self.assertEqual([v.rule for v in violations if v.slide_index == two_column_audit.slide_index], [])
+
+    def test_deck_audit_validates_contacts_layout_geometry(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Contacts Geometry",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Contacts Geometry", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Иван Иванов",
+                    subtitle="CEO",
+                    left_bullets=["+7 999 123-45-67"],
+                    right_bullets=["ivan@example.com"],
+                    preferred_layout_key="contacts",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        contacts_audit = next(audit for audit in audits if audit.layout_key == "contacts")
+        violations = find_capacity_violations(audits)
+        self.assertTrue(contacts_audit.auxiliary_widths)
+        self.assertEqual([v.rule for v in violations if v.slide_index == contacts_audit.slide_index], [])
+
+    def test_deck_audit_flags_underfilled_body_height_for_full_width_text(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Раздел",
+            kind=SlideKind.TEXT.value,
+            layout_key="text_full_width",
+            body_char_count=140,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("text_full_width"),
+            title_top=671247,
+            title_height=800000,
+            body_top=1900000,
+            body_height=1200000,
+            footer_top=6384626,
+            footer_width=11198224,
+            body_left=442913,
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("underfilled_body_height", {violation.rule for violation in violations})
+
+    def test_deck_audit_keeps_body_text_frame_margin_contract_for_full_width_text(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Body Margins",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Body Margins", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Раздел",
+                    text="Основной текст должен рендериться с явными внутренними margin-параметрами.",
+                    preferred_layout_key="text_full_width",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        text_audit = next(audit for audit in audits if audit.layout_key == "text_full_width")
+        self.assertEqual(text_audit.body_margin_left, PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU)
+        self.assertEqual(text_audit.body_margin_right, PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU)
+        self.assertEqual(text_audit.body_margin_top, PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU)
+        self.assertEqual(text_audit.body_margin_bottom, PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU)
+        violations = find_capacity_violations(audits)
+        self.assertNotIn("body_margin_mismatch", {violation.rule for violation in violations})
+
+    def test_full_width_text_body_keeps_paragraph_spacing_contract(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Paragraph Spacing",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Paragraph Spacing", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Раздел",
+                    text="Первый абзац основного текста.\nВторой абзац основного текста.",
+                    preferred_layout_key="text_full_width",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[1]
+        body = next(shape for shape in slide.placeholders if shape.placeholder_format.idx == 14)
+        paragraphs = [paragraph for paragraph in body.text_frame.paragraphs if paragraph.text.strip()]
+        self.assertTrue(paragraphs)
+        for paragraph in paragraphs:
+            with self.subTest(text=paragraph.text):
+                self.assertEqual(paragraph.line_spacing, 1.1)
+                self.assertEqual(paragraph.space_after.pt, 6.0)
+
+    def test_full_width_bullets_keep_paragraph_spacing_contract(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Bullet Paragraph Spacing",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Bullet Paragraph Spacing", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.BULLETS,
+                    title="Раздел",
+                    bullets=["Первый пункт", "Второй пункт", "Третий пункт"],
+                    preferred_layout_key="list_full_width",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[1]
+        body = next(shape for shape in slide.placeholders if shape.placeholder_format.idx == 14)
+        paragraphs = [paragraph for paragraph in body.text_frame.paragraphs if paragraph.text.strip()]
+        self.assertTrue(paragraphs)
+        for paragraph in paragraphs:
+            with self.subTest(text=paragraph.text):
+                self.assertEqual(paragraph.line_spacing, 1.05)
+                self.assertEqual(paragraph.space_after.pt, 5.0)
+
+    def test_cover_text_frames_keep_margin_contract(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Стратегия А3",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TITLE,
+                    title="Стратегия А3",
+                    notes="Горизонт планирования: 2026-2030\nМарт 2026",
+                    preferred_layout_key="cover",
+                )
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        text_shapes = [shape for shape in slide.shapes if getattr(shape, "has_text_frame", False)]
+        self.assertTrue(text_shapes)
+        for shape in text_shapes:
+            with self.subTest(shape=getattr(shape, "name", "")):
+                text_frame = shape.text_frame
+                self.assertEqual(text_frame.margin_left, PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU)
+                self.assertEqual(text_frame.margin_right, PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU)
+                self.assertEqual(text_frame.margin_top, PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU)
+                self.assertEqual(text_frame.margin_bottom, PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU)
+
+    def test_prototype_templates_keep_margin_contract_on_nonempty_text_shapes(self) -> None:
+        manifests = self.registry.list_templates()
+
+        for manifest in manifests:
+            template_path = self.settings.templates_dir / manifest.template_id / manifest.source_pptx
+            if not template_path.exists() or manifest.generation_mode.value != "prototype":
+                continue
+
+            with self.subTest(template_id=manifest.template_id):
+                plan = PresentationPlan(
+                    template_id=manifest.template_id,
+                    title=f"{manifest.display_name} Prototype Margin Contract",
+                    slides=self._smoke_slides_for_manifest(manifest),
+                )
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    output_path = self.generator.generate(
+                        template_path=template_path,
+                        manifest=manifest,
+                        plan=plan,
+                        output_dir=Path(temp_dir),
+                    )
+                    presentation = Presentation(str(output_path))
+
+                nonempty_text_shapes = [
+                    shape
+                    for slide in presentation.slides
+                    for shape in slide.shapes
+                    if getattr(shape, "has_text_frame", False) and (shape.text or "").strip()
+                ]
+                self.assertTrue(nonempty_text_shapes)
+                for shape in nonempty_text_shapes:
+                    with self.subTest(template_id=manifest.template_id, shape=getattr(shape, "name", "")):
+                        text_frame = shape.text_frame
+                        self.assertEqual(text_frame.margin_left, PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU)
+                        self.assertEqual(text_frame.margin_right, PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU)
+                        self.assertEqual(text_frame.margin_top, PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU)
+                        self.assertEqual(text_frame.margin_bottom, PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU)
+
+    def test_prototype_templates_render_nonempty_bound_content(self) -> None:
+        manifests = self.registry.list_templates()
+
+        for manifest in manifests:
+            template_path = self.settings.templates_dir / manifest.template_id / manifest.source_pptx
+            if not template_path.exists() or manifest.generation_mode.value != "prototype":
+                continue
+
+            with self.subTest(template_id=manifest.template_id):
+                plan = PresentationPlan(
+                    template_id=manifest.template_id,
+                    title=f"{manifest.display_name} Prototype Content Contract",
+                    slides=self._smoke_slides_for_manifest(manifest),
+                )
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    output_path = self.generator.generate(
+                        template_path=template_path,
+                        manifest=manifest,
+                        plan=plan,
+                        output_dir=Path(temp_dir),
+                    )
+                    presentation = Presentation(str(output_path))
+
+                rendered_payload = "\n".join(
+                    shape.text.strip()
+                    for slide in presentation.slides
+                    for shape in slide.shapes
+                    if getattr(shape, "has_text_frame", False) and (shape.text or "").strip()
+                )
+                has_visual_payload = any(
+                    getattr(shape, "has_table", False)
+                    or getattr(shape, "has_chart", False)
+                    or hasattr(shape, "image")
+                    for slide in presentation.slides
+                    for shape in slide.shapes
+                )
+                self.assertTrue(rendered_payload.strip() or has_visual_payload)
+
     def _smoke_slides_for_manifest(self, manifest) -> list[SlideSpec]:
         slides = [SlideSpec(kind=SlideKind.TITLE, title=f"{manifest.display_name} Smoke", preferred_layout_key="cover")]
         supported_kinds = self._supported_kinds(manifest)
@@ -652,6 +1860,23 @@ class ProjectContractTests(unittest.TestCase):
         for prototype in manifest.prototype_slides:
             supported.update(prototype.supported_slide_kinds)
         return supported
+
+    def _has_geometry_metadata(self, spec) -> bool:
+        return all(
+            isinstance(value, int) and value > 0
+            for value in (spec.left_emu, spec.top_emu, spec.width_emu, spec.height_emu)
+        )
+
+    def _has_text_margin_metadata(self, spec) -> bool:
+        return all(
+            isinstance(value, int) and value >= 0
+            for value in (
+                spec.margin_left_emu,
+                spec.margin_right_emu,
+                spec.margin_top_emu,
+                spec.margin_bottom_emu,
+            )
+        )
 
 
 if __name__ == "__main__":

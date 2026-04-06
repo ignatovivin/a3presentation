@@ -156,7 +156,21 @@ class SemanticDocumentNormalizer:
             return None
         match = self.LABEL_VALUE_PATTERN.match(normalized)
         if match:
-            return SemanticFact(label=match.group(1)[:80], value=match.group(2)[:240], confidence=0.9, source_text=normalized)
+            label = match.group(1).strip()
+            value = match.group(2).strip()
+            # Only keep concise label:value facts. Long narrative sentences with a colon
+            # belong to report prose and pollute appendix/fallback layers.
+            if len(label) > 48 or len(value) > 160:
+                return None
+            if len(label.split()) > 6:
+                return None
+            if any(char in label for char in ".?!;"):
+                return None
+            if "http" in label.lower() or "www." in label.lower():
+                return None
+            if value.lower().startswith("//") or value.lower().startswith("http") or "www." in value.lower():
+                return None
+            return SemanticFact(label=label[:80], value=value[:240], confidence=0.9, source_text=normalized)
         return None
 
     def _extract_contacts(self, blocks: list[DocumentBlock]) -> list[str]:
@@ -172,7 +186,11 @@ class SemanticDocumentNormalizer:
             if email:
                 candidates.append(email.group(0).strip())
             if phone:
-                candidates.append(phone.group(1).strip())
+                phone_candidate = phone.group(1).strip()
+                digits_only = re.sub(r"\D", "", phone_candidate)
+                # Avoid interpreting ranges like "2023-2024" as phone numbers.
+                if len(digits_only) >= 10:
+                    candidates.append(phone_candidate)
             for candidate in candidates:
                 if candidate not in seen:
                     contacts.append(candidate)

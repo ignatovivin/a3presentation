@@ -4,6 +4,27 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class PlaceholderGeometryPolicy:
+    placeholder_idx: int
+    left_emu: int
+    top_emu: int
+    width_emu: int
+    height_emu: int
+
+
+@dataclass(frozen=True)
+class BulletSpacingPolicy:
+    margin_left_emu: int
+    indent_emu: int
+
+
+@dataclass(frozen=True)
+class ParagraphSpacingPolicy:
+    line_spacing: float
+    space_after_pt: float
+
+
+@dataclass(frozen=True)
 class LayoutCapacityProfile:
     layout_key: str
     max_items: int
@@ -15,6 +36,25 @@ class LayoutCapacityProfile:
     target_fill_ratio: float
     max_fill_ratio: float
     continuation_balance_tolerance: float
+
+
+@dataclass(frozen=True)
+class LayoutGeometryPolicy:
+    layout_key: str
+    placeholders: dict[int, PlaceholderGeometryPolicy]
+    title_content_gap_emu: int
+    title_body_gap_no_subtitle_emu: int
+    content_footer_gap_emu: int
+
+
+@dataclass(frozen=True)
+class LayoutSpacingPolicy:
+    layout_key: str
+    bullet: BulletSpacingPolicy
+    body: ParagraphSpacingPolicy
+    title: ParagraphSpacingPolicy
+    subtitle: ParagraphSpacingPolicy
+    cover: ParagraphSpacingPolicy
 
 
 TEXT_FULL_WIDTH_PROFILE = LayoutCapacityProfile(
@@ -56,10 +96,263 @@ TABLE_PROFILE = LayoutCapacityProfile(
     continuation_balance_tolerance=0.12,
 )
 
+IMAGE_TEXT_PROFILE = LayoutCapacityProfile(
+    layout_key="image_text",
+    max_items=8,
+    max_weight=8.0,
+    max_chars=480,
+    max_primary_chars=260,
+    min_font_pt=12,
+    max_font_pt=16,
+    target_fill_ratio=0.76,
+    max_fill_ratio=0.92,
+    continuation_balance_tolerance=0.18,
+)
+
+CARDS_3_PROFILE = LayoutCapacityProfile(
+    layout_key="cards_3",
+    max_items=3,
+    max_weight=6.0,
+    max_chars=360,
+    max_primary_chars=0,
+    min_font_pt=12,
+    max_font_pt=16,
+    target_fill_ratio=0.74,
+    max_fill_ratio=0.9,
+    continuation_balance_tolerance=0.16,
+)
+
+LIST_WITH_ICONS_PROFILE = LayoutCapacityProfile(
+    layout_key="list_with_icons",
+    max_items=8,
+    max_weight=10.5,
+    max_chars=720,
+    max_primary_chars=220,
+    min_font_pt=12,
+    max_font_pt=16,
+    target_fill_ratio=0.78,
+    max_fill_ratio=0.93,
+    continuation_balance_tolerance=0.18,
+)
+
+CONTACTS_PROFILE = LayoutCapacityProfile(
+    layout_key="contacts",
+    max_items=4,
+    max_weight=4.5,
+    max_chars=220,
+    max_primary_chars=120,
+    min_font_pt=12,
+    max_font_pt=18,
+    target_fill_ratio=0.72,
+    max_fill_ratio=0.9,
+    continuation_balance_tolerance=0.16,
+)
+
+
+TEXT_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
+    layout_key="text_full_width",
+    placeholders={
+        0: PlaceholderGeometryPolicy(placeholder_idx=0, left_emu=442913, top_emu=671247, width_emu=11198224, height_emu=1120247),
+        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=442913, top_emu=1228230, width_emu=11198224, height_emu=552402),
+        14: PlaceholderGeometryPolicy(placeholder_idx=14, left_emu=442913, top_emu=1791494, width_emu=11198224, height_emu=3550000),
+        15: PlaceholderGeometryPolicy(placeholder_idx=15, left_emu=442913, top_emu=3800000, width_emu=11198224, height_emu=1850000),
+        17: PlaceholderGeometryPolicy(placeholder_idx=17, left_emu=442913, top_emu=6384626, width_emu=11198224, height_emu=260000),
+    },
+    title_content_gap_emu=180000,
+    title_body_gap_no_subtitle_emu=300000,
+    content_footer_gap_emu=180000,
+)
+
+LIST_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
+    layout_key="list_full_width",
+    placeholders=TEXT_LAYOUT_GEOMETRY_POLICY.placeholders,
+    title_content_gap_emu=TEXT_LAYOUT_GEOMETRY_POLICY.title_content_gap_emu,
+    title_body_gap_no_subtitle_emu=TEXT_LAYOUT_GEOMETRY_POLICY.title_body_gap_no_subtitle_emu,
+    content_footer_gap_emu=TEXT_LAYOUT_GEOMETRY_POLICY.content_footer_gap_emu,
+)
+
+TABLE_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
+    layout_key="table",
+    placeholders={
+        0: PlaceholderGeometryPolicy(placeholder_idx=0, left_emu=442913, top_emu=671247, width_emu=11198224, height_emu=584960),
+        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=442913, top_emu=1228230, width_emu=11198224, height_emu=700000),
+        15: PlaceholderGeometryPolicy(placeholder_idx=15, left_emu=442913, top_emu=6384626, width_emu=11198224, height_emu=260000),
+    },
+    title_content_gap_emu=180000,
+    title_body_gap_no_subtitle_emu=300000,
+    content_footer_gap_emu=180000,
+)
+
+IMAGE_TEXT_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
+    layout_key="image_text",
+    placeholders={
+        0: PlaceholderGeometryPolicy(placeholder_idx=0, left_emu=442913, top_emu=671247, width_emu=11198224, height_emu=1120247),
+        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=442913, top_emu=1228230, width_emu=5653087, height_emu=552402),
+        14: PlaceholderGeometryPolicy(placeholder_idx=14, left_emu=442913, top_emu=1791494, width_emu=4370387, height_emu=1932608),
+        15: PlaceholderGeometryPolicy(placeholder_idx=15, left_emu=442913, top_emu=3831706, width_emu=4370387, height_emu=2464622),
+        16: PlaceholderGeometryPolicy(placeholder_idx=16, left_emu=6650297, top_emu=1228230, width_emu=4990840, height_emu=4532490),
+        17: PlaceholderGeometryPolicy(placeholder_idx=17, left_emu=442913, top_emu=6384626, width_emu=3371850, height_emu=277813),
+    },
+    title_content_gap_emu=180000,
+    title_body_gap_no_subtitle_emu=300000,
+    content_footer_gap_emu=180000,
+)
+
+CARDS_3_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
+    layout_key="cards_3",
+    placeholders={
+        0: PlaceholderGeometryPolicy(placeholder_idx=0, left_emu=442913, top_emu=671247, width_emu=11198224, height_emu=1325563),
+        11: PlaceholderGeometryPolicy(placeholder_idx=11, left_emu=739775, top_emu=1723633, width_emu=3259138, height_emu=4164013),
+        12: PlaceholderGeometryPolicy(placeholder_idx=12, left_emu=4412456, top_emu=1723633, width_emu=3259138, height_emu=4164013),
+        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=8193087, top_emu=1723633, width_emu=3259138, height_emu=4164013),
+        15: PlaceholderGeometryPolicy(placeholder_idx=15, left_emu=442913, top_emu=6384626, width_emu=3371850, height_emu=277813),
+    },
+    title_content_gap_emu=220000,
+    title_body_gap_no_subtitle_emu=320000,
+    content_footer_gap_emu=180000,
+)
+
+LIST_WITH_ICONS_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
+    layout_key="list_with_icons",
+    placeholders={
+        0: PlaceholderGeometryPolicy(placeholder_idx=0, left_emu=442913, top_emu=671247, width_emu=11198224, height_emu=1109385),
+        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=442913, top_emu=1228230, width_emu=5653087, height_emu=552402),
+        12: PlaceholderGeometryPolicy(placeholder_idx=12, left_emu=550352, top_emu=1720850, width_emu=3221037, height_emu=2393950),
+        14: PlaceholderGeometryPolicy(placeholder_idx=14, left_emu=5219700, top_emu=1690688, width_emu=6421438, height_emu=4291012),
+        15: PlaceholderGeometryPolicy(placeholder_idx=15, left_emu=4546770, top_emu=1690688, width_emu=507658, height_emu=507658),
+        16: PlaceholderGeometryPolicy(placeholder_idx=16, left_emu=4546770, top_emu=2337615, width_emu=507658, height_emu=507658),
+        17: PlaceholderGeometryPolicy(placeholder_idx=17, left_emu=4546770, top_emu=2984542, width_emu=507658, height_emu=507658),
+        18: PlaceholderGeometryPolicy(placeholder_idx=18, left_emu=4546770, top_emu=3627337, width_emu=507658, height_emu=507658),
+        19: PlaceholderGeometryPolicy(placeholder_idx=19, left_emu=4546770, top_emu=4270132, width_emu=507658, height_emu=507658),
+        20: PlaceholderGeometryPolicy(placeholder_idx=20, left_emu=4546770, top_emu=4913483, width_emu=507658, height_emu=507658),
+        21: PlaceholderGeometryPolicy(placeholder_idx=21, left_emu=442913, top_emu=6384626, width_emu=3371850, height_emu=277813),
+    },
+    title_content_gap_emu=180000,
+    title_body_gap_no_subtitle_emu=300000,
+    content_footer_gap_emu=180000,
+)
+
+CONTACTS_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
+    layout_key="contacts",
+    placeholders={
+        10: PlaceholderGeometryPolicy(placeholder_idx=10, left_emu=7486650, top_emu=2305374, width_emu=3724275, height_emu=1037901),
+        11: PlaceholderGeometryPolicy(placeholder_idx=11, left_emu=7486650, top_emu=3429000, width_emu=3724275, height_emu=361950),
+        12: PlaceholderGeometryPolicy(placeholder_idx=12, left_emu=7486650, top_emu=3826037, width_emu=3724275, height_emu=361950),
+        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=7486649, top_emu=4290481, width_emu=3724275, height_emu=361950),
+    },
+    title_content_gap_emu=180000,
+    title_body_gap_no_subtitle_emu=220000,
+    content_footer_gap_emu=180000,
+)
+
+
+TEXT_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
+    layout_key="text_full_width",
+    bullet=BulletSpacingPolicy(margin_left_emu=342900, indent_emu=-171450),
+    body=ParagraphSpacingPolicy(line_spacing=1.1, space_after_pt=6.0),
+    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
+    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
+    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
+)
+
+LIST_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
+    layout_key="list_full_width",
+    bullet=BulletSpacingPolicy(margin_left_emu=400000, indent_emu=-200000),
+    body=ParagraphSpacingPolicy(line_spacing=1.05, space_after_pt=5.0),
+    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
+    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
+    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
+)
+
+TABLE_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
+    layout_key="table",
+    bullet=TEXT_LAYOUT_SPACING_POLICY.bullet,
+    body=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
+    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
+    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
+    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
+)
+
+IMAGE_TEXT_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
+    layout_key="image_text",
+    bullet=TEXT_LAYOUT_SPACING_POLICY.bullet,
+    body=ParagraphSpacingPolicy(line_spacing=1.08, space_after_pt=5.0),
+    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
+    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
+    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
+)
+
+CARDS_3_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
+    layout_key="cards_3",
+    bullet=TEXT_LAYOUT_SPACING_POLICY.bullet,
+    body=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
+    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
+    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
+    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
+)
+
+LIST_WITH_ICONS_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
+    layout_key="list_with_icons",
+    bullet=LIST_LAYOUT_SPACING_POLICY.bullet,
+    body=ParagraphSpacingPolicy(line_spacing=1.05, space_after_pt=5.0),
+    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
+    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
+    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
+)
+
+CONTACTS_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
+    layout_key="contacts",
+    bullet=TEXT_LAYOUT_SPACING_POLICY.bullet,
+    body=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=3.0),
+    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
+    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=2.0),
+    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
+)
+
 
 def profile_for_layout(layout_key: str) -> LayoutCapacityProfile:
     if layout_key == "table":
         return TABLE_PROFILE
+    if layout_key == "image_text":
+        return IMAGE_TEXT_PROFILE
+    if layout_key == "cards_3":
+        return CARDS_3_PROFILE
+    if layout_key == "list_with_icons":
+        return LIST_WITH_ICONS_PROFILE
+    if layout_key == "contacts":
+        return CONTACTS_PROFILE
     if layout_key == "list_full_width":
         return LIST_FULL_WIDTH_PROFILE
     return TEXT_FULL_WIDTH_PROFILE
+
+
+def geometry_policy_for_layout(layout_key: str) -> LayoutGeometryPolicy:
+    if layout_key == "table":
+        return TABLE_LAYOUT_GEOMETRY_POLICY
+    if layout_key == "image_text":
+        return IMAGE_TEXT_LAYOUT_GEOMETRY_POLICY
+    if layout_key == "cards_3":
+        return CARDS_3_LAYOUT_GEOMETRY_POLICY
+    if layout_key == "list_with_icons":
+        return LIST_WITH_ICONS_LAYOUT_GEOMETRY_POLICY
+    if layout_key == "contacts":
+        return CONTACTS_LAYOUT_GEOMETRY_POLICY
+    if layout_key == "list_full_width":
+        return LIST_LAYOUT_GEOMETRY_POLICY
+    return TEXT_LAYOUT_GEOMETRY_POLICY
+
+
+def spacing_policy_for_layout(layout_key: str) -> LayoutSpacingPolicy:
+    if layout_key == "table":
+        return TABLE_LAYOUT_SPACING_POLICY
+    if layout_key == "image_text":
+        return IMAGE_TEXT_LAYOUT_SPACING_POLICY
+    if layout_key == "cards_3":
+        return CARDS_3_LAYOUT_SPACING_POLICY
+    if layout_key == "list_with_icons":
+        return LIST_WITH_ICONS_LAYOUT_SPACING_POLICY
+    if layout_key == "contacts":
+        return CONTACTS_LAYOUT_SPACING_POLICY
+    if layout_key == "list_full_width":
+        return LIST_LAYOUT_SPACING_POLICY
+    return TEXT_LAYOUT_SPACING_POLICY
