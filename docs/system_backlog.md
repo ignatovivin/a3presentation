@@ -135,6 +135,16 @@ Target:
   - long title + dense body
   - compact vs underfilled neighbor slides
 
+## Current execution order
+
+The next implementation cycle should proceed in this order:
+
+1. make `deck_audit` template-aware for uploaded layout templates using analyzer/manifest placeholder metadata
+2. extend the same template-aware audit path to prototype templates where token-bound shapes replace ordinary placeholders
+3. derive placeholder-level capacity expectations from template metadata instead of relying only on coarse `layout_key` defaults
+4. expand regression and quality contracts for uploaded templates across document classes
+5. continue continuation-packing hardening only after the template-aware quality layer is strong enough to detect regressions
+
 ## Execution rule
 
 When picking the next task:

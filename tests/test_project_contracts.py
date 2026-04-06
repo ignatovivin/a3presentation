@@ -285,6 +285,53 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(shape.text_frame.margin_top, body_placeholder.margin_top_emu)
         self.assertEqual(shape.text_frame.margin_bottom, body_placeholder.margin_bottom_emu)
 
+    def test_deck_audit_uses_analyzer_geometry_metadata_for_uploaded_layout_templates(self) -> None:
+        template_id = "razmeshchenie_soglasiy"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+        analyzed_manifest = self.analyzer.analyze(
+            template_id=template_id,
+            template_path=template_path,
+            display_name="Размещение согласий",
+        )
+        analyzed_manifest.generation_mode = GenerationMode.LAYOUT
+        layout = next(layout for layout in analyzed_manifest.layouts if "text" in layout.supported_slide_kinds)
+        body_placeholder = next(placeholder for placeholder in layout.placeholders if placeholder.kind == PlaceholderKind.BODY)
+        body_placeholder.left_emu = 777777
+        body_placeholder.top_emu = 1888888
+        body_placeholder.width_emu = 5555555
+        body_placeholder.height_emu = 2222222
+        body_placeholder.margin_left_emu = 11111
+        body_placeholder.margin_right_emu = 22222
+        body_placeholder.margin_top_emu = 33333
+        body_placeholder.margin_bottom_emu = 44444
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Uploaded Layout Geometry",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="",
+                    text="Текст должен проходить template-aware deck audit на analyzer-derived layout metadata.",
+                    preferred_layout_key=layout.key,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=analyzed_manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan, analyzed_manifest)
+            violations = find_capacity_violations(audits)
+
+        self.assertTrue(audits)
+        self.assertFalse(any(item.rule == "body_left_misalignment" for item in violations))
+        self.assertFalse(any(item.rule == "body_margin_mismatch" for item in violations))
+
     def test_generator_applies_manifest_geometry_metadata_for_uploaded_prototype_templates(self) -> None:
         template_id = "razmeshchenie_soglasiy"
         template_path = self.settings.templates_dir / template_id / "template.pptx"

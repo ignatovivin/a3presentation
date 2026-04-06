@@ -6,8 +6,11 @@ from pathlib import Path
 
 from pptx import Presentation
 from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec
+from a3presentation.domain.template import PlaceholderKind, TemplateManifest
 from a3presentation.services.layout_capacity import (
     LayoutCapacityProfile,
+    LayoutGeometryPolicy,
+    PlaceholderGeometryPolicy,
     geometry_policy_for_layout,
     profile_for_layout,
 )
@@ -57,6 +60,15 @@ class SlideAudit:
     body_margin_right: int | None = None
     body_margin_top: int | None = None
     body_margin_bottom: int | None = None
+    expected_body_margin_left: int | None = None
+    expected_body_margin_right: int | None = None
+    expected_body_margin_top: int | None = None
+    expected_body_margin_bottom: int | None = None
+    title_placeholder_idx: int | None = None
+    subtitle_placeholder_idx: int | None = None
+    body_placeholder_idx: int | None = None
+    footer_placeholder_idx: int | None = None
+    geometry: LayoutGeometryPolicy | None = None
 
     @property
     def fill_ratio(self) -> float:
@@ -124,7 +136,11 @@ class CapacityViolation:
     details: str
 
 
-def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> list[SlideAudit]:
+def audit_generated_presentation(
+    output_path: Path,
+    plan: PresentationPlan,
+    manifest: TemplateManifest | None = None,
+) -> list[SlideAudit]:
     presentation = Presentation(str(output_path))
     audits: list[SlideAudit] = []
 
@@ -147,24 +163,30 @@ def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> l
             for shape in slide.placeholders
             if getattr(shape, "is_placeholder", False)
         }
-        body = placeholders.get(14)
-        footer = placeholders.get(15) or placeholders.get(17) or placeholders.get(21)
-        title = placeholders.get(0)
-        subtitle = placeholders.get(13)
+        title_idx = _placeholder_idx_for_role(slide_spec, manifest, PlaceholderKind.TITLE, (0,))
+        subtitle_idx = _placeholder_idx_for_role(slide_spec, manifest, PlaceholderKind.SUBTITLE, (13,))
+        body_idx = _placeholder_idx_for_role(slide_spec, manifest, PlaceholderKind.BODY, (14,))
+        footer_idx = _placeholder_idx_for_role(slide_spec, manifest, PlaceholderKind.FOOTER, (15, 17, 21))
+        body = placeholders.get(body_idx) if body_idx is not None else None
+        footer = placeholders.get(footer_idx) if footer_idx is not None else None
+        title = placeholders.get(title_idx) if title_idx is not None else None
+        subtitle = placeholders.get(subtitle_idx) if subtitle_idx is not None else None
+        resolved_geometry = _geometry_policy_for_slide(slide_spec, manifest)
+        expected_body_spec = _placeholder_spec_for_role(slide_spec, manifest, PlaceholderKind.BODY)
         auxiliary_widths = {
             idx: getattr(shape, "width", None)
             for idx, shape in placeholders.items()
-            if idx not in {0, 13, 14, 15, 17}
+            if idx not in {value for value in {title_idx, subtitle_idx, body_idx, footer_idx, 17} if value is not None}
         }
         auxiliary_lefts = {
             idx: getattr(shape, "left", None)
             for idx, shape in placeholders.items()
-            if idx not in {0, 13, 14, 15, 17}
+            if idx not in {value for value in {title_idx, subtitle_idx, body_idx, footer_idx, 17} if value is not None}
         }
         auxiliary_tops = {
             idx: getattr(shape, "top", None)
             for idx, shape in placeholders.items()
-            if idx not in {0, 13, 14, 15, 17}
+            if idx not in {value for value in {title_idx, subtitle_idx, body_idx, footer_idx, 17} if value is not None}
         }
         content_width = getattr(body, "width", None) if body is not None else None
         footer_width = getattr(footer, "width", None) if footer is not None else None
@@ -239,6 +261,15 @@ def audit_generated_presentation(output_path: Path, plan: PresentationPlan) -> l
                 body_margin_right=getattr(getattr(body, "text_frame", None), "margin_right", None) if body is not None and getattr(body, "has_text_frame", False) else None,
                 body_margin_top=getattr(getattr(body, "text_frame", None), "margin_top", None) if body is not None and getattr(body, "has_text_frame", False) else None,
                 body_margin_bottom=getattr(getattr(body, "text_frame", None), "margin_bottom", None) if body is not None and getattr(body, "has_text_frame", False) else None,
+                expected_body_margin_left=getattr(expected_body_spec, "margin_left_emu", None),
+                expected_body_margin_right=getattr(expected_body_spec, "margin_right_emu", None),
+                expected_body_margin_top=getattr(expected_body_spec, "margin_top_emu", None),
+                expected_body_margin_bottom=getattr(expected_body_spec, "margin_bottom_emu", None),
+                title_placeholder_idx=title_idx,
+                subtitle_placeholder_idx=subtitle_idx,
+                body_placeholder_idx=body_idx,
+                footer_placeholder_idx=footer_idx,
+                geometry=resolved_geometry,
             )
         )
 
@@ -259,7 +290,7 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
     violations: list[CapacityViolation] = []
 
     for audit in audits:
-        geometry = geometry_policy_for_layout(audit.layout_key)
+        geometry = audit.geometry or geometry_policy_for_layout(audit.layout_key)
         if not audit.within_font_bounds:
             violations.append(
                 CapacityViolation(
@@ -375,54 +406,57 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
                 )
 
-            if audit.body_left is not None and abs(audit.body_left - geometry.placeholders[14].left_emu) > GEOMETRY_TOLERANCE_EMU:
+            expected_body_geometry = geometry.placeholders.get(audit.body_placeholder_idx or 14)
+            if expected_body_geometry is not None and audit.body_left is not None and abs(audit.body_left - expected_body_geometry.left_emu) > GEOMETRY_TOLERANCE_EMU:
                 violations.append(
                     CapacityViolation(
                         slide_index=audit.slide_index,
                         title=audit.title,
                         rule="body_left_misalignment",
                         details=(
-                            f"body_left={audit.body_left} expected={geometry.placeholders[14].left_emu} "
+                            f"body_left={audit.body_left} expected={expected_body_geometry.left_emu} "
                             f"tolerance={GEOMETRY_TOLERANCE_EMU}"
                         ),
                     )
                 )
-            expected_margin_x = PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU
-            expected_margin_y = PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU
-            if audit.body_margin_left is not None and abs(audit.body_margin_left - expected_margin_x) > GEOMETRY_TOLERANCE_EMU:
+            expected_margin_left = audit.expected_body_margin_left or PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU
+            expected_margin_right = audit.expected_body_margin_right or PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU
+            expected_margin_top = audit.expected_body_margin_top or PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU
+            expected_margin_bottom = audit.expected_body_margin_bottom or PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU
+            if audit.body_margin_left is not None and abs(audit.body_margin_left - expected_margin_left) > GEOMETRY_TOLERANCE_EMU:
                 violations.append(
                     CapacityViolation(
                         slide_index=audit.slide_index,
                         title=audit.title,
                         rule="body_margin_mismatch",
-                        details=f"margin_left={audit.body_margin_left} expected={expected_margin_x}",
+                        details=f"margin_left={audit.body_margin_left} expected={expected_margin_left}",
                     )
                 )
-            if audit.body_margin_right is not None and abs(audit.body_margin_right - expected_margin_x) > GEOMETRY_TOLERANCE_EMU:
+            if audit.body_margin_right is not None and abs(audit.body_margin_right - expected_margin_right) > GEOMETRY_TOLERANCE_EMU:
                 violations.append(
                     CapacityViolation(
                         slide_index=audit.slide_index,
                         title=audit.title,
                         rule="body_margin_mismatch",
-                        details=f"margin_right={audit.body_margin_right} expected={expected_margin_x}",
+                        details=f"margin_right={audit.body_margin_right} expected={expected_margin_right}",
                     )
                 )
-            if audit.body_margin_top is not None and abs(audit.body_margin_top - expected_margin_y) > GEOMETRY_TOLERANCE_EMU:
+            if audit.body_margin_top is not None and abs(audit.body_margin_top - expected_margin_top) > GEOMETRY_TOLERANCE_EMU:
                 violations.append(
                     CapacityViolation(
                         slide_index=audit.slide_index,
                         title=audit.title,
                         rule="body_margin_mismatch",
-                        details=f"margin_top={audit.body_margin_top} expected={expected_margin_y}",
+                        details=f"margin_top={audit.body_margin_top} expected={expected_margin_top}",
                     )
                 )
-            if audit.body_margin_bottom is not None and abs(audit.body_margin_bottom - expected_margin_y) > GEOMETRY_TOLERANCE_EMU:
+            if audit.body_margin_bottom is not None and abs(audit.body_margin_bottom - expected_margin_bottom) > GEOMETRY_TOLERANCE_EMU:
                 violations.append(
                     CapacityViolation(
                         slide_index=audit.slide_index,
                         title=audit.title,
                         rule="body_margin_mismatch",
-                        details=f"margin_bottom={audit.body_margin_bottom} expected={expected_margin_y}",
+                        details=f"margin_bottom={audit.body_margin_bottom} expected={expected_margin_bottom}",
                     )
                 )
 
@@ -536,8 +570,11 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
 
         if audit.layout_key in {"text_full_width", "list_full_width", "image_text"}:
-            expected_body_height = geometry.placeholders[14].height_emu
+            expected_body_geometry = geometry.placeholders.get(audit.body_placeholder_idx or 14)
+            expected_body_height = expected_body_geometry.height_emu if expected_body_geometry is not None else None
             if (
+                expected_body_height is not None
+                and
                 audit.body_height is not None
                 and audit.body_height < int(expected_body_height * BODY_HEIGHT_UNDERFILL_RATIO)
                 and audit.fill_ratio < max(audit.profile.target_fill_ratio - 0.2, 0.0)
@@ -709,6 +746,69 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
             )
 
     return violations
+
+
+def _placeholder_idx_for_role(
+    slide_spec: SlideSpec,
+    manifest: TemplateManifest | None,
+    kind: PlaceholderKind,
+    fallback_indices: tuple[int, ...],
+) -> int | None:
+    placeholder = _placeholder_spec_for_role(slide_spec, manifest, kind)
+    if placeholder is not None and placeholder.idx is not None:
+        return placeholder.idx
+    return fallback_indices[0] if fallback_indices else None
+
+
+def _placeholder_spec_for_role(
+    slide_spec: SlideSpec,
+    manifest: TemplateManifest | None,
+    kind: PlaceholderKind,
+):
+    if manifest is None:
+        return None
+    layout = next(
+        (item for item in manifest.layouts if item.key == (slide_spec.preferred_layout_key or "")),
+        None,
+    )
+    if layout is None:
+        return None
+    typed = [placeholder for placeholder in layout.placeholders if placeholder.kind == kind and placeholder.idx is not None]
+    if typed:
+        return typed[0]
+    return None
+
+
+def _geometry_policy_for_slide(slide_spec: SlideSpec, manifest: TemplateManifest | None) -> LayoutGeometryPolicy:
+    base_layout_key = slide_spec.preferred_layout_key or _infer_layout_key(slide_spec.kind.value)
+    base_policy = geometry_policy_for_layout(base_layout_key)
+    if manifest is None:
+        return base_policy
+    layout = next((item for item in manifest.layouts if item.key == base_layout_key), None)
+    if layout is None:
+        return base_policy
+    placeholders: dict[int, PlaceholderGeometryPolicy] = {}
+    for placeholder in layout.placeholders:
+        if placeholder.idx is None:
+            continue
+        if None in {placeholder.left_emu, placeholder.top_emu, placeholder.width_emu, placeholder.height_emu}:
+            continue
+        placeholders[placeholder.idx] = PlaceholderGeometryPolicy(
+            placeholder_idx=placeholder.idx,
+            left_emu=placeholder.left_emu,
+            top_emu=placeholder.top_emu,
+            width_emu=placeholder.width_emu,
+            height_emu=placeholder.height_emu,
+        )
+    if not placeholders:
+        return base_policy
+    return LayoutGeometryPolicy(
+        layout_key=base_layout_key,
+        placeholders=placeholders,
+        title_content_gap_emu=base_policy.title_content_gap_emu,
+        title_body_gap_no_subtitle_emu=base_policy.title_body_gap_no_subtitle_emu,
+        content_footer_gap_emu=base_policy.content_footer_gap_emu,
+    )
 
 
 def _infer_layout_key(kind: str) -> str:
