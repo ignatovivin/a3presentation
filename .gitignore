@@ -15,4 +15,3 @@ src/**/*.egg-info/
 
 storage/generated/
 storage/outputs/
-storage/templates/*/template.pptx
