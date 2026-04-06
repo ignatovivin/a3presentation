@@ -22,6 +22,7 @@ These folders are local artifacts only. They can be cleaned, regenerated, or arc
 ## Rule of thumb
 
 - commit template sources
+- sync committed template sources into runtime `data/templates` during server deploy
 - do not commit generated presentation results
 - do not use `storage/outputs` as a document archive
 - use generated outputs only as local runtime or manual QA artifacts

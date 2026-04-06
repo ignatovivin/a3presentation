@@ -48,15 +48,23 @@ Log out and back in after adding your user to the `docker` group.
 git clone https://github.com/ignatovivin/a3presentation.git
 cd a3presentation
 mkdir -p data/templates data/outputs
-docker compose -f docker-compose.server.yml up -d --build
+bash scripts/deploy_server.sh
 ```
+
+## Why templates are synced
+
+- `storage/templates` in git is the source of truth
+- `data/templates` on the server is the runtime copy used by backend via `TEMPLATES_DIR=/data/templates`
+- deploy should synchronize templates from repo into `data/templates` before container rebuild
+
+This prevents runtime errors like `Template 'corp_light_v1' not found` after deploy.
 
 ## Update project
 
 ```bash
 cd a3presentation
 git pull
-docker compose -f docker-compose.server.yml up -d --build
+bash scripts/deploy_server.sh
 ```
 
 ## Verify

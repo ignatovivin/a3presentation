@@ -117,8 +117,10 @@ Guide:
 Main command on the server:
 
 ```bash
-docker compose -f docker-compose.server.yml up -d --build
+bash scripts/deploy_server.sh
 ```
+
+This server deploy flow synchronizes versioned templates from `storage/templates` into runtime `data/templates` before rebuilding containers.
 
 ## Test and verification
 
