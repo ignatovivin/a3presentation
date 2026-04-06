@@ -384,6 +384,52 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(shape.text_frame.margin_top, bound_text_token.margin_top_emu)
         self.assertEqual(shape.text_frame.margin_bottom, bound_text_token.margin_bottom_emu)
 
+    def test_deck_audit_uses_manifest_geometry_metadata_for_uploaded_prototype_templates(self) -> None:
+        template_id = "razmeshchenie_soglasiy"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+        manifest = self.registry.get_template(template_id)
+        prototype = next(
+            item for item in manifest.prototype_slides if any(token.binding == "main_text" for token in item.tokens)
+        )
+        body_token = next(token for token in prototype.tokens if token.binding == "main_text")
+        body_token.left_emu = 999999
+        body_token.top_emu = 2111111
+        body_token.width_emu = 4444444
+        body_token.height_emu = 1234567
+        body_token.margin_left_emu = 21000
+        body_token.margin_right_emu = 22000
+        body_token.margin_top_emu = 23000
+        body_token.margin_bottom_emu = 24000
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Uploaded Prototype Audit Geometry",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Заголовок",
+                    subtitle="Подзаголовок",
+                    text="Template-aware deck audit должен читать body geometry и margins из prototype token metadata.",
+                    notes="Служебная строка для prototype footer.",
+                    preferred_layout_key=prototype.key,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan, manifest)
+            violations = find_capacity_violations(audits)
+
+        self.assertTrue(audits)
+        self.assertFalse(any(item.rule == "body_left_misalignment" for item in violations))
+        self.assertFalse(any(item.rule == "body_margin_mismatch" for item in violations))
+
     def test_full_pipeline_contract_for_mixed_docx_document(self) -> None:
         document = Document()
         document.add_paragraph("A3")

@@ -167,12 +167,12 @@ def audit_generated_presentation(
         subtitle_idx = _placeholder_idx_for_role(slide_spec, manifest, PlaceholderKind.SUBTITLE, (13,))
         body_idx = _placeholder_idx_for_role(slide_spec, manifest, PlaceholderKind.BODY, (14,))
         footer_idx = _placeholder_idx_for_role(slide_spec, manifest, PlaceholderKind.FOOTER, (15, 17, 21))
-        body = placeholders.get(body_idx) if body_idx is not None else None
-        footer = placeholders.get(footer_idx) if footer_idx is not None else None
-        title = placeholders.get(title_idx) if title_idx is not None else None
-        subtitle = placeholders.get(subtitle_idx) if subtitle_idx is not None else None
+        body = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.BODY, body_idx)
+        footer = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.FOOTER, footer_idx)
+        title = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.TITLE, title_idx)
+        subtitle = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.SUBTITLE, subtitle_idx)
         resolved_geometry = _geometry_policy_for_slide(slide_spec, manifest)
-        expected_body_spec = _placeholder_spec_for_role(slide_spec, manifest, PlaceholderKind.BODY)
+        expected_body_spec = _shape_spec_for_role(slide_spec, manifest, PlaceholderKind.BODY)
         auxiliary_widths = {
             idx: getattr(shape, "width", None)
             for idx, shape in placeholders.items()
@@ -754,13 +754,15 @@ def _placeholder_idx_for_role(
     kind: PlaceholderKind,
     fallback_indices: tuple[int, ...],
 ) -> int | None:
-    placeholder = _placeholder_spec_for_role(slide_spec, manifest, kind)
-    if placeholder is not None and placeholder.idx is not None:
-        return placeholder.idx
+    placeholder = _shape_spec_for_role(slide_spec, manifest, kind)
+    if placeholder is not None:
+        placeholder_idx = getattr(placeholder, "idx", None)
+        if placeholder_idx is not None:
+            return placeholder_idx
     return fallback_indices[0] if fallback_indices else None
 
 
-def _placeholder_spec_for_role(
+def _shape_spec_for_role(
     slide_spec: SlideSpec,
     manifest: TemplateManifest | None,
     kind: PlaceholderKind,
@@ -771,11 +773,17 @@ def _placeholder_spec_for_role(
         (item for item in manifest.layouts if item.key == (slide_spec.preferred_layout_key or "")),
         None,
     )
-    if layout is None:
-        return None
-    typed = [placeholder for placeholder in layout.placeholders if placeholder.kind == kind and placeholder.idx is not None]
-    if typed:
-        return typed[0]
+    if layout is not None:
+        typed = [placeholder for placeholder in layout.placeholders if placeholder.kind == kind and placeholder.idx is not None]
+        if typed:
+            return typed[0]
+    prototype = _prototype_slide_for_spec(slide_spec, manifest)
+    if prototype is not None:
+        bindings = _prototype_bindings_for_role(kind, slide_spec.kind)
+        for binding in bindings:
+            token = next((item for item in prototype.tokens if item.binding == binding and item.shape_name), None)
+            if token is not None:
+                return token
     return None
 
 
@@ -801,7 +809,29 @@ def _geometry_policy_for_slide(slide_spec: SlideSpec, manifest: TemplateManifest
             height_emu=placeholder.height_emu,
         )
     if not placeholders:
-        return base_policy
+        prototype = _prototype_slide_for_spec(slide_spec, manifest)
+        if prototype is None:
+            return base_policy
+        role_specs = {
+            0: _prototype_token_spec_for_role(prototype, PlaceholderKind.TITLE, slide_spec.kind),
+            13: _prototype_token_spec_for_role(prototype, PlaceholderKind.SUBTITLE, slide_spec.kind),
+            14: _prototype_token_spec_for_role(prototype, PlaceholderKind.BODY, slide_spec.kind),
+            17: _prototype_token_spec_for_role(prototype, PlaceholderKind.FOOTER, slide_spec.kind),
+        }
+        for synthetic_idx, token_spec in role_specs.items():
+            if token_spec is None:
+                continue
+            if None in {token_spec.left_emu, token_spec.top_emu, token_spec.width_emu, token_spec.height_emu}:
+                continue
+            placeholders[synthetic_idx] = PlaceholderGeometryPolicy(
+                placeholder_idx=synthetic_idx,
+                left_emu=token_spec.left_emu,
+                top_emu=token_spec.top_emu,
+                width_emu=token_spec.width_emu,
+                height_emu=token_spec.height_emu,
+            )
+        if not placeholders:
+            return base_policy
     return LayoutGeometryPolicy(
         layout_key=base_layout_key,
         placeholders=placeholders,
@@ -809,6 +839,83 @@ def _geometry_policy_for_slide(slide_spec: SlideSpec, manifest: TemplateManifest
         title_body_gap_no_subtitle_emu=base_policy.title_body_gap_no_subtitle_emu,
         content_footer_gap_emu=base_policy.content_footer_gap_emu,
     )
+
+
+def _shape_for_role(slide, placeholders: dict[int, object], slide_spec: SlideSpec, manifest: TemplateManifest | None, kind: PlaceholderKind, placeholder_idx: int | None):
+    if placeholder_idx is not None and placeholder_idx in placeholders:
+        return placeholders[placeholder_idx]
+    shape_spec = _shape_spec_for_role(slide_spec, manifest, kind)
+    shape_name = getattr(shape_spec, "shape_name", None)
+    if not shape_name:
+        return None
+    return next((shape for shape in slide.shapes if getattr(shape, "name", None) == shape_name), None)
+
+
+def _prototype_slide_for_spec(slide_spec: SlideSpec, manifest: TemplateManifest | None):
+    if manifest is None or not manifest.prototype_slides:
+        return None
+    if slide_spec.preferred_layout_key:
+        preferred = next((item for item in manifest.prototype_slides if item.key == slide_spec.preferred_layout_key), None)
+        if preferred is not None:
+            return preferred
+    return next((item for item in manifest.prototype_slides if slide_spec.kind.value in item.supported_slide_kinds), None)
+
+
+def _prototype_token_spec_for_role(prototype, kind: PlaceholderKind, slide_kind: SlideKind):
+    bindings = _prototype_bindings_for_role(kind, slide_kind)
+    for binding in bindings:
+        token = next((item for item in prototype.tokens if item.binding == binding and item.shape_name), None)
+        if token is not None:
+            return token
+    return None
+
+
+def _prototype_bindings_for_role(kind: PlaceholderKind, slide_kind: SlideKind) -> tuple[str, ...]:
+    if kind == PlaceholderKind.TITLE:
+        return ("cover_title", "title", "contact_title")
+    if kind == PlaceholderKind.SUBTITLE:
+        return ("subtitle", "cover_meta", "contact_role")
+    if kind == PlaceholderKind.BODY:
+        if slide_kind == SlideKind.BULLETS:
+            return (
+                "bullets",
+                "right_list",
+                "left_bullets",
+                "right_bullets",
+                "main_text",
+                "text",
+                "body",
+                "summary",
+                "secondary_text",
+                "left_text",
+                "right_text",
+                "left_note",
+                "right_note",
+                "contact_phone",
+                "contact_email",
+            )
+        if slide_kind == SlideKind.TWO_COLUMN:
+            return ("left_text", "main_text", "text", "body", "summary", "secondary_text")
+        if slide_kind == SlideKind.TITLE:
+            return ("cover_meta", "subtitle", "main_text", "text", "body", "summary")
+        return (
+            "main_text",
+            "text",
+            "body",
+            "summary",
+            "secondary_text",
+            "left_text",
+            "right_text",
+            "left_note",
+            "right_note",
+            "contact_phone",
+            "contact_email",
+            "bullets",
+            "right_list",
+        )
+    if kind == PlaceholderKind.FOOTER:
+        return ("presentation_name", "notes", "cover_meta")
+    return ()
 
 
 def _infer_layout_key(kind: str) -> str:
