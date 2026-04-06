@@ -136,4 +136,16 @@ jobs:
             git checkout dev
             git reset --hard origin/dev
             bash scripts/deploy_server.sh
-            curl -fsS http://127.0.0.1:8080/api/health
+            ok=0
+            for attempt in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:8080/api/health; then
+                ok=1
+                break
+              fi
+              sleep 5
+            done
+            if [ "$ok" -ne 1 ]; then
+              docker compose -f docker-compose.server.yml ps
+              docker compose -f docker-compose.server.yml logs --tail=100 nginx backend frontend
+              exit 1
+            fi
