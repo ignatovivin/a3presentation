@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from a3presentation.domain.template import TemplateManifest
 
@@ -63,10 +63,16 @@ class TemplateRegistry:
     def _safe_child_path(self, base_dir: Path, child_name: str) -> Path:
         if not child_name or not child_name.strip():
             raise ValueError("Path segment must not be empty")
-        if Path(child_name).is_absolute():
+        normalized = child_name.replace("\\", "/").strip()
+        if Path(normalized).is_absolute() or normalized.startswith("/"):
             raise ValueError("Absolute paths are not allowed")
+        parts = PurePosixPath(normalized).parts
+        if not parts:
+            raise ValueError("Path segment must not be empty")
+        if len(parts) != 1 or parts[0] in {".", ".."}:
+            raise ValueError(f"Path '{child_name}' escapes the storage root")
 
-        candidate = (base_dir / child_name).resolve()
+        candidate = (base_dir / parts[0]).resolve()
         try:
             candidate.relative_to(base_dir)
         except ValueError as exc:
