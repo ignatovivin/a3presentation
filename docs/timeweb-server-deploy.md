@@ -47,17 +47,18 @@ Log out and back in after adding your user to the `docker` group.
 ```bash
 git clone https://github.com/ignatovivin/a3presentation.git
 cd a3presentation
-mkdir -p data/templates data/outputs
+mkdir -p data/outputs
 bash scripts/deploy_server.sh
 ```
 
-## Why templates are synced
+## Why templates are not mounted separately
 
 - `storage/templates` in git is the source of truth
-- `data/templates` on the server is the runtime copy used by backend via `TEMPLATES_DIR=/data/templates`
-- deploy should synchronize templates from repo into `data/templates` before container rebuild
+- backend image already contains `storage/templates`
+- server deployment reads templates directly from `/app/storage/templates`
+- only `data/outputs` stays on the host as persistent runtime storage
 
-This prevents runtime errors like `Template 'corp_light_v1' not found` after deploy.
+This avoids runtime drift between repo templates and production templates and removes the need to copy `template.pptx` into a separate volume on every deploy.
 
 ## Update project
 

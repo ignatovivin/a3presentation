@@ -120,7 +120,8 @@ Main command on the server:
 bash scripts/deploy_server.sh
 ```
 
-This server deploy flow synchronizes versioned templates from `storage/templates` into runtime `data/templates` before rebuilding containers.
+On Timeweb server deploys, backend reads versioned templates directly from `/app/storage/templates` inside the image.
+Only runtime outputs stay on the persistent host volume.
 
 ## Test and verification
 

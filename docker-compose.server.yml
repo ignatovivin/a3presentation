@@ -5,10 +5,9 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      TEMPLATES_DIR: /data/templates
+      TEMPLATES_DIR: /app/storage/templates
       OUTPUTS_DIR: /data/outputs
     volumes:
-      - ./data/templates:/data/templates
       - ./data/outputs:/data/outputs
 
   frontend:
