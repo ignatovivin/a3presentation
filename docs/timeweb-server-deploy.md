@@ -7,6 +7,7 @@ This deployment mode uses one Linux server and Docker Compose.
 - `backend`: FastAPI application
 - `frontend`: static React build served by nginx
 - `nginx`: public reverse proxy
+- host `nginx` with Let's Encrypt terminates HTTPS and proxies into docker `nginx` on `127.0.0.1:8080`
 
 Public traffic:
 
@@ -14,6 +15,7 @@ Public traffic:
 - `/api/*` -> backend
 
 This means the browser uses one origin and does not need separate CORS setup.
+For the Timeweb single-server setup, Docker publishes the internal app proxy only on `127.0.0.1:8080`, and host nginx handles public `80/443`.
 
 ## Server prerequisites
 

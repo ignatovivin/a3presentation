@@ -122,6 +122,7 @@ bash scripts/deploy_server.sh
 
 On Timeweb server deploys, backend reads versioned templates directly from `/app/storage/templates` inside the image.
 Only runtime outputs stay on the persistent host volume.
+The server compose publishes docker nginx on `127.0.0.1:8080`, because public `80/443` are handled by host nginx with Let's Encrypt.
 
 ## Test and verification
 
