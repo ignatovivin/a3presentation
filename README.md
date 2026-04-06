@@ -158,6 +158,7 @@ yarn test:visual
 
 GitHub Actions should run backend tests, frontend verification, and the dedicated quality-contract gate on pushes and pull requests for `dev`, `test`, and `main`.
 Frontend smoke tests are also suitable as a separate CI gate.
+For production-like server deploys, pushes to `dev` can also trigger an SSH deploy job to Timeweb after all checks pass.
 
 ## API entry points
 

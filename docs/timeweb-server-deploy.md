@@ -70,6 +70,31 @@ git pull
 bash scripts/deploy_server.sh
 ```
 
+## Optional GitHub Actions auto-deploy
+
+The repository now supports a minimal SSH deploy flow from GitHub Actions for `dev`.
+
+Behavior:
+
+- push to `dev`
+- run backend, quality, frontend verify, and frontend smoke jobs
+- if all pass, connect to Timeweb over SSH
+- hard-reset server checkout to `origin/dev`
+- run `bash scripts/deploy_server.sh`
+
+Required GitHub repository secrets:
+
+- `TIMEWEB_HOST`
+- `TIMEWEB_USER`
+- `TIMEWEB_SSH_KEY`
+- `TIMEWEB_PORT` (optional, defaults to `22`)
+
+Recommended server assumptions:
+
+- project path on server: `~/a3presentation`
+- deploy branch on server: `dev`
+- host nginx + Let's Encrypt already configured separately
+
 ## Verify
 
 Backend health:

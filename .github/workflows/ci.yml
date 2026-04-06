@@ -109,3 +109,31 @@ jobs:
 
       - name: Run frontend smoke tests
         run: yarn test:smoke
+
+  deploy-timeweb:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs:
+      - backend
+      - quality-contracts
+      - frontend
+      - frontend-smoke
+    runs-on: ubuntu-latest
+    environment: timeweb-production
+
+    steps:
+      - name: Deploy to Timeweb server over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.TIMEWEB_HOST }}
+          username: ${{ secrets.TIMEWEB_USER }}
+          key: ${{ secrets.TIMEWEB_SSH_KEY }}
+          port: ${{ secrets.TIMEWEB_PORT || '22' }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd ~/a3presentation
+            git fetch origin
+            git checkout dev
+            git reset --hard origin/dev
+            bash scripts/deploy_server.sh
+            curl -fsS http://127.0.0.1:8080/api/health
