@@ -25,7 +25,7 @@ It is narrower than the full backend test suite and focuses on end-to-end layout
 
 Current runner:
 
-- [run_quality_contracts.py](/C:/Project/a3presentation/scripts/run_quality_contracts.py)
+- [run_quality_contracts.py](../scripts/run_quality_contracts.py)
 
 ## Why a dedicated runner
 
@@ -81,4 +81,7 @@ This verification layer should support the general working standard of the proje
 
 - fixes are accepted as global only if they survive document-class and template-aware checks
 - one problematic file is a regression case, not proof that a local tweak is acceptable
+- after fixing one manifestation, related manifestations in neighboring components, layouts, or render paths should also be checked and covered by verification where applicable
+- verification after changes should include targeted regressions, representative document classes, and the broader backend suite rather than a single happy-path rerun
+- generation-related fixes must include a fresh `.pptx` generation after the code change and direct inspection of the newly generated artifact; inspecting an old deck is diagnostic only
 - after identifying a safe next verification or implementation step, work should continue automatically without redundant stop-and-ask behavior

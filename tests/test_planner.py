@@ -1149,7 +1149,7 @@ class TextToPlanServiceTests(unittest.TestCase):
             title_runs = [run for paragraph in placeholders[0].text_frame.paragraphs for run in paragraph.runs]
 
             self.assertTrue(title_runs)
-            self.assertGreaterEqual(title_runs[0].font.size.pt, 28)
+            self.assertEqual(title_runs[0].font.size.pt, 28)
             self.assertLess(placeholders[0].height, 1000000)
             self.assertGreater(placeholders[14].top, placeholders[0].top + placeholders[0].height)
 
@@ -1408,7 +1408,7 @@ class TextToPlanServiceTests(unittest.TestCase):
             )
 
             self.assertTrue(font_sizes)
-            self.assertGreaterEqual(min(font_sizes), 13.0)
+            self.assertEqual(font_sizes, [18.0])
 
     def test_generator_renders_chart_slide_into_pptx(self) -> None:
         plan = PresentationPlan(

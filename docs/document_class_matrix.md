@@ -8,7 +8,7 @@ It exists to prevent overfitting the planner and generator to one problematic do
 The target is not "works for one file".
 The target is "stable across document classes".
 
-This document must be used together with [analysis_rule.md](/C:/Project/a3presentation/docs/analysis_rule.md).
+This document must be used together with [analysis_rule.md](analysis_rule.md).
 It must also be used with the assumption that the active template may change, because users and companies can upload their own templates.
 
 ## Core rule

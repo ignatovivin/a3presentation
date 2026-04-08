@@ -24,7 +24,7 @@ Repository root:
 Suggested settings:
 
 - Root Directory: `/`
-- Railway will use [Dockerfile](/C:/Project/a3presentation/Dockerfile)
+- Railway will use [Dockerfile](../Dockerfile)
 
 Environment variables:
 
@@ -65,7 +65,7 @@ Repository root:
 Suggested settings:
 
 - Root Directory: `/frontend`
-- Railway will use [frontend/Dockerfile](/C:/Project/a3presentation/frontend/Dockerfile)
+- Railway will use [frontend/Dockerfile](../frontend/Dockerfile)
 
 Environment variables:
 

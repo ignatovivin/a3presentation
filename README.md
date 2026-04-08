@@ -43,13 +43,28 @@ tests/                 Unit, regression, and end-to-end tests
 examples/              Example manifests and presentation plans
 ```
 
-Storage rules are documented in [storage/README.md](/C:/Project/a3presentation/storage/README.md).
-Analysis and troubleshooting workflow is documented in [docs/analysis_rule.md](/C:/Project/a3presentation/docs/analysis_rule.md).
-Document-class quality expectations are documented in [docs/document_class_matrix.md](/C:/Project/a3presentation/docs/document_class_matrix.md).
+Storage rules are documented in [storage/README.md](storage/README.md).
+Analysis and troubleshooting workflow is documented in [docs/analysis_rule.md](docs/analysis_rule.md).
+Document-class quality expectations are documented in [docs/document_class_matrix.md](docs/document_class_matrix.md).
+
+## Process Map
+
+The current process links are:
+
+1. `frontend/src/App.tsx` calls API helpers from `frontend/src/api.ts`.
+2. Template flow: `/templates`, `/templates/auto`, and `/templates/{template_id}/analyze` use `TemplateRegistry` and `TemplateAnalyzer` to persist or refresh `TemplateManifest`.
+3. Extraction flow: `/documents/extract-text` uses `DocumentTextExtractor` to produce plain text, ordered `DocumentBlock` values, tables, images, and table metadata.
+4. Chart-assessment flow: extracted tables pass through `TableChartAnalyzer`; the UI can keep a table slide or send a chart override.
+5. Planning flow: `/plans/from-text` validates `template_id` through `TemplateRegistry`, then `TextToPlanService` uses `SemanticDocumentNormalizer`, source blocks, tables, and chart overrides to build `PresentationPlan`.
+6. Rendering flow: `/presentations/generate` resolves the active `TemplateManifest` and source `.pptx`, then `PptxGenerator` renders the deck.
+7. Quality flow: planner, generator, and `deck_audit` share capacity/order expectations through `layout_capacity`; `scripts/run_quality_contracts.py` runs the curated deck-level gate.
+8. Delivery flow: generated files are saved under runtime outputs and downloaded through `/presentations/files/{file_name}`.
 
 Working standard:
 
+- before meaningful analysis or implementation, project rule documents must be checked and applied without waiting for an explicit reminder
 - fixes must be global, not tuned to one file or one slide
+- after identifying one broken manifestation, similar manifestations across related components and layers must also be checked and fixed if they share the same mechanism
 - current template must not be treated as a constant because users and companies can upload their own templates
 - after analysis, the next safe implementation step should be executed automatically without asking for redundant confirmation
 
@@ -97,7 +112,7 @@ Deploy the project as two services inside one Railway project:
 
 Deployment guide:
 
-- [docs/railway-deploy.md](/C:/Project/a3presentation/docs/railway-deploy.md)
+- [docs/railway-deploy.md](docs/railway-deploy.md)
 
 Important production variables:
 
@@ -120,7 +135,7 @@ The current production setup runs on a single Timeweb VPS.
 
 Guide:
 
-- [docs/timeweb-server-deploy.md](/C:/Project/a3presentation/docs/timeweb-server-deploy.md)
+- [docs/timeweb-server-deploy.md](docs/timeweb-server-deploy.md)
 
 Main command on the server:
 
@@ -163,7 +178,7 @@ Quality contracts:
 .venv\Scripts\python.exe scripts/run_quality_contracts.py
 ```
 
-Quality-contract layer is documented in [docs/quality-contracts.md](/C:/Project/a3presentation/docs/quality-contracts.md).
+Quality-contract layer is documented in [docs/quality-contracts.md](docs/quality-contracts.md).
 It now validates not only capacity and geometry, but also rendered content order for mixed text/list continuations.
 
 Frontend verification:

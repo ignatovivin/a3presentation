@@ -5,7 +5,7 @@
 - Frontend runtime contract includes `yarn verify`
 - The project includes `playwright` smoke and visual tests
 - UI and visual validation are partially automated and still need broader scenario coverage
-- backend deck-level quality checks are documented separately in [quality-contracts.md](/C:/Project/a3presentation/docs/quality-contracts.md)
+- backend deck-level quality checks are documented separately in [quality-contracts.md](quality-contracts.md)
 - backend quality layer now also validates mixed-content order inside generated deck body containers
 - `frontend smoke` is suitable for CI today
 - `frontend visual` should stay a separate gate until stable cross-platform baselines are introduced

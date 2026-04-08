@@ -6,8 +6,8 @@ This backlog tracks the major unfinished system tasks that still matter after th
 
 It must be read together with:
 
-- [analysis_rule.md](/C:/Project/a3presentation/docs/analysis_rule.md)
-- [document_class_matrix.md](/C:/Project/a3presentation/docs/document_class_matrix.md)
+- [analysis_rule.md](analysis_rule.md)
+- [document_class_matrix.md](document_class_matrix.md)
 
 The backlog is ordered by architectural importance, not by one problematic document.
 It also assumes that the current built-in template is not a permanent constant and that future company templates must be supported without local tuning.
@@ -20,7 +20,7 @@ Status:
 
 Current state:
 
-- `LayoutCapacityProfile` exists in [layout_capacity.py](/C:/Project/a3presentation/src/a3presentation/services/layout_capacity.py)
+- `LayoutCapacityProfile` exists in [layout_capacity.py](../src/a3presentation/services/layout_capacity.py)
 - profiles are still coarse and keyed only by `layout_key`
 - `TemplateAnalyzer` now extracts placeholder geometry and text-frame margins from real `.pptx` templates
 - uploaded templates can carry shape metadata through analyzer/manifests, but generator/audit still rely mostly on curated layout policies
@@ -44,7 +44,7 @@ Status:
 
 Current state:
 
-- continuation rebalance exists in [planner.py](/C:/Project/a3presentation/src/a3presentation/services/planner.py)
+- continuation rebalance exists in [planner.py](../src/a3presentation/services/planner.py)
 - dense narrative sections still show underfilled continuation tails
 
 Why it matters:
@@ -63,7 +63,7 @@ Status:
 
 Current state:
 
-- [deck_audit.py](/C:/Project/a3presentation/src/a3presentation/services/deck_audit.py) already checks:
+- [deck_audit.py](../src/a3presentation/services/deck_audit.py) already checks:
   - font bounds
   - overflow risk
   - continuation balance
@@ -86,7 +86,7 @@ Status:
 
 Current state:
 
-- false facts and false contacts were reduced in [semantic_normalizer.py](/C:/Project/a3presentation/src/a3presentation/services/semantic_normalizer.py)
+- false facts and false contacts were reduced in [semantic_normalizer.py](../src/a3presentation/services/semantic_normalizer.py)
 
 Why it matters:
 

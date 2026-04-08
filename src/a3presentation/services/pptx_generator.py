@@ -120,6 +120,7 @@ class PptxGenerator:
             source_slide = source_slides[prototype.source_slide_index]
             target_slide = self._clone_slide(output_presentation, source_slide)
             self._replace_tokens_in_slide(target_slide, prototype, slide_spec, plan.title)
+            self._apply_layout_expansion_and_flow(target_slide, slide_spec.preferred_layout_key or prototype.key, slide_spec)
 
         return output_presentation
 
@@ -326,7 +327,7 @@ class PptxGenerator:
         if layout.key == "cover":
             self._populate_cover_slide(slide, slide_spec)
             return
-        layout_profile = profile_for_layout(layout.key)
+        layout_profile = profile_for_layout(slide_spec.preferred_layout_key or layout.key)
         placeholders = {placeholder.placeholder_format.idx: placeholder for placeholder in slide.placeholders}
         used_placeholder_indices: set[int] = set()
 
@@ -338,7 +339,8 @@ class PptxGenerator:
             self._apply_shape_spec_metadata(shape, placeholder_spec)
             if placeholder_spec.binding:
                 self._fill_shape_by_binding(shape, placeholder_spec.binding, slide_spec, presentation_title, layout_profile)
-                self._apply_shape_spec_metadata(shape, placeholder_spec)
+                if placeholder_spec.binding != "table":
+                    self._apply_shape_spec_metadata(shape, placeholder_spec)
                 continue
             if placeholder_spec.kind == PlaceholderKind.TITLE:
                 self._set_text(shape, slide_spec.title or "", layout_profile)
@@ -360,20 +362,26 @@ class PptxGenerator:
                 continue
             self._clear_placeholder(placeholder)
 
-        if layout.key in {"text_full_width", "list_full_width"}:
-            self._expand_text_full_width_layout(slide)
-        elif layout.key == "image_text":
-            self._expand_image_text_layout(slide)
-        elif layout.key == "table":
-            self._expand_table_layout(slide)
-        elif layout.key == "cards_3":
-            self._expand_cards_layout(slide)
-        elif layout.key == "list_with_icons":
-            self._expand_list_with_icons_layout(slide)
-        elif layout.key == "contacts":
-            self._expand_contacts_layout(slide)
+        self._apply_layout_expansion_and_flow(slide, slide_spec.preferred_layout_key or layout.key, slide_spec)
 
-        self._adjust_title_and_flow(slide, layout.key)
+    def _apply_layout_expansion_and_flow(self, slide, layout_key: str, slide_spec: SlideSpec | None = None) -> None:
+        geometry_layout_key = "text_full_width" if layout_key == "dense_text_full_width" else layout_key
+        if geometry_layout_key in {"text_full_width", "list_full_width"}:
+            self._expand_text_full_width_layout(slide)
+        elif geometry_layout_key == "image_text":
+            self._expand_image_text_layout(slide)
+        elif geometry_layout_key == "table":
+            self._expand_table_layout(slide)
+        elif geometry_layout_key == "cards_3":
+            self._expand_cards_layout(slide)
+        elif geometry_layout_key == "list_with_icons":
+            self._expand_list_with_icons_layout(slide)
+        elif geometry_layout_key == "contacts":
+            self._expand_contacts_layout(slide)
+        else:
+            return
+
+        self._adjust_title_and_flow(slide, layout_key, slide_spec)
 
     def _apply_shape_spec_metadata(self, shape, spec) -> None:
         geometry_values = (spec.left_emu, spec.top_emu, spec.width_emu, spec.height_emu)
@@ -874,15 +882,63 @@ class PptxGenerator:
             shape.width = policy.width_emu
             shape.height = policy.height_emu
 
-    def _adjust_title_and_flow(self, slide, layout_key: str) -> None:
-        if layout_key in {"text_full_width", "list_full_width"}:
+    def _expand_cards_layout(self, slide) -> None:
+        geometry = geometry_policy_for_layout("cards_3")
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        for idx, policy in geometry.placeholders.items():
+            shape = placeholders.get(idx)
+            if shape is None:
+                continue
+            shape.left = policy.left_emu
+            shape.top = policy.top_emu
+            shape.width = policy.width_emu
+            shape.height = policy.height_emu
+
+    def _expand_list_with_icons_layout(self, slide) -> None:
+        geometry = geometry_policy_for_layout("list_with_icons")
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        for idx, policy in geometry.placeholders.items():
+            shape = placeholders.get(idx)
+            if shape is None:
+                continue
+            shape.left = policy.left_emu
+            shape.top = policy.top_emu
+            shape.width = policy.width_emu
+            shape.height = policy.height_emu
+
+    def _expand_contacts_layout(self, slide) -> None:
+        geometry = geometry_policy_for_layout("contacts")
+        placeholders = {
+            shape.placeholder_format.idx: shape
+            for shape in slide.placeholders
+            if getattr(shape, "is_placeholder", False)
+        }
+        for idx, policy in geometry.placeholders.items():
+            shape = placeholders.get(idx)
+            if shape is None:
+                continue
+            shape.left = policy.left_emu
+            shape.top = policy.top_emu
+            shape.width = policy.width_emu
+            shape.height = policy.height_emu
+
+    def _adjust_title_and_flow(self, slide, layout_key: str, slide_spec: SlideSpec | None = None) -> None:
+        if layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"}:
             self._stack_text_content(slide, layout_key)
             return
         if layout_key == "image_text":
             self._stack_image_text_content(slide, layout_key)
             return
         if layout_key == "table":
-            self._stack_table_content(slide, layout_key)
+            self._stack_table_content(slide, layout_key, slide_spec)
             return
         if layout_key == "cards_3":
             self._stack_cards_content(slide, layout_key)
@@ -893,7 +949,6 @@ class PptxGenerator:
         if layout_key == "contacts":
             self._stack_contacts_content(slide, layout_key)
             return
-
         placeholders = {
             shape.placeholder_format.idx: shape
             for shape in slide.placeholders
@@ -959,14 +1014,26 @@ class PptxGenerator:
             subtitle = None
 
         has_subtitle = subtitle is not None and getattr(subtitle, "text", "").strip()
+        subtitle_body_gap = geometry.title_content_gap_emu
+        compact_subtitle = False
+        subtitle_text = ""
+        body_text = (getattr(body, "text", "") or "").strip()
+        if has_subtitle and subtitle is not None:
+            subtitle_text = subtitle.text.strip()
+            compact_subtitle = self._should_compact_subtitle_stack(title_text, subtitle_text, body_text, layout_key=layout_key)
         title_gap = geometry.title_content_gap_emu if has_subtitle else geometry.title_body_gap_no_subtitle_emu
+        if compact_subtitle:
+            title_gap = min(title_gap, 120000)
+            subtitle_body_gap = 100000
         cursor = title.top + title.height + title_gap
 
         if has_subtitle:
-            subtitle_text = subtitle.text.strip()
-            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 18.0))
+            subtitle_font_pt = 18.0
+            self._configure_subtitle_text_frame(subtitle)
+            self._apply_font_size(subtitle, subtitle_font_pt)
+            subtitle.height = max(280000 if compact_subtitle else 360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, subtitle_font_pt))
             subtitle.top = cursor
-            cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
+            cursor = subtitle.top + subtitle.height + subtitle_body_gap
 
         secondary_has_text = secondary is not None and getattr(secondary, "text", "").strip()
         available_bottom = footer.top - geometry.content_footer_gap_emu
@@ -984,6 +1051,19 @@ class PptxGenerator:
         body.top = cursor
         body.height = max(900000, available_bottom - body.top)
 
+    def _should_compact_subtitle_stack(self, title_text: str, subtitle_text: str, body_text: str, *, layout_key: str) -> bool:
+        if layout_key not in {"text_full_width", "dense_text_full_width"}:
+            return False
+        if not subtitle_text or not body_text:
+            return False
+        if len(subtitle_text) > 72 or len(subtitle_text.split()) > 10:
+            return False
+        if len(body_text) > 900:
+            return False
+        if body_text.count("\n") >= 5:
+            return False
+        return True
+
     def _subtitle_duplicates_body(self, subtitle, body) -> bool:
         subtitle_text = (getattr(subtitle, "text", "") or "").strip()
         body_text = (getattr(body, "text", "") or "").strip()
@@ -995,7 +1075,7 @@ class PptxGenerator:
             return True
         return False
 
-    def _stack_table_content(self, slide, layout_key: str) -> None:
+    def _stack_table_content(self, slide, layout_key: str, slide_spec: SlideSpec | None = None) -> None:
         geometry = geometry_policy_for_layout(layout_key)
         placeholders = {
             shape.placeholder_format.idx: shape
@@ -1024,7 +1104,7 @@ class PptxGenerator:
             subtitle_font_size = self._table_subtitle_font_size_points(subtitle_text)
             self._apply_font_size(subtitle, subtitle_font_size)
             self._configure_subtitle_text_frame(subtitle)
-            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 16.0))
+            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, subtitle_font_size))
             subtitle.top = cursor
             cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
 
@@ -1062,7 +1142,8 @@ class PptxGenerator:
         if has_subtitle:
             subtitle_text = subtitle.text.strip()
             self._configure_subtitle_text_frame(subtitle)
-            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 16.0))
+            self._apply_font_size(subtitle, 18.0)
+            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 18.0))
             subtitle.top = cursor
             cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
 
@@ -1144,7 +1225,8 @@ class PptxGenerator:
         if has_subtitle:
             subtitle_text = subtitle.text.strip()
             self._configure_subtitle_text_frame(subtitle)
-            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 16.0))
+            self._apply_font_size(subtitle, 18.0)
+            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 18.0))
             subtitle.top = cursor
             cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
 
@@ -1186,23 +1268,10 @@ class PptxGenerator:
             shape.height = policy.height_emu
 
     def _title_font_size_points(self, layout_key: str) -> float:
-        if layout_key == "table":
-            return 28.0
-        if layout_key in {"text_full_width", "list_full_width", "image_text"}:
-            return 30.0
-        if layout_key == "cards_3":
-            return 28.0
-        if layout_key == "list_with_icons":
-            return 28.0
-        return 30.0
+        return 28.0
 
     def _table_subtitle_font_size_points(self, text: str) -> float:
-        normalized = (text or "").strip()
-        if len(normalized) >= 120:
-            return 13.0
-        if len(normalized) >= 80:
-            return 14.0
-        return 16.0
+        return 18.0
 
     def _configure_subtitle_text_frame(self, shape) -> None:
         if not getattr(shape, "has_text_frame", False):
@@ -1255,16 +1324,8 @@ class PptxGenerator:
         text_frame = shape.text_frame
         effective_width = max(shape.width - text_frame.margin_left - text_frame.margin_right, shape.width // 2)
         width_pt = effective_width / self.EMU_PER_PT
-        average_char_width_pt = max(font_size_pt * 0.6, 1.0)
-        chars_per_line = max(int(width_pt / average_char_width_pt), 6)
-
-        wrapped_lines = 0
-        for paragraph in text.splitlines() or [text]:
-            normalized = paragraph.strip()
-            if not normalized:
-                wrapped_lines += 1
-                continue
-            wrapped_lines += max(1, math.ceil(len(normalized) / chars_per_line))
+        average_char_width_pt = max(font_size_pt * 0.52, 1.0)
+        wrapped_lines = self._estimate_wrapped_line_count(text, width_pt, average_char_width_pt, min_chars_per_line=6)
 
         if len(text) >= 90:
             wrapped_lines = max(wrapped_lines, 2)
@@ -1281,19 +1342,52 @@ class PptxGenerator:
 
         width_pt = width_emu / self.EMU_PER_PT
         average_char_width_pt = max(font_size_pt * 0.52, 1.0)
-        chars_per_line = max(int(width_pt / average_char_width_pt), 8)
+        wrapped_lines = self._estimate_wrapped_line_count(text, width_pt, average_char_width_pt, min_chars_per_line=8)
 
+        line_height_pt = font_size_pt * 1.18
+        vertical_padding_pt = font_size_pt * 0.7
+        return int((wrapped_lines * line_height_pt + vertical_padding_pt) * self.EMU_PER_PT)
+
+    def _estimate_wrapped_line_count(
+        self,
+        text: str,
+        width_pt: float,
+        average_char_width_pt: float,
+        *,
+        min_chars_per_line: int,
+    ) -> int:
+        chars_per_line = max(int(width_pt / average_char_width_pt), min_chars_per_line)
         wrapped_lines = 0
+
         for paragraph in text.splitlines() or [text]:
             normalized = paragraph.strip()
             if not normalized:
                 wrapped_lines += 1
                 continue
-            wrapped_lines += max(1, math.ceil(len(normalized) / chars_per_line))
 
-        line_height_pt = font_size_pt * 1.18
-        vertical_padding_pt = font_size_pt * 0.7
-        return int((wrapped_lines * line_height_pt + vertical_padding_pt) * self.EMU_PER_PT)
+            words = normalized.split()
+            if len(words) <= 1:
+                wrapped_lines += max(1, math.ceil(len(normalized) / chars_per_line))
+                continue
+
+            current_line_len = 0
+            paragraph_lines = 1
+            for word in words:
+                word_len = len(word)
+                projected = word_len if current_line_len == 0 else current_line_len + 1 + word_len
+                if projected <= chars_per_line:
+                    current_line_len = projected
+                    continue
+                if current_line_len == 0:
+                    paragraph_lines += max(math.ceil(word_len / chars_per_line) - 1, 0)
+                    current_line_len = word_len % chars_per_line or chars_per_line
+                    continue
+                paragraph_lines += 1
+                current_line_len = word_len
+
+            wrapped_lines += paragraph_lines
+
+        return wrapped_lines
 
     def _fill_table(self, shape, slide_spec: SlideSpec) -> None:
         if slide_spec.table is None:

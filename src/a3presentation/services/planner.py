@@ -44,14 +44,18 @@ class SectionContentBlock:
     kind: str
     text: str = ""
     items: tuple[str, ...] = ()
+    table: TableBlock | None = None
 
 
 class TextToPlanService:
+    EMU_PER_PT = 12700
+    DEFAULT_TEXT_MARGIN_X_EMU = 91440
     EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
     PHONE_PATTERN = re.compile(r"(\+?\d[\d\s().-]{7,}\d)")
     HEADING_PATTERN = re.compile(r"^(\d+(\.\d+)*[.)]?\s+.+|[А-ЯA-Z].{0,90})$")
     URL_ONLY_PATTERN = re.compile(r"^(?:https?://|www\.)\S+$", re.IGNORECASE)
     REFERENCE_LINE_PATTERN = re.compile(r"^(?:\[\d+\]\s*)+(?:https?://\S+)?$", re.IGNORECASE)
+    QUESTION_HEADING_PATTERN = re.compile(r"^Q\d+\s*[:.)—–-]\s+\S", re.IGNORECASE)
     APPENDIX_HEADING_PATTERN = re.compile(
         r"\b(?:источники?|references?|reference|литература|bibliography|appendix|приложение)\b",
         re.IGNORECASE,
@@ -69,6 +73,7 @@ class TextToPlanService:
     COVER_META_MAX_LINE_CHARS = 72
     STRUCTURED_SUMMARY_MAX_ITEMS = 5
     RESUME_SUMMARY_MAX_ITEMS = 6
+    DENSE_TEXT_INITIAL_BATCH_MAX_CHARS = 900
 
     def __init__(self) -> None:
         self.normalizer = SemanticDocumentNormalizer()
@@ -419,8 +424,19 @@ class TextToPlanService:
                 seed = block.text or (block.items[0] if block.items else "Раздел")
                 current = Section(title=seed[:120], level=1)
 
+            if block.text and self._looks_like_question_heading(block.text) and current.content_blocks:
+                flush()
+                current = Section(title=block.text.strip()[:120], level=3)
+                continue
+
             if block.kind == "table" and block.table is not None:
                 current.tables.append(block.table)
+                current.content_blocks.append(
+                    SectionContentBlock(
+                        kind="table",
+                        table=block.table,
+                    )
+                )
                 continue
 
             if block.kind == "image" and block.image_base64:
@@ -479,9 +495,9 @@ class TextToPlanService:
             current = None
 
         for line in lines:
-            if self._is_heading(line):
+            if self._is_heading(line) or self._looks_like_question_heading(line):
                 flush()
-                current = Section(title=line[:120], level=1)
+                current = Section(title=line[:120], level=3 if self._looks_like_question_heading(line) else 1)
                 continue
 
             if current is None:
@@ -521,18 +537,118 @@ class TextToPlanService:
             slides.extend(self._build_table_slides(section))
             return slides
 
-        if section.paragraphs or section.bullet_lists:
+        if any(block.kind == "table" and block.table is not None for block in section.content_blocks):
+            slides.extend(self._build_ordered_section_slides(section))
+        elif section.paragraphs or section.bullet_lists:
             if self._fits_single_slide(section):
                 slides.append(self._build_single_slide(section))
             else:
                 slides.extend(self._split_large_section(section))
 
-        slides.extend(self._build_table_slides(section))
+        elif section.tables:
+            slides.extend(self._build_table_slides(section))
+
         for index, image in enumerate(section.images, start=1):
             slide = self._image_slide(image, section.title, index)
             if slide is not None:
                 slides.append(slide)
         return slides
+
+    def _build_ordered_section_slides(self, section: Section) -> list[SlideSpec]:
+        slides: list[SlideSpec] = []
+        buffered_blocks: list[SectionContentBlock] = []
+        use_subtitle = True
+
+        def flush_buffer() -> None:
+            nonlocal buffered_blocks, use_subtitle
+            if not buffered_blocks:
+                return
+            fragment = self._section_fragment_from_content_blocks(
+                title=section.title,
+                subtitle=section.subtitle if use_subtitle else "",
+                level=section.level,
+                content_blocks=buffered_blocks,
+            )
+            if fragment.paragraphs or fragment.bullet_lists:
+                if self._fits_single_slide(fragment):
+                    slides.append(self._build_single_slide(fragment))
+                else:
+                    slides.extend(self._split_large_section(fragment))
+                use_subtitle = False
+            buffered_blocks = []
+
+        index = 0
+        while index < len(section.content_blocks):
+            block = section.content_blocks[index]
+            if block.kind == "table" and block.table is not None:
+                table_subtitle = section.subtitle if use_subtitle else ""
+                if self._can_promote_pre_table_buffer_to_subtitle(buffered_blocks, table_subtitle):
+                    table_subtitle = buffered_blocks[0].text.strip()
+                    buffered_blocks = []
+                else:
+                    flush_buffer()
+                    table_subtitle = section.subtitle if use_subtitle else ""
+                table_notes: list[str] = []
+                note_index = index + 1
+                while note_index < len(section.content_blocks):
+                    note_block = section.content_blocks[note_index]
+                    if note_block.kind not in {"paragraph", "callout"}:
+                        break
+                    note_text = note_block.text.strip()
+                    if not note_text or len(note_text) > 220:
+                        break
+                    table_notes.append(note_text)
+                    note_index += 1
+                    if sum(len(note) for note in table_notes) >= 260:
+                        break
+                slides.extend(
+                    self._build_table_slides_from_table(
+                        title=section.title,
+                        subtitle=table_subtitle,
+                        table=block.table,
+                        supporting_text="\n".join(table_notes),
+                    )
+                )
+                use_subtitle = False
+                index = note_index
+                continue
+            buffered_blocks.append(block)
+            index += 1
+
+        flush_buffer()
+        return slides
+
+    def _can_promote_pre_table_buffer_to_subtitle(self, blocks: list[SectionContentBlock], existing_subtitle: str) -> bool:
+        if len(blocks) != 1:
+            return False
+        block = blocks[0]
+        if block.kind not in {"paragraph", "callout"}:
+            return False
+        text = block.text.strip()
+        if not text or len(text) > 160:
+            return False
+        return not existing_subtitle.strip() or self._normalize_line(existing_subtitle) == self._normalize_line(text)
+
+    def _section_fragment_from_content_blocks(
+        self,
+        *,
+        title: str,
+        subtitle: str,
+        level: int,
+        content_blocks: list[SectionContentBlock],
+    ) -> Section:
+        paragraphs = [
+            block.text for block in content_blocks if block.kind in {"paragraph", "callout", "qa_item"} and block.text.strip()
+        ]
+        bullet_lists = [list(block.items) for block in content_blocks if block.kind == "list" and block.items]
+        return Section(
+            title=title,
+            level=level,
+            subtitle=subtitle,
+            paragraphs=paragraphs,
+            bullet_lists=bullet_lists,
+            content_blocks=content_blocks.copy(),
+        )
 
     def _detach_cover_title_from_first_section(self, sections: list[Section], cover_title: str) -> list[Section]:
         if not sections:
@@ -573,21 +689,44 @@ class TextToPlanService:
         for table in section.tables:
             if not table.headers and not table.rows:
                 continue
-            chunks = self._split_table_for_slides(table)
-            for chunk_index, chunk in enumerate(chunks, start=1):
-                table_index += 1
-                title_base = section.title or "Таблица"
-                use_suffix = len(section.tables) > 1 or len(chunks) > 1
-                title = title_base if not use_suffix else f"{title_base} ({table_index if len(section.tables) > 1 else chunk_index})"
-                slides.append(
-                    SlideSpec(
-                        kind=SlideKind.TABLE,
-                        title=title[:120],
-                        subtitle=(section.subtitle or "")[:120],
-                        table=chunk,
-                        preferred_layout_key="table",
-                    )
+            table_index += 1
+            slides.extend(
+                self._build_table_slides_from_table(
+                    title=section.title,
+                    subtitle=section.subtitle or "",
+                    table=table,
+                    table_index=table_index if len(section.tables) > 1 else None,
                 )
+            )
+        return slides
+
+    def _build_table_slides_from_table(
+        self,
+        *,
+        title: str,
+        subtitle: str,
+        table: TableBlock,
+        table_index: int | None = None,
+        supporting_text: str = "",
+    ) -> list[SlideSpec]:
+        chunks = self._split_table_for_slides(table)
+        title_base = title or "Таблица"
+        slides: list[SlideSpec] = []
+        use_suffix = table_index is not None or len(chunks) > 1
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            suffix = table_index if table_index is not None else chunk_index
+            slide_title = title_base if not use_suffix else f"{title_base} ({suffix})"
+            slides.append(
+                SlideSpec(
+                    kind=SlideKind.TABLE,
+                    title=slide_title[:120],
+                    subtitle=(subtitle or "")[:120],
+                    table=chunk,
+                    text=supporting_text if len(chunks) == 1 else "",
+                    content_blocks=self._paragraph_blocks_from_parts(supporting_text) if supporting_text and len(chunks) == 1 else [],
+                    preferred_layout_key="table",
+                )
+            )
         return slides
 
     def _split_table_for_slides(self, table: TableBlock) -> list[TableBlock]:
@@ -739,14 +878,20 @@ class TextToPlanService:
                 for block in section.content_blocks
                 if block.kind in {"paragraph", "callout", "qa_item"} and block.text.strip()
             ] or self._paragraph_blocks_from_parts(primary_text, secondary_text)
-            subtitle = self._sanitize_content_subtitle(
+            slide_title, slide_subtitle = self._normalize_sparse_text_header(
+                section.title,
                 self._normalize_subtitle(section.subtitle or "", primary_text),
+                content_blocks,
+                fallback_text=primary_text,
+            )
+            subtitle = self._sanitize_content_subtitle(
+                slide_subtitle,
                 content_blocks,
                 fallback_text=primary_text,
             )
             return SlideSpec(
                 kind=SlideKind.TEXT,
-                title=section.title,
+                title=slide_title,
                 subtitle=subtitle,
                 text=primary_text,
                 notes=secondary_text,
@@ -888,7 +1033,63 @@ class TextToPlanService:
 
         return batches
 
-    def _chunk_text_for_slides(self, chunks: list[str]) -> list[list[str]]:
+    def _choose_text_continuation_batches(
+        self,
+        chunks: list[str],
+        *,
+        title: str = "",
+        subtitle: str = "",
+    ) -> tuple[list[list[str]], LayoutCapacityProfile]:
+        regular_batches = self._chunk_text_for_slides(chunks, profile=self.text_profile)
+        dense_batches = self._chunk_text_for_slides(
+            chunks,
+            profile=DENSE_TEXT_FULL_WIDTH_PROFILE,
+            title=title,
+            subtitle=subtitle,
+        )
+        if self._should_use_dense_text_batches(regular_batches, dense_batches):
+            return dense_batches, DENSE_TEXT_FULL_WIDTH_PROFILE
+        return regular_batches, self.text_profile
+
+    def _should_use_dense_text_batches(self, regular_batches: list[list[str]], dense_batches: list[list[str]]) -> bool:
+        if len(dense_batches) >= len(regular_batches):
+            return False
+        if len(dense_batches) <= 1:
+            return False
+
+        dense_char_counts = [sum(len(chunk) for chunk in batch) for batch in dense_batches if batch]
+        if not dense_char_counts:
+            return False
+
+        minimum_tail_chars = max(
+            int(
+                self.DENSE_TEXT_INITIAL_BATCH_MAX_CHARS
+                * (
+                    DENSE_TEXT_FULL_WIDTH_PROFILE.target_fill_ratio
+                    - DENSE_TEXT_FULL_WIDTH_PROFILE.continuation_balance_tolerance
+                    - 0.01
+                )
+            ),
+            340,
+        )
+        if dense_char_counts[-1] < minimum_tail_chars:
+            return False
+
+        maximum_dense_chars = max(dense_char_counts)
+        if maximum_dense_chars > int(self.DENSE_TEXT_INITIAL_BATCH_MAX_CHARS * DENSE_TEXT_FULL_WIDTH_PROFILE.max_fill_ratio):
+            return False
+
+        return True
+
+    def _chunk_text_for_slides(
+        self,
+        chunks: list[str],
+        *,
+        profile: LayoutCapacityProfile | None = None,
+        title: str = "",
+        subtitle: str = "",
+    ) -> list[list[str]]:
+        profile = profile or self.text_profile
         batches: list[list[str]] = []
         current_batch: list[str] = []
         current_weight = 0.0
@@ -1067,6 +1268,15 @@ class TextToPlanService:
         uppercase_ratio = sum(1 for char in letters if char.isupper()) / len(letters)
         return uppercase_ratio <= 0.45
 
+    def _looks_like_question_heading(self, text: str) -> bool:
+        normalized = self._normalize_line(text)
+        if not normalized or len(normalized) > 140:
+            return False
+        lowered = normalized.lower()
+        return bool(self.QUESTION_HEADING_PATTERN.match(normalized)) or lowered.startswith(
+            ("вопрос:", "question:", "q:")
+        )
+
     def _hard_wrap_text_chunks(self, text: str, max_chars: int) -> list[str]:
         chunks: list[str] = []
         remaining = text.strip()
@@ -1213,6 +1423,18 @@ class TextToPlanService:
             if len(normalized_subtitle) >= 24 and lead_text.startswith(normalized_subtitle[:-1]):
                 return ""
         return normalized_subtitle[:120]
+
+    def _normalize_sparse_text_header(
+        self,
+        title: str,
+        subtitle: str,
+        content_blocks: list[SlideContentBlock],
+        *,
+        fallback_text: str = "",
+    ) -> tuple[str, str]:
+        normalized_title = (title or "").strip()[:120]
+        normalized_subtitle = (subtitle or "").strip()[:120]
+        return normalized_title, normalized_subtitle
 
     def _should_use_cards_layout(self, title: str, bullets: list[str]) -> bool:
         if not bullets or len(bullets) > self.CARD_BULLET_COUNT:

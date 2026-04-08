@@ -9,16 +9,48 @@ export type PlaceholderSpec = {
   kind: string;
   idx?: number | null;
   shape_name?: string | null;
+  binding?: string | null;
   max_chars?: number | null;
+  left_emu?: number | null;
+  top_emu?: number | null;
+  width_emu?: number | null;
+  height_emu?: number | null;
+  margin_left_emu?: number | null;
+  margin_right_emu?: number | null;
+  margin_top_emu?: number | null;
+  margin_bottom_emu?: number | null;
 };
 
 export type LayoutSpec = {
   key: string;
   name: string;
+  slide_master_index: number;
   slide_layout_index: number;
   preview_path?: string | null;
   supported_slide_kinds: string[];
   placeholders: PlaceholderSpec[];
+};
+
+export type PrototypeTokenSpec = {
+  token: string;
+  binding: string;
+  shape_name?: string | null;
+  left_emu?: number | null;
+  top_emu?: number | null;
+  width_emu?: number | null;
+  height_emu?: number | null;
+  margin_left_emu?: number | null;
+  margin_right_emu?: number | null;
+  margin_top_emu?: number | null;
+  margin_bottom_emu?: number | null;
+};
+
+export type PrototypeSlideSpec = {
+  key: string;
+  name: string;
+  source_slide_index: number;
+  supported_slide_kinds: string[];
+  tokens: PrototypeTokenSpec[];
 };
 
 export type TemplateManifest = {
@@ -26,8 +58,10 @@ export type TemplateManifest = {
   display_name: string;
   source_pptx: string;
   description?: string | null;
+  generation_mode: "layout" | "prototype";
   default_layout_key?: string | null;
   layouts: LayoutSpec[];
+  prototype_slides: PrototypeSlideSpec[];
 };
 
 export type TemplateDetailsResponse = {
@@ -78,7 +112,9 @@ export type DocumentBlock = {
 
 export type TableBlock = {
   headers: string[];
+  header_fill_colors: Array<string | null>;
   rows: string[][];
+  row_fill_colors: Array<Array<string | null>>;
 };
 
 export type ChartConfidence = "high" | "medium" | "low" | "none";
@@ -160,12 +196,21 @@ export type ChartOverride = {
   selected_chart?: ChartSpec | null;
 };
 
+export type SlideContentBlockKind = "paragraph" | "bullet_list" | "callout" | "qa_item";
+
+export type SlideContentBlock = {
+  kind: SlideContentBlockKind;
+  text?: string | null;
+  items: string[];
+};
+
 export type SlideSpec = {
   kind: string;
   title?: string | null;
   subtitle?: string | null;
   text?: string | null;
   bullets: string[];
+  content_blocks: SlideContentBlock[];
   left_bullets: string[];
   right_bullets: string[];
   table?: TableBlock | null;

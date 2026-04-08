@@ -56,9 +56,15 @@ src/a3presentation/
   api/                  FastAPI routes
   domain/               Pydantic models for API, templates, presentation plan
   services/             Core business logic
+    chart_style.py
+    deck_audit.py
     document_text_extractor.py
+    layout_capacity.py
     planner.py
     pptx_generator.py
+    semantic_normalizer.py
+    table_chart_analyzer.py
+    template_analyzer.py
     template_registry.py
   settings.py           Project paths
 
@@ -71,10 +77,24 @@ storage/
 
 ## Core Pipeline
 
+### Current process links
+
+The current backend and frontend process map is:
+
+1. UI flow starts in [App.tsx](../frontend/src/App.tsx) and calls [api.ts](../frontend/src/api.ts).
+2. Template registry and analysis are handled by [template_registry.py](../src/a3presentation/services/template_registry.py) and [template_analyzer.py](../src/a3presentation/services/template_analyzer.py).
+3. Source documents are extracted by [document_text_extractor.py](../src/a3presentation/services/document_text_extractor.py) into text, ordered document blocks, tables, hyperlinks, and image blocks.
+4. Extracted tables are assessed by [table_chart_analyzer.py](../src/a3presentation/services/table_chart_analyzer.py); chartable candidates can be passed back as chart overrides.
+5. [planner.py](../src/a3presentation/services/planner.py) builds a `PresentationPlan` using source blocks, tables, chart overrides, and [semantic_normalizer.py](../src/a3presentation/services/semantic_normalizer.py).
+6. [pptx_generator.py](../src/a3presentation/services/pptx_generator.py) renders the plan against the active `TemplateManifest` and source `.pptx`.
+7. [deck_audit.py](../src/a3presentation/services/deck_audit.py) and [layout_capacity.py](../src/a3presentation/services/layout_capacity.py) keep planner/generator capacity, geometry, and mixed-content order contracts aligned.
+8. [run_quality_contracts.py](../scripts/run_quality_contracts.py) is the curated quality gate for generated decks.
+9. Production delivery is handled by GitHub Actions plus [deploy_server.sh](../scripts/deploy_server.sh) and [docker-compose.server.yml](../docker-compose.server.yml).
+
 ### 1. Document extraction
 
 Main file:
-- [document_text_extractor.py](C:\Project\a3presentation\src\a3presentation\services\document_text_extractor.py)
+- [document_text_extractor.py](../src/a3presentation/services/document_text_extractor.py)
 
 The extractor reads input documents and converts them into structured blocks.
 
@@ -86,6 +106,7 @@ For `docx`, it preserves document order and emits:
 - `paragraph`
 - `list`
 - `table`
+- `image`
 
 The important part is that the extractor does not just read plain text.
 It tries to preserve document semantics:
@@ -111,7 +132,12 @@ instead of treating everything as raw text.
 ### 2. Planning slides
 
 Main file:
-- [planner.py](C:\Project\a3presentation\src\a3presentation\services\planner.py)
+- [planner.py](../src/a3presentation/services/planner.py)
+
+Related files:
+- [semantic_normalizer.py](../src/a3presentation/services/semantic_normalizer.py)
+- [layout_capacity.py](../src/a3presentation/services/layout_capacity.py)
+- [table_chart_analyzer.py](../src/a3presentation/services/table_chart_analyzer.py)
 
 The planner converts document blocks into a `PresentationPlan`.
 
@@ -133,6 +159,9 @@ Supported logical slide outcomes include:
 - `cards_3`
 - `contacts`
 
+The API contract for this stage is [PresentationPlan](../src/a3presentation/domain/presentation.py).
+The frontend mirror of that contract is [types.ts](../frontend/src/types.ts).
+
 Important planner behavior that was implemented:
 
 - first page of the document becomes the cover slide
@@ -153,8 +182,9 @@ Important planner behavior that was implemented:
 ### 3. Template resolution
 
 Main files:
-- [template_registry.py](C:\Project\a3presentation\src\a3presentation\services\template_registry.py)
-- [manifest.json](C:\Project\a3presentation\storage\templates\corp_light_v1\manifest.json)
+- [template_registry.py](../src/a3presentation/services/template_registry.py)
+- [template_analyzer.py](../src/a3presentation/services/template_analyzer.py)
+- [manifest.json](../storage/templates/corp_light_v1/manifest.json)
 
 The project currently ships with one main built-in template:
 
@@ -191,7 +221,12 @@ This project should be evolved under these constraints:
 ## PowerPoint Generation
 
 Main file:
-- [pptx_generator.py](C:\Project\a3presentation\src\a3presentation\services\pptx_generator.py)
+- [pptx_generator.py](../src/a3presentation/services/pptx_generator.py)
+
+Related files:
+- [deck_audit.py](../src/a3presentation/services/deck_audit.py)
+- [chart_style.py](../src/a3presentation/services/chart_style.py)
+- [layout_capacity.py](../src/a3presentation/services/layout_capacity.py)
 
 The generator renders the `PresentationPlan` into a real `.pptx`.
 
@@ -300,8 +335,8 @@ Current behavior:
 ## Frontend
 
 Main frontend files:
-- [App.tsx](C:\Project\a3presentation\frontend\src\App.tsx)
-- [api.ts](C:\Project\a3presentation\frontend\src\api.ts)
+- [App.tsx](../frontend/src/App.tsx)
+- [api.ts](../frontend/src/api.ts)
 
 Frontend responsibilities:
 
