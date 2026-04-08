@@ -298,12 +298,31 @@ export function App() {
     return chartTypeLabels[chartType] ?? chartType;
   }
 
+  function chartCardTitle(assessment: ChartabilityAssessment, selectedSpec: ChartSpec | null): string {
+    if (selectedSpec?.title?.trim()) {
+      return selectedSpec.title.trim();
+    }
+
+    const headers = assessment.structured_table?.cells[0]?.map((cell) => cell.text.trim()).filter(Boolean) ?? [];
+    if (headers.length >= 2) {
+      return `${headers[0]} · ${headers.slice(1, 3).join(" / ")}`;
+    }
+    if (headers.length === 1) {
+      return `Таблица: ${headers[0]}`;
+    }
+    return assessment.chartable ? "Таблица для графика" : "Таблица документа";
+  }
+
+  function chartCardDescription(assessment: ChartabilityAssessment): string {
+    return assessment.chartable
+      ? "Эту таблицу можно использовать для графика."
+      : "Для этой таблицы лучше оставить табличный вид, чтобы не исказить данные.";
+  }
+
   function assessmentHints(assessment: ChartabilityAssessment): string[] {
     const rawHints = [...assessment.reasons, ...assessment.warnings].filter((hint) => !isSystemHint(hint));
     if (rawHints.length === 0) {
-      return assessment.chartable
-        ? ["Эту таблицу можно использовать для графика."]
-        : ["Для этой таблицы график лучше не использовать."];
+      return assessment.chartable ? [] : ["Для этой таблицы график лучше не использовать."];
     }
 
     return rawHints.map((hint) => assessmentHintLabels[hint] ?? hint);
@@ -443,14 +462,17 @@ export function App() {
                   : "В документе не найдено таблиц, которые система может уверенно превратить в графики."}
               </div>
               {chartAssessments.length > chartableAssessments.length ? (
-                <label className="drawer-toggle">
-                  <Input
+                <label className="drawer-switch">
+                  <span>Показать все таблицы</span>
+                  <input
                     type="checkbox"
-                    className="drawer-toggle-input"
+                    className="drawer-switch-input"
                     checked={showAllTablesInDrawer}
                     onChange={(event) => setShowAllTablesInDrawer(event.target.checked)}
                   />
-                  <span>Показать все таблицы</span>
+                  <span className="drawer-switch-track" aria-hidden="true">
+                    <span className="drawer-switch-thumb" />
+                  </span>
                 </label>
               ) : null}
             </div>
@@ -466,12 +488,10 @@ export function App() {
                     <div data-testid={`assessment-card-${assessment.table_id}`}>
                     <CardHeader>
                       <CardTitle>
-                        {assessment.chartable ? "Можно заменить на график" : "Оставить как таблицу"}
+                        {chartCardTitle(assessment, selectedSpec)}
                       </CardTitle>
                       <CardDescription>
-                        {assessment.chartable
-                          ? "Выбери формат отображения и сохрани решение для итоговой презентации."
-                          : "Для этой таблицы лучше оставить табличный вид, чтобы не исказить данные."}
+                        {chartCardDescription(assessment)}
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="preview-card-content">

@@ -54,10 +54,11 @@ The current process links are:
 1. `frontend/src/App.tsx` calls API helpers from `frontend/src/api.ts`.
 2. Template flow: `/templates`, `/templates/auto`, and `/templates/{template_id}/analyze` use `TemplateRegistry` and `TemplateAnalyzer` to persist or refresh `TemplateManifest`.
 3. Extraction flow: `/documents/extract-text` uses `DocumentTextExtractor` to produce plain text, ordered `DocumentBlock` values, tables, images, and table metadata.
-4. Chart-assessment flow: extracted tables pass through `TableChartAnalyzer`; the UI can keep a table slide or send a chart override.
+4. Chart-assessment flow: extracted tables pass through `TableChartAnalyzer`; the UI can keep a table slide or send a chart override. Chart candidates now reject unsafe ordinal/text tables, avoid default mixed-unit combo suggestions, and are covered by API, preview, generator XML, and deck-audit checks.
 5. Planning flow: `/plans/from-text` validates `template_id` through `TemplateRegistry`, then `TextToPlanService` uses `SemanticDocumentNormalizer`, source blocks, tables, and chart overrides to build `PresentationPlan`.
 6. Rendering flow: `/presentations/generate` resolves the active `TemplateManifest` and source `.pptx`, then `PptxGenerator` renders the deck.
 7. Quality flow: planner, generator, and `deck_audit` share capacity/order expectations through `layout_capacity`; `scripts/run_quality_contracts.py` runs the curated deck-level gate.
+   Chart audit also validates rendered chart type, series count, combo structure, title/subtitle font sizes, and compact value-axis number formats.
 8. Delivery flow: generated files are saved under runtime outputs and downloaded through `/presentations/files/{file_name}`.
 
 Working standard:

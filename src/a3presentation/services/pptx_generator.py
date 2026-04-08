@@ -197,6 +197,11 @@ class PptxGenerator:
                     current_element.set(attr_name, relationship_map[attr_value])
 
     def _resolve_prototype_slide(self, manifest: TemplateManifest, slide_spec: SlideSpec) -> PrototypeSlideSpec:
+        if slide_spec.kind == SlideKind.CHART:
+            for prototype_slide in manifest.prototype_slides:
+                if self._prototype_supports_chart(prototype_slide):
+                    return prototype_slide
+
         if slide_spec.preferred_layout_key:
             for prototype_slide in manifest.prototype_slides:
                 if prototype_slide.key == slide_spec.preferred_layout_key:
@@ -207,6 +212,11 @@ class PptxGenerator:
                 return prototype_slide
 
         return manifest.prototype_slides[0]
+
+    def _prototype_supports_chart(self, prototype: PrototypeSlideSpec) -> bool:
+        if prototype.key == "chart" or SlideKind.CHART.value in prototype.supported_slide_kinds:
+            return True
+        return any(token.binding in {"chart", "chart_image"} for token in prototype.tokens)
 
     def _replace_tokens_in_slide(self, slide, prototype: PrototypeSlideSpec, slide_spec: SlideSpec, presentation_title: str) -> None:
         token_values = self._build_token_value_map(slide_spec, presentation_title)
@@ -706,13 +716,13 @@ class PptxGenerator:
         if binding == "table":
             self._fill_table_or_chart(shape, slide_spec)
             return
-        if binding == "chart":
+        if binding in {"chart", "chart_image"}:
             self._fill_chart(shape, slide_spec)
             return
         if binding == "image":
             self._fill_image(shape, slide_spec)
             return
-        if binding in {"chart_image", "icon_grid"}:
+        if binding == "icon_grid":
             self._clear_placeholder(shape)
             return
         if self._is_empty_binding_value(binding_value) and binding not in {"presentation_name", "cover_title", "title"}:
@@ -1085,9 +1095,11 @@ class PptxGenerator:
         title = placeholders.get(0)
         subtitle = placeholders.get(13)
         table = placeholders.get(14)
+        chart = next((shape for shape in slide.shapes if getattr(shape, "has_chart", False)), None)
+        content = table or chart
         footer = placeholders.get(15)
 
-        if title is None or table is None or footer is None:
+        if title is None or content is None or footer is None:
             return
 
         title_text = (getattr(title, "text", "") or "").strip()
@@ -1108,8 +1120,8 @@ class PptxGenerator:
             subtitle.top = cursor
             cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
 
-        table.top = cursor
-        table.height = max(900000, footer.top - geometry.content_footer_gap_emu - table.top)
+        content.top = cursor
+        content.height = max(900000, footer.top - geometry.content_footer_gap_emu - content.top)
 
     def _stack_image_text_content(self, slide, layout_key: str) -> None:
         geometry = geometry_policy_for_layout(layout_key)
@@ -1467,21 +1479,17 @@ class PptxGenerator:
         if not chart_spec.categories or not chart_spec.series:
             self._clear_placeholder(shape)
             return
+        render_chart_spec = self._visible_chart_spec(chart_spec)
+        if not render_chart_spec.series:
+            self._clear_placeholder(shape)
+            return
 
         try:
-            chart_type = self._resolve_chart_type(chart_spec)
+            chart_type = self._resolve_chart_type(render_chart_spec)
             chart_data = CategoryChartData()
-            chart_data.categories = chart_spec.categories
-            visible_series_count = 0
-            for series in chart_spec.series:
-                if series.hidden:
-                    continue
+            chart_data.categories = render_chart_spec.categories
+            for series in render_chart_spec.series:
                 chart_data.add_series(series.name or "Ряд", series.values)
-                visible_series_count += 1
-
-            if visible_series_count == 0:
-                self._clear_placeholder(shape)
-                return
 
             slide_shapes = shape.part.slide.shapes
             left = shape.left
@@ -1493,14 +1501,23 @@ class PptxGenerator:
 
             graphic_frame = slide_shapes.add_chart(chart_type, left, top, width, height, chart_data)
             chart = graphic_frame.chart
-            if chart_spec.chart_type == ChartType.COMBO:
+            if render_chart_spec.chart_type == ChartType.COMBO:
                 self._convert_chart_to_combo(chart)
-            self._style_chart(chart, chart_spec)
+            self._style_chart(chart, render_chart_spec)
         except Exception:
             if getattr(shape, "has_text_frame", False):
                 self._set_text(shape, "Не удалось построить график", profile_for_layout("text_full_width"))
             else:
                 self._clear_placeholder(shape)
+
+    def _visible_chart_spec(self, chart_spec: ChartSpec) -> ChartSpec:
+        visible_series = [series for series in chart_spec.series if not series.hidden]
+        chart_type = chart_spec.chart_type
+        if chart_type == ChartType.COMBO:
+            combo_line_visible = bool(chart_spec.series and not chart_spec.series[-1].hidden and len(visible_series) >= 2)
+            if not combo_line_visible:
+                chart_type = ChartType.COLUMN
+        return chart_spec.model_copy(update={"series": visible_series, "chart_type": chart_type}, deep=True)
 
     def _convert_chart_to_combo(self, chart) -> None:
         chart_space = chart._chartSpace

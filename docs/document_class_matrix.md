@@ -193,17 +193,39 @@ Expected behavior:
 - chartable tables may become chart slides
 - chart layout respects content width contracts
 - chart style remains deterministic
+- axis values use compact display formats for large numbers and currencies
+- title/subtitle sizes stay aligned with deck-wide chart contracts
+- mixed-unit tables do not get unsafe default combo suggestions in the UI
+- text/ordinal tables such as status or journey steps are not promoted into meaningless numeric charts
 
 Current coverage:
 
 - `tests/test_regression_corpus.py`
   - `test_chart_heavy_docx_generates_chart_slide_and_preserves_text_capacity_contract`
+- `tests/test_table_chart_analyzer.py`
+  - `test_composition_table_suggests_pie_chart_first`
+  - `test_multi_series_same_unit_table_suggests_stacked_chart`
+  - `test_mixed_unit_table_suggests_column_and_line_without_combo_by_default`
+  - `test_ordinal_status_table_is_not_chartable`
+  - `test_summary_row_is_filtered_from_chart_series`
 - `tests/test_project_contracts.py`
   - chart geometry audit checks
+  - chart semantic audit checks
+  - chart value-axis number-format audit checks
+- `tests/test_planner.py`
+  - supported chart type XML matrix
+  - combo fallback when the line series is hidden
+- `tests/test_api.py`
+  - extract-text API contract for mixed-unit chart candidates
+- `frontend/e2e/chart-preview.spec.ts`
+  - frontend preview matrix for supported chart layouts
+- `frontend/e2e/app.spec.ts`
+  - UI chart selection, hidden-series payload, drawer switch, and select behavior
 
 Current risk:
 
-- planner/content-block changes should not affect chart overrides or table-to-chart mapping
+- secondary value axis is not implemented, so money + percent views still use a single value axis when the user explicitly picks a chart
+- frontend preview is an HTML/SVG approximation of PowerPoint charts and must stay covered by parity/smoke checks
 
 ### 8. Image-heavy document
 
@@ -262,6 +284,7 @@ These are the current universal quality criteria across classes.
 - continuation groups should avoid severe underfill/overflow imbalance
 - text font sizes must stay within layout profile
 - table/chart/image slides must satisfy basic layout geometry
+- chart slides must satisfy semantic contracts: rendered type, series count, combo structure, title/subtitle font sizes, and value-axis number format
 
 Current automated layer:
 
@@ -280,6 +303,7 @@ The most important remaining gaps are:
   - title/body gap
   - footer width consistency for all layouts
   - placeholder-level fill targets
+- chart preview visual snapshots are still smoke-level checks rather than full golden visual baselines
 
 ## Change policy
 

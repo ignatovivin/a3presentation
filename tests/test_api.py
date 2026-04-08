@@ -97,6 +97,59 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(len(payload.tables), 1)
         self.assertEqual(len(payload.chart_assessments), 1)
 
+    def test_extract_text_endpoint_does_not_offer_combo_for_mixed_unit_table(self) -> None:
+        document = Document()
+        document.add_heading("Метрики", level=1)
+        table = document.add_table(rows=4, cols=3)
+        table.cell(0, 0).text = "Квартал"
+        table.cell(0, 1).text = "Выручка"
+        table.cell(0, 2).text = "Маржа"
+        for row_index, values in enumerate(
+            [
+                ("Q1", "120 млн руб", "18%"),
+                ("Q2", "150 млн руб", "22%"),
+                ("Q3", "190 млн руб", "27%"),
+            ],
+            start=1,
+        ):
+            for col_index, value in enumerate(values):
+                table.cell(row_index, col_index).text = value
+        buffer = BytesIO()
+        document.save(buffer)
+        upload = UploadFile(filename="mixed-units.docx", file=BytesIO(buffer.getvalue()))
+
+        payload = asyncio.run(routes_module.extract_document_text(upload))
+
+        self.assertEqual(len(payload.chart_assessments), 1)
+        chart_types = [spec.chart_type.value for spec in payload.chart_assessments[0].candidate_specs]
+        self.assertEqual(chart_types, ["column", "line"])
+
+    def test_extract_text_endpoint_rejects_too_ambiguous_mixed_unit_chart(self) -> None:
+        document = Document()
+        document.add_heading("Смешанные метрики", level=1)
+        table = document.add_table(rows=4, cols=4)
+        for col_index, value in enumerate(["Метрика", "Деньги", "Доля", "Количество"]):
+            table.cell(0, col_index).text = value
+        for row_index, values in enumerate(
+            [
+                ("A", "120 млн руб", "18%", "25"),
+                ("B", "150 млн руб", "22%", "31"),
+                ("C", "190 млн руб", "27%", "44"),
+            ],
+            start=1,
+        ):
+            for col_index, value in enumerate(values):
+                table.cell(row_index, col_index).text = value
+        buffer = BytesIO()
+        document.save(buffer)
+        upload = UploadFile(filename="too-mixed.docx", file=BytesIO(buffer.getvalue()))
+
+        payload = asyncio.run(routes_module.extract_document_text(upload))
+
+        self.assertEqual(len(payload.chart_assessments), 1)
+        self.assertFalse(payload.chart_assessments[0].chartable)
+        self.assertEqual(payload.chart_assessments[0].candidate_specs, [])
+
     def test_plan_from_text_returns_presentation_plan(self) -> None:
         payload = routes_module.plan_from_text(
             TextPlanRequest(

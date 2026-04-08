@@ -36,6 +36,28 @@ class TableChartAnalyzer:
         "total",
         "grand total",
     }
+    COMPOSITION_LABEL_HINTS = {
+        "доля",
+        "доли",
+        "структура",
+        "распределение",
+        "share",
+        "mix",
+        "split",
+        "distribution",
+    }
+    ORDINAL_LABEL_HINTS = {
+        "этап",
+        "статус",
+        "шаг",
+        "порядок",
+        "номер",
+        "stage",
+        "status",
+        "step",
+        "order",
+        "rank",
+    }
     QUARTER_PATTERN = re.compile(r"^q[1-4](?:\s*[\(\-–—].*)?(?:\s+\d{4})?$", re.IGNORECASE)
     YEAR_PATTERN = re.compile(r"^(19|20)\d{2}$")
     MONTH_NAMES = {
@@ -259,6 +281,8 @@ class TableChartAnalyzer:
             return ChartTableClassification.TIME_SERIES
         if self._looks_like_time_axis(categories):
             return ChartTableClassification.TIME_SERIES
+        if self._looks_like_composition(structured, categories):
+            return ChartTableClassification.COMPOSITION
         if len(structured.numeric_columns) == 1:
             return ChartTableClassification.RANKING if len(categories) > 6 else ChartTableClassification.SINGLE_SERIES_CATEGORY
         if len(structured.numeric_columns) > 1:
@@ -277,6 +301,36 @@ class TableChartAnalyzer:
             ):
                 matches += 1
         return matches >= max(2, len(categories) // 2)
+
+    def _looks_like_composition(self, structured: StructuredTable, categories: list[str]) -> bool:
+        if len(structured.numeric_columns) != 1 or not 2 <= len(categories) <= 8:
+            return False
+
+        numeric_column = structured.numeric_columns[0]
+        values: list[float] = []
+        value_units: set[str] = set()
+        for row_index, row in enumerate(structured.cells[structured.data_start_row :], start=structured.data_start_row):
+            if row_index in structured.summary_rows or numeric_column >= len(row):
+                continue
+            cell = row[numeric_column]
+            if cell.parsed_value is None:
+                continue
+            values.append(cell.parsed_value)
+            if cell.unit:
+                value_units.add(cell.unit)
+
+        if len(values) != len(categories) or any(value < 0 for value in values):
+            return False
+
+        header_text = " ".join(
+            structured.cells[0][column_index].normalized_text
+            for column_index in (structured.label_columns + structured.numeric_columns)
+            if structured.cells and column_index < len(structured.cells[0])
+        )
+        category_text = " ".join(category.lower() for category in categories)
+        has_hint = any(hint in header_text or hint in category_text for hint in self.COMPOSITION_LABEL_HINTS)
+        percent_total = "%" in value_units and 98 <= sum(values) <= 102
+        return has_hint or percent_total
 
     def _build_candidates(
         self,
@@ -303,8 +357,14 @@ class TableChartAnalyzer:
         if not series:
             return []
 
+        if self._looks_like_ordinal_index_series(structured, categories, series):
+            structured.warnings.append("numeric series looks like an ordinal index, not a measurable value")
+            return []
+
         confidence = ChartConfidence.HIGH
         warnings: list[str] = []
+        series_unit_keys = {self._series_unit_key(item) for item in series}
+        mixed_series_units = len(series_unit_keys) > 1
         if len(categories) > 15:
             confidence = ChartConfidence.LOW
             warnings.append("too many categories for default chart suggestion")
@@ -312,17 +372,33 @@ class TableChartAnalyzer:
             confidence = ChartConfidence.MEDIUM
             warnings.append("multiple series detected")
 
-        if len(units) > 1:
+        if mixed_series_units:
             confidence = ChartConfidence.LOW
             warnings.append("mixed units detected across series")
 
         suggested_types: list[ChartType]
-        if classification == ChartTableClassification.TIME_SERIES:
+        candidate_series_by_type: dict[ChartType, list[ChartSeries]] = {}
+        non_negative = all(value >= 0 for item in series for value in item.values)
+        same_unit_multi_series = len(series) > 1 and len(series_unit_keys) == 1
+
+        if mixed_series_units and len(series) > 1:
+            if len(series_unit_keys) > 2 or len(series) > 3:
+                structured.warnings.append("mixed units are too ambiguous for automatic chart suggestion")
+                return []
+            suggested_types = [ChartType.COLUMN, ChartType.LINE]
+            warnings.append("mixed-unit chart uses a single value axis; interpretation should be reviewed")
+        elif classification == ChartTableClassification.COMPOSITION:
+            suggested_types = [ChartType.PIE, ChartType.COLUMN, ChartType.BAR]
+        elif classification == ChartTableClassification.TIME_SERIES:
             suggested_types = [ChartType.LINE, ChartType.COLUMN]
+            if same_unit_multi_series and non_negative:
+                suggested_types.insert(1, ChartType.STACKED_COLUMN)
         elif classification == ChartTableClassification.RANKING:
             suggested_types = [ChartType.BAR]
         elif classification == ChartTableClassification.SINGLE_SERIES_CATEGORY:
             suggested_types = [ChartType.COLUMN, ChartType.BAR]
+        elif classification == ChartTableClassification.MULTI_SERIES_CATEGORY and same_unit_multi_series and non_negative:
+            suggested_types = [ChartType.STACKED_COLUMN, ChartType.COLUMN, ChartType.BAR]
         else:
             suggested_types = [ChartType.COLUMN, ChartType.LINE]
 
@@ -335,16 +411,53 @@ class TableChartAnalyzer:
                 source_table_id=structured.table_id,
                 chart_type=chart_type,
                 categories=categories,
-                series=series,
+                series=candidate_series_by_type.get(chart_type, series),
                 x_axis_title=self._series_name(structured, structured.label_columns[0]) if structured.label_columns else None,
                 y_axis_title=y_axis_title,
                 legend_visible=len(series) > 1,
-                value_format=value_format,
+                value_format="number" if chart_type == ChartType.COMBO and mixed_series_units else value_format,
+                stacking="stacked" if chart_type in {ChartType.STACKED_BAR, ChartType.STACKED_COLUMN} else "none",
+                data_labels_visible=chart_type == ChartType.PIE,
                 confidence=confidence,
                 warnings=warnings.copy(),
             )
             for chart_type in suggested_types
         ]
+
+    def _looks_like_ordinal_index_series(
+        self,
+        structured: StructuredTable,
+        categories: list[str],
+        series: list[ChartSeries],
+    ) -> bool:
+        if len(series) != 1 or len(categories) < 3:
+            return False
+
+        values = series[0].values
+        expected_index = [float(index) for index in range(1, len(values) + 1)]
+        if values != expected_index:
+            return False
+
+        header_text = " ".join(
+            structured.cells[0][column_index].normalized_text
+            for column_index in (structured.label_columns + structured.numeric_columns)
+            if structured.cells and column_index < len(structured.cells[0])
+        )
+        category_text = " ".join(category.lower() for category in categories)
+        series_name = series[0].name.lower()
+        combined_text = f"{header_text} {category_text} {series_name}"
+        return any(hint in combined_text for hint in self.ORDINAL_LABEL_HINTS)
+
+    def _combo_series_order(self, series: list[ChartSeries]) -> list[ChartSeries]:
+        if not series:
+            return []
+        line_index = next((index for index, item in enumerate(series) if item.unit == "%"), len(series) - 1)
+        ordered = [item for index, item in enumerate(series) if index != line_index]
+        ordered.append(series[line_index])
+        return ordered
+
+    def _series_unit_key(self, series: ChartSeries) -> str:
+        return series.unit or "number"
 
     def _series_name(self, structured: StructuredTable, column_index: int) -> str:
         if structured.cells and structured.header_rows and column_index < len(structured.cells[0]):

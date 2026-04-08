@@ -291,9 +291,14 @@ Current behavior:
 Current behavior:
 
 - chartable tables can be promoted to real chart slides
-- column, line, stacked, pie, and combo scenarios are covered
-- rendered charts are validated in regression and contract tests
+- analyzer suggests pie for composition tables and stacked charts for safe same-unit multi-series tables
+- mixed-unit default candidates are limited to column/line; combo remains supported only for explicit specs and legacy plans
+- unsafe mixed-unit tables and ordinal/status `1..N` tables are rejected as not chartable
+- summary rows are filtered out before chart series are built
+- column, bar, line, stacked, pie, and explicit combo scenarios are covered by generator XML tests
+- rendered charts are validated in regression, API, generator, deck-audit, and frontend smoke tests
 - chart slides use the same layout-quality contract as the rest of the deck
+- chart audit validates rendered type, series count, combo structure, title/subtitle sizes, and compact value-axis number formats
 
 ### 4. Bullet lists
 
@@ -347,6 +352,8 @@ Frontend responsibilities:
 - download result
 - review extracted structure before generation
 - switch chartable tables between `table` and `chart`
+- preview supported chart layouts in the drawer before generation
+- preserve selected chart type and hidden series in `chart_overrides`
 
 UI was simplified from a technical admin-like screen into a more user-oriented flow:
 

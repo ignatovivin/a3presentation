@@ -1444,8 +1444,31 @@ class TextToPlanServiceTests(unittest.TestCase):
             presentation = Presentation(str(output_path))
             slide = presentation.slides[1]
             chart_shapes = [shape for shape in slide.shapes if getattr(shape, "has_chart", False)]
+            placeholders = {
+                shape.placeholder_format.idx: shape
+                for shape in slide.placeholders
+                if getattr(shape, "is_placeholder", False)
+            }
 
             self.assertEqual(len(chart_shapes), 1)
+            title_sizes = sorted(
+                {
+                    run.font.size.pt
+                    for paragraph in placeholders[0].text_frame.paragraphs
+                    for run in paragraph.runs
+                    if run.font.size is not None
+                }
+            )
+            subtitle_sizes = sorted(
+                {
+                    run.font.size.pt
+                    for paragraph in placeholders[13].text_frame.paragraphs
+                    for run in paragraph.runs
+                    if run.font.size is not None
+                }
+            )
+            self.assertEqual(title_sizes, [28.0])
+            self.assertEqual(subtitle_sizes, [18.0])
             self.assertEqual(chart_shapes[0].chart.series[0].name, "Лиды")
             self.assertEqual(chart_shapes[0].chart.series[0].format.fill.fore_color.rgb, RGBColor(0x67, 0x9A, 0xEA))
             self.assertEqual(
@@ -1547,6 +1570,50 @@ class TextToPlanServiceTests(unittest.TestCase):
             self.assertEqual(len(bar_charts[0].xpath("./c:ser")), 2)
             self.assertEqual(len(line_charts[0].xpath("./c:ser")), 1)
             self.assertEqual(chart.series[-1].marker.style, XL_MARKER_STYLE.CIRCLE)
+
+    def test_generator_keeps_combo_as_column_when_line_series_is_hidden(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="A3 Presentation",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.CHART,
+                    title="Combo hidden line",
+                    chart=ChartSpec(
+                        chart_id="chart_combo_hidden_line",
+                        source_table_id="table_1",
+                        chart_type=ChartType.COMBO,
+                        title="План и тренд",
+                        categories=["Q1", "Q2", "Q3"],
+                        series=[
+                            ChartSeries(name="План", values=[100.0, 130.0, 150.0]),
+                            ChartSeries(name="Факт", values=[90.0, 120.0, 160.0]),
+                            ChartSeries(name="Маржа", values=[18.0, 22.0, 27.0], hidden=True),
+                        ],
+                        confidence=ChartConfidence.HIGH,
+                    ),
+                    preferred_layout_key="table",
+                ),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+            chart = next(shape.chart for shape in presentation.slides[1].shapes if getattr(shape, "has_chart", False))
+
+            bar_charts = chart._chartSpace.xpath(".//c:barChart")
+            line_charts = chart._chartSpace.xpath(".//c:lineChart")
+
+            self.assertEqual(len(bar_charts), 1)
+            self.assertEqual(len(line_charts), 0)
+            self.assertEqual(len(bar_charts[0].xpath("./c:ser")), 2)
 
     def test_generator_formats_value_axis_in_millions_for_large_currency_values(self) -> None:
         settings = get_settings()
@@ -1652,6 +1719,139 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertEqual(generator._resolve_chart_type(make_spec(ChartType.STACKED_COLUMN)), XL_CHART_TYPE.COLUMN_STACKED)
         self.assertEqual(generator._resolve_chart_type(make_spec(ChartType.PIE)), XL_CHART_TYPE.PIE)
         self.assertEqual(generator._resolve_chart_type(make_spec(ChartType.COMBO)), XL_CHART_TYPE.COLUMN_CLUSTERED)
+
+    def test_generator_renders_supported_chart_type_matrix(self) -> None:
+        chart_specs = [
+            ChartSpec(
+                chart_id="chart_bar",
+                source_table_id="table_1",
+                chart_type=ChartType.BAR,
+                title="Bar",
+                categories=["A", "B", "C"],
+                series=[ChartSeries(name="Series", values=[10.0, 20.0, 30.0])],
+                confidence=ChartConfidence.HIGH,
+            ),
+            ChartSpec(
+                chart_id="chart_column",
+                source_table_id="table_2",
+                chart_type=ChartType.COLUMN,
+                title="Column",
+                categories=["A", "B", "C"],
+                series=[ChartSeries(name="Series", values=[10.0, 20.0, 30.0])],
+                confidence=ChartConfidence.HIGH,
+            ),
+            ChartSpec(
+                chart_id="chart_line",
+                source_table_id="table_3",
+                chart_type=ChartType.LINE,
+                title="Line",
+                categories=["A", "B", "C"],
+                series=[ChartSeries(name="Series", values=[10.0, 20.0, 30.0])],
+                confidence=ChartConfidence.HIGH,
+            ),
+            ChartSpec(
+                chart_id="chart_stacked_bar",
+                source_table_id="table_4",
+                chart_type=ChartType.STACKED_BAR,
+                title="Stacked bar",
+                categories=["A", "B", "C"],
+                series=[
+                    ChartSeries(name="Series 1", values=[10.0, 20.0, 30.0]),
+                    ChartSeries(name="Series 2", values=[8.0, 14.0, 18.0]),
+                ],
+                confidence=ChartConfidence.HIGH,
+            ),
+            ChartSpec(
+                chart_id="chart_stacked_column",
+                source_table_id="table_5",
+                chart_type=ChartType.STACKED_COLUMN,
+                title="Stacked column",
+                categories=["A", "B", "C"],
+                series=[
+                    ChartSeries(name="Series 1", values=[10.0, 20.0, 30.0]),
+                    ChartSeries(name="Series 2", values=[8.0, 14.0, 18.0]),
+                ],
+                confidence=ChartConfidence.HIGH,
+            ),
+            ChartSpec(
+                chart_id="chart_pie",
+                source_table_id="table_6",
+                chart_type=ChartType.PIE,
+                title="Pie",
+                categories=["A", "B", "C"],
+                series=[ChartSeries(name="Share", values=[40.0, 35.0, 25.0])],
+                confidence=ChartConfidence.HIGH,
+            ),
+            ChartSpec(
+                chart_id="chart_combo",
+                source_table_id="table_7",
+                chart_type=ChartType.COMBO,
+                title="Combo",
+                categories=["A", "B", "C"],
+                series=[
+                    ChartSeries(name="Bar 1", values=[100.0, 120.0, 140.0]),
+                    ChartSeries(name="Bar 2", values=[90.0, 130.0, 150.0]),
+                    ChartSeries(name="Line", values=[18.0, 22.0, 27.0]),
+                ],
+                confidence=ChartConfidence.HIGH,
+            ),
+        ]
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Chart Matrix",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Chart Matrix", preferred_layout_key="cover"),
+                *[
+                    SlideSpec(
+                        kind=SlideKind.CHART,
+                        title=spec.title,
+                        chart=spec,
+                        preferred_layout_key="table",
+                    )
+                    for spec in chart_specs
+                ],
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        expected_xml = {
+            ChartType.BAR: {"barChart": 1, "lineChart": 0, "pieChart": 0, "barDir": "bar", "grouping": "clustered"},
+            ChartType.COLUMN: {"barChart": 1, "lineChart": 0, "pieChart": 0, "barDir": "col", "grouping": "clustered"},
+            ChartType.LINE: {"barChart": 0, "lineChart": 1, "pieChart": 0},
+            ChartType.STACKED_BAR: {"barChart": 1, "lineChart": 0, "pieChart": 0, "barDir": "bar", "grouping": "stacked"},
+            ChartType.STACKED_COLUMN: {"barChart": 1, "lineChart": 0, "pieChart": 0, "barDir": "col", "grouping": "stacked"},
+            ChartType.PIE: {"barChart": 0, "lineChart": 0, "pieChart": 1},
+            ChartType.COMBO: {"barChart": 1, "lineChart": 1, "pieChart": 0},
+        }
+        for slide_index, spec in enumerate(chart_specs, start=2):
+            with self.subTest(chart_type=spec.chart_type):
+                chart = next(
+                    shape.chart
+                    for shape in presentation.slides[slide_index - 1].shapes
+                    if getattr(shape, "has_chart", False)
+                )
+                chart_space = chart._chartSpace
+                bar_charts = chart_space.xpath(".//c:barChart")
+                line_charts = chart_space.xpath(".//c:lineChart")
+                pie_charts = chart_space.xpath(".//c:pieChart")
+                expected = expected_xml[spec.chart_type]
+                self.assertEqual(len(bar_charts), expected["barChart"])
+                self.assertEqual(len(line_charts), expected["lineChart"])
+                self.assertEqual(len(pie_charts), expected["pieChart"])
+                if bar_charts and "barDir" in expected:
+                    self.assertEqual(next(element.get("val") for element in bar_charts[0].xpath("./c:barDir")), expected["barDir"])
+                    self.assertEqual(next(element.get("val") for element in bar_charts[0].xpath("./c:grouping")), expected["grouping"])
+                if spec.chart_type == ChartType.COMBO:
+                    self.assertEqual(len(bar_charts[0].xpath("./c:ser")), 2)
+                    self.assertEqual(len(line_charts[0].xpath("./c:ser")), 1)
 
     def test_generator_adapts_cover_title_height_and_meta_spacing(self) -> None:
         settings = get_settings()

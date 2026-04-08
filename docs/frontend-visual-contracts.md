@@ -9,6 +9,7 @@
 - backend quality layer now also validates mixed-content order inside generated deck body containers
 - `frontend smoke` is suitable for CI today
 - `frontend visual` should stay a separate gate until stable cross-platform baselines are introduced
+- chart preview smoke now covers the supported chart layout matrix, including line marker/label geometry and invalid-coordinate guards
 
 ## Required Frontend Smoke Flow
 
@@ -22,6 +23,9 @@ The minimal automated UI flow should verify:
 6. user can generate a presentation
 7. user can receive a downloadable result link
 8. user can dismiss success and error panels
+9. chart type select stays aligned with backend candidates and does not expose unsupported defaults such as mixed-unit combo
+10. hidden chart series are preserved in the `chart_overrides` request payload
+11. drawer switch/select controls remain accessible by role and visible to Playwright
 
 ## Required Visual Regression Set
 
@@ -35,6 +39,21 @@ The minimal visual regression layer should cover:
 6. chart slide
 7. image slide
 8. footer positioning on long-title slides
+
+## Chart Preview Smoke Matrix
+
+The current automated chart preview smoke should cover:
+
+- `column`
+- `bar`
+- `line`
+- `stacked_column`
+- `stacked_bar`
+- `pie`
+- explicit `combo` specs for legacy/generator parity
+- dense line categories with large compact values
+- negative values without `NaN` marker coordinates
+- hidden-series behavior in the plan payload
 
 ## Suggested Tooling
 

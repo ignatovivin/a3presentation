@@ -19,6 +19,13 @@ const extractResponse = {
         ["Enterprise", "220", "260"],
       ],
     },
+    {
+      headers: ["Этап", "Комментарий"],
+      rows: [
+        ["Discovery", "Интервью и сбор требований"],
+        ["Prototype", "Проверка решения"],
+      ],
+    },
   ],
   blocks: [
     { kind: "title", text: "А3", items: [] },
@@ -101,6 +108,35 @@ const extractResponse = {
         ],
       },
     },
+    {
+      table_id: "table_2",
+      chartable: false,
+      classification: "text_dominant",
+      confidence: "none",
+      reasons: ["table has no numeric columns"],
+      warnings: [],
+      candidate_specs: [],
+      structured_table: {
+        table_id: "table_2",
+        header_rows: [0],
+        label_columns: [0, 1],
+        numeric_columns: [],
+        time_columns: [],
+        data_start_row: 1,
+        summary_rows: [],
+        warnings: [],
+        cells: [
+          [
+            { text: "Этап", normalized_text: "этап", value_type: "text", unit: null, annotation: null, is_header_like: true },
+            { text: "Комментарий", normalized_text: "комментарий", value_type: "text", unit: null, annotation: null, is_header_like: true },
+          ],
+          [
+            { text: "Discovery", normalized_text: "discovery", value_type: "text", unit: null, annotation: null, is_header_like: false },
+            { text: "Интервью и сбор требований", normalized_text: "интервью и сбор требований", value_type: "text", unit: null, annotation: null, is_header_like: false },
+          ],
+        ],
+      },
+    },
   ],
 };
 
@@ -129,7 +165,11 @@ const generationResponse = {
   download_url: "/presentations/files/A3_Presentation.pptx",
 };
 
+let lastPlanPayload: any = null;
+
 test.beforeEach(async ({ page }) => {
+  lastPlanPayload = null;
+
   await page.addInitScript(() => {
     (window as Window & { __lastOpenedUrl?: string }).__lastOpenedUrl = "";
     window.open = ((url?: string | URL | undefined) => {
@@ -147,6 +187,7 @@ test.beforeEach(async ({ page }) => {
   });
 
   await page.route("**/api/plans/from-text", async (route) => {
+    lastPlanPayload = await route.request().postDataJSON();
     await route.fulfill({ json: planResponse });
   });
 
@@ -180,15 +221,40 @@ test("@smoke user can upload document inspect structure and generate presentatio
   await page.getByTestId("open-structure-drawer").click();
   await expect(page.getByTestId("structure-drawer")).toBeVisible();
   await expect(page.getByTestId("assessment-card-table_1")).toBeVisible();
+  await expect(page.getByTestId("assessment-card-table_1")).toContainText("Рост по каналам");
+  await expect(page.getByTestId("assessment-card-table_1")).toContainText("Эту таблицу можно использовать для графика.");
+  await expect(page.locator(".drawer-switch")).toContainText("Показать все таблицы");
+  await expect(page.getByRole("checkbox", { name: "Показать все таблицы" })).not.toBeChecked();
+  await expect(page.getByTestId("assessment-card-table_2")).toHaveCount(0);
+  await page.locator(".drawer-switch").click();
+  await expect(page.getByRole("checkbox", { name: "Показать все таблицы" })).toBeChecked();
+  await expect(page.getByTestId("assessment-card-table_2")).toBeVisible();
 
   await page.getByTestId("mode-chart-table_1").click();
+  await expect(page.getByTestId("chart-type-table_1").locator("option")).toHaveCount(2);
+  await expect(page.getByTestId("chart-type-table_1")).toBeVisible();
   await page.getByTestId("chart-type-table_1").selectOption("chart_2");
+  await expect(page.locator(".chart-preview-line-svg path.chart-preview-line")).toHaveCount(2);
+  await expect(page.locator(".chart-preview-line-marker")).toHaveCount(4);
+  await expect(page.locator(".chart-preview-line-label")).toHaveCount(2);
   await page.getByTestId("series-toggle-table_1-Enterprise").click();
+  await expect(page.locator(".chart-preview-line-svg path.chart-preview-line")).toHaveCount(1);
+  await expect(page.locator(".chart-preview-line-marker")).toHaveCount(2);
+  await expect(page.locator(".chart-preview-line-label")).toHaveCount(2);
   await page.getByTestId("save-structure-choices").click();
 
   await page.getByTestId("generate-presentation").click();
 
   await expect(page.getByTestId("generation-success")).toBeVisible();
+  const chartOverride = lastPlanPayload.chart_overrides.find((override: any) => override.table_id === "table_1");
+  const tableOverride = lastPlanPayload.chart_overrides.find((override: any) => override.table_id === "table_2");
+  expect(chartOverride.mode).toBe("chart");
+  expect(tableOverride.mode).toBe("table");
+  expect(chartOverride.selected_chart.chart_type).toBe("line");
+  expect(chartOverride.selected_chart.series).toEqual([
+    expect.objectContaining({ name: "SMB", hidden: false }),
+    expect.objectContaining({ name: "Enterprise", hidden: true }),
+  ]);
   await expect(page.getByTestId("generated-file-name")).toHaveText("A3_Presentation.pptx");
 
   await page.getByTestId("download-presentation").click();

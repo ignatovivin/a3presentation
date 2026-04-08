@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pptx import Presentation
+from a3presentation.domain.chart import ChartSpec, ChartType
 from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec
 from a3presentation.domain.template import PlaceholderKind, TemplateManifest
 from a3presentation.services.layout_capacity import (
@@ -21,6 +22,9 @@ CONTINUATION_UNDERFILL_GRACE = 0.09
 CONTINUATION_AUDIT_EPSILON = 0.01
 GEOMETRY_TOLERANCE_EMU = 90000
 BODY_HEIGHT_UNDERFILL_RATIO = 0.45
+EXPECTED_CHART_TITLE_FONT_PT = 28.0
+EXPECTED_CHART_SUBTITLE_FONT_PT = 18.0
+CHART_TITLE_FONT_TOLERANCE_PT = 0.1
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,8 @@ class SlideAudit:
     body_char_count: int
     body_font_sizes: tuple[float, ...]
     profile: LayoutCapacityProfile
+    title_font_sizes: tuple[float, ...] = ()
+    subtitle_font_sizes: tuple[float, ...] = ()
     content_width: int | None = None
     footer_width: int | None = None
     has_table: bool = False
@@ -68,6 +74,14 @@ class SlideAudit:
     subtitle_placeholder_idx: int | None = None
     body_placeholder_idx: int | None = None
     footer_placeholder_idx: int | None = None
+    expected_chart_type: str | None = None
+    rendered_chart_type: str | None = None
+    expected_chart_series_count: int | None = None
+    rendered_chart_series_count: int | None = None
+    rendered_chart_bar_series_count: int | None = None
+    rendered_chart_line_series_count: int | None = None
+    expected_chart_value_axis_number_format: str | None = None
+    rendered_chart_value_axis_number_format: str | None = None
     geometry: LayoutGeometryPolicy | None = None
 
     @property
@@ -215,17 +229,25 @@ def audit_generated_presentation(
                     }
                 )
             )
+        title_font_sizes = _text_frame_font_sizes(title)
+        subtitle_font_sizes = _text_frame_font_sizes(subtitle)
 
         has_table = any(getattr(shape, "has_table", False) for shape in slide.shapes)
         has_chart = any(getattr(shape, "has_chart", False) for shape in slide.shapes)
         has_image = any(self_has_image(shape) for shape in slide.shapes)
         image_shape = next((shape for shape in slide.shapes if self_has_image(shape)), None)
+        chart_shape = next((shape for shape in slide.shapes if getattr(shape, "has_chart", False)), None)
+        expected_chart_type = _expected_render_chart_type(slide_spec.chart) if slide_spec.kind == SlideKind.CHART else None
+        expected_chart_series_count = _expected_render_chart_series_count(slide_spec.chart) if slide_spec.kind == SlideKind.CHART else None
+        expected_chart_axis_number_format = (
+            _expected_chart_axis_number_format(slide_spec.chart) if slide_spec.kind == SlideKind.CHART else None
+        )
+        rendered_chart_semantics = _chart_semantics(getattr(chart_shape, "chart", None)) if chart_shape is not None else {}
         if content_width is None:
             if has_table:
                 table_shape = next((shape for shape in slide.shapes if getattr(shape, "has_table", False)), None)
                 content_width = getattr(table_shape, "width", None) if table_shape is not None else None
             elif has_chart:
-                chart_shape = next((shape for shape in slide.shapes if getattr(shape, "has_chart", False)), None)
                 content_width = getattr(chart_shape, "width", None) if chart_shape is not None else None
             elif has_image:
                 content_width = getattr(image_shape, "width", None) if image_shape is not None else None
@@ -238,6 +260,8 @@ def audit_generated_presentation(
                 layout_key=layout_key,
                 body_char_count=body_char_count,
                 body_font_sizes=body_font_sizes,
+                title_font_sizes=title_font_sizes,
+                subtitle_font_sizes=subtitle_font_sizes,
                 profile=effective_profile,
                 content_width=content_width,
                 footer_width=footer_width,
@@ -275,11 +299,146 @@ def audit_generated_presentation(
                 subtitle_placeholder_idx=subtitle_idx,
                 body_placeholder_idx=body_idx,
                 footer_placeholder_idx=footer_idx,
+                expected_chart_type=expected_chart_type.value if expected_chart_type is not None else None,
+                rendered_chart_type=rendered_chart_semantics.get("chart_type"),
+                expected_chart_series_count=expected_chart_series_count,
+                rendered_chart_series_count=rendered_chart_semantics.get("series_count"),
+                rendered_chart_bar_series_count=rendered_chart_semantics.get("bar_series_count"),
+                rendered_chart_line_series_count=rendered_chart_semantics.get("line_series_count"),
+                expected_chart_value_axis_number_format=expected_chart_axis_number_format,
+                rendered_chart_value_axis_number_format=rendered_chart_semantics.get("value_axis_number_format"),
                 geometry=resolved_geometry,
             )
         )
 
     return audits
+
+
+def _expected_render_chart_type(chart_spec: ChartSpec | None) -> ChartType | None:
+    if chart_spec is None:
+        return None
+    visible_series = [series for series in chart_spec.series if not series.hidden]
+    if not visible_series:
+        return None
+    if chart_spec.chart_type == ChartType.COMBO:
+        combo_line_visible = bool(chart_spec.series and not chart_spec.series[-1].hidden and len(visible_series) >= 2)
+        return ChartType.COMBO if combo_line_visible else ChartType.COLUMN
+    return chart_spec.chart_type
+
+
+def _expected_render_chart_series_count(chart_spec: ChartSpec | None) -> int | None:
+    if chart_spec is None:
+        return None
+    return len([series for series in chart_spec.series if not series.hidden])
+
+
+def _chart_semantics(chart) -> dict[str, int | str | None]:
+    if chart is None:
+        return {}
+
+    chart_space = chart._chartSpace
+    bar_charts = chart_space.xpath(".//c:barChart")
+    line_charts = chart_space.xpath(".//c:lineChart")
+    pie_charts = chart_space.xpath(".//c:pieChart")
+    bar_series_count = sum(len(element.xpath("./c:ser")) for element in bar_charts)
+    line_series_count = sum(len(element.xpath("./c:ser")) for element in line_charts)
+    pie_series_count = sum(len(element.xpath("./c:ser")) for element in pie_charts)
+    series_count = bar_series_count + line_series_count + pie_series_count
+
+    chart_type = "unknown"
+    if bar_charts and line_charts:
+        chart_type = ChartType.COMBO.value
+    elif pie_charts:
+        chart_type = ChartType.PIE.value
+    elif line_charts:
+        chart_type = ChartType.LINE.value
+    elif bar_charts:
+        bar_chart = bar_charts[0]
+        bar_direction = next((element.get("val") for element in bar_chart.xpath("./c:barDir")), "col")
+        grouping = next((element.get("val") for element in bar_chart.xpath("./c:grouping")), "clustered")
+        is_stacked = grouping in {"stacked", "percentStacked"}
+        if bar_direction == "bar":
+            chart_type = ChartType.STACKED_BAR.value if is_stacked else ChartType.BAR.value
+        else:
+            chart_type = ChartType.STACKED_COLUMN.value if is_stacked else ChartType.COLUMN.value
+
+    return {
+        "chart_type": chart_type,
+        "series_count": series_count,
+        "bar_series_count": bar_series_count,
+        "line_series_count": line_series_count,
+        "value_axis_number_format": _chart_value_axis_number_format(chart),
+    }
+
+
+def _chart_value_axis_number_format(chart) -> str | None:
+    try:
+        return chart.value_axis.tick_labels.number_format
+    except Exception:
+        return None
+
+
+def _expected_chart_axis_number_format(chart_spec: ChartSpec | None) -> str | None:
+    render_spec = _expected_render_chart_spec(chart_spec)
+    if render_spec is None or render_spec.chart_type == ChartType.PIE:
+        return None
+
+    if render_spec.value_format == "percent":
+        return '0"%"'
+
+    max_value = max(
+        (abs(value) for series in render_spec.series if not series.hidden for value in series.values),
+        default=0.0,
+    )
+    if render_spec.value_format == "currency":
+        if max_value >= 1_000_000_000:
+            return '0.0,,," млрд ₽"'
+        if max_value >= 1_000_000:
+            return '0.0,," млн ₽"'
+        if max_value >= 1_000:
+            return '0," тыс ₽"'
+        return '#,##0" ₽"'
+
+    if max_value >= 1_000_000_000:
+        return '0.0,,," млрд"'
+    if max_value >= 1_000_000:
+        return '0.0,," млн"'
+    if max_value >= 1_000:
+        return '0," тыс"'
+    return "#,##0"
+
+
+def _expected_render_chart_spec(chart_spec: ChartSpec | None) -> ChartSpec | None:
+    if chart_spec is None:
+        return None
+    visible_series = [series for series in chart_spec.series if not series.hidden]
+    if not visible_series:
+        return None
+    chart_type = chart_spec.chart_type
+    if chart_type == ChartType.COMBO:
+        combo_line_visible = bool(chart_spec.series and not chart_spec.series[-1].hidden and len(visible_series) >= 2)
+        if not combo_line_visible:
+            chart_type = ChartType.COLUMN
+    return chart_spec.model_copy(update={"series": visible_series, "chart_type": chart_type}, deep=True)
+
+
+def _text_frame_font_sizes(shape) -> tuple[float, ...]:
+    if shape is None or not getattr(shape, "has_text_frame", False):
+        return ()
+    return tuple(
+        sorted(
+            {
+                run.font.size.pt
+                for paragraph in shape.text_frame.paragraphs
+                for run in paragraph.runs
+                if run.font.size is not None
+            }
+        )
+    )
+
+
+def _font_sizes_match(font_sizes: tuple[float, ...], expected: float) -> bool:
+    return bool(font_sizes) and all(abs(size - expected) <= CHART_TITLE_FONT_TOLERANCE_PT for size in font_sizes)
 
 
 def continuation_groups(audits: list[SlideAudit]) -> dict[str, list[SlideAudit]]:
@@ -349,6 +508,76 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                         details="chart slide does not contain rendered chart shape",
                     )
                 )
+            if audit.title_font_sizes and not _font_sizes_match(audit.title_font_sizes, EXPECTED_CHART_TITLE_FONT_PT):
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="chart_title_font_mismatch",
+                        details=f"title_font_sizes={audit.title_font_sizes} expected={EXPECTED_CHART_TITLE_FONT_PT}",
+                    )
+                )
+            if audit.subtitle_font_sizes and not _font_sizes_match(audit.subtitle_font_sizes, EXPECTED_CHART_SUBTITLE_FONT_PT):
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="chart_subtitle_font_mismatch",
+                        details=f"subtitle_font_sizes={audit.subtitle_font_sizes} expected={EXPECTED_CHART_SUBTITLE_FONT_PT}",
+                    )
+                )
+            if audit.has_chart and audit.expected_chart_type and audit.rendered_chart_type != audit.expected_chart_type:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="chart_type_mismatch",
+                        details=f"rendered={audit.rendered_chart_type} expected={audit.expected_chart_type}",
+                    )
+                )
+            if (
+                audit.has_chart
+                and audit.expected_chart_series_count is not None
+                and audit.rendered_chart_series_count != audit.expected_chart_series_count
+            ):
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="chart_series_count_mismatch",
+                        details=f"rendered={audit.rendered_chart_series_count} expected={audit.expected_chart_series_count}",
+                    )
+                )
+            if (
+                audit.has_chart
+                and audit.expected_chart_value_axis_number_format
+                and audit.rendered_chart_value_axis_number_format != audit.expected_chart_value_axis_number_format
+            ):
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="chart_value_axis_number_format_mismatch",
+                        details=(
+                            f"rendered={audit.rendered_chart_value_axis_number_format} "
+                            f"expected={audit.expected_chart_value_axis_number_format}"
+                        ),
+                    )
+                )
+            if audit.expected_chart_type == ChartType.COMBO.value and audit.has_chart:
+                expected_bar_series = max((audit.expected_chart_series_count or 0) - 1, 0)
+                if audit.rendered_chart_bar_series_count != expected_bar_series or audit.rendered_chart_line_series_count != 1:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="combo_chart_structure_mismatch",
+                            details=(
+                                f"bar_series={audit.rendered_chart_bar_series_count} expected={expected_bar_series}; "
+                                f"line_series={audit.rendered_chart_line_series_count} expected=1"
+                            ),
+                        )
+                    )
             if audit.content_width_ratio and audit.content_width_ratio < 0.9:
                 violations.append(
                     CapacityViolation(

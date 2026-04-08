@@ -9,6 +9,12 @@ It is narrower than the full backend test suite and focuses on end-to-end layout
 - mixed-content order preservation
 - table layout geometry
 - chart layout geometry
+- chart semantic contracts:
+  - rendered chart type
+  - rendered series count
+  - combo bar/line structure
+  - title/subtitle font sizes
+  - value-axis number format for compact large-number display
 - image layout geometry
 - template-aware behavior for uploaded or analyzer-derived templates
 - representative document classes:
@@ -74,6 +80,29 @@ It is not intended to replace:
 - frontend smoke and visual tests
 
 Those layers should continue to run alongside `quality-contracts`, not instead of it.
+
+## Chart-Specific Contracts
+
+Current chart behavior:
+
+- chartable tables can be promoted to real chart slides through explicit chart overrides
+- default chart candidates include column, line, bar, stacked column/bar, and pie where appropriate
+- combo remains supported by the generator for explicit specs and legacy plans, but is not offered as the default mixed-unit UI option
+- unsafe mixed-unit tables with too many unit families are rejected as not chartable
+- ordinal/status tables with `1..N` index-like values are rejected as not chartable
+- summary rows such as `Итого` are filtered out before chart series are built
+- column, bar, line, stacked, pie, and explicit combo scenarios are covered by generator XML tests
+- chart slides use the same layout-quality contract as the rest of the deck
+- chart value axes are audited for compact number formats such as `млн`, `млрд`, `%`, and `₽`
+- chart title/subtitle sizes are audited against the shared `28 pt` / `18 pt` contract
+
+Frontend-adjacent checks:
+
+- structure drawer smoke verifies chart/table mode switching
+- chart type select no longer exposes combo for default mixed-unit candidates
+- hidden series are preserved in the `chart_overrides` payload
+- preview smoke covers column, bar, line, stacked column, stacked bar, pie, and explicit combo render paths
+- line preview smoke checks marker/line/label counts and guards against invalid `NaN` coordinates
 
 ## Execution rule
 

@@ -1591,10 +1591,139 @@ class ProjectContractTests(unittest.TestCase):
 
         chart_audit = next(audit for audit in audits if audit.kind == SlideKind.CHART.value)
         self.assertTrue(chart_audit.has_chart)
+        self.assertEqual(chart_audit.expected_chart_type, ChartType.COLUMN.value)
+        self.assertEqual(chart_audit.rendered_chart_type, ChartType.COLUMN.value)
+        self.assertEqual(chart_audit.expected_chart_series_count, 1)
+        self.assertEqual(chart_audit.rendered_chart_series_count, 1)
+        self.assertEqual(chart_audit.title_font_sizes, (28.0,))
+        self.assertEqual(chart_audit.subtitle_font_sizes, (18.0,))
         self.assertGreaterEqual(chart_audit.content_width_ratio, 0.9)
         self.assertGreaterEqual(chart_audit.footer_width_ratio, 0.9)
         violations = find_capacity_violations(audits)
         self.assertEqual(violations, [])
+
+    def test_deck_audit_validates_chart_value_axis_number_format(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Chart Axis Format",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Chart Axis Format", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.CHART,
+                    title="Доход по кварталам",
+                    chart=ChartSpec(
+                        chart_id="chart_axis_format",
+                        source_table_id="table_1",
+                        chart_type=ChartType.COLUMN,
+                        title="Доход",
+                        categories=["Q1", "Q2", "Q3"],
+                        series=[
+                            ChartSeries(
+                                name="Доход",
+                                values=[104_300_000.0, 111_300_000.0, 135_700_000.0],
+                            )
+                        ],
+                        confidence=ChartConfidence.HIGH,
+                        value_format="currency",
+                    ),
+                    preferred_layout_key="table",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        chart_audit = next(audit for audit in audits if audit.kind == SlideKind.CHART.value)
+        self.assertEqual(chart_audit.expected_chart_value_axis_number_format, '0.0,," млн ₽"')
+        self.assertEqual(chart_audit.rendered_chart_value_axis_number_format, '0.0,," млн ₽"')
+        self.assertEqual(find_capacity_violations(audits), [])
+
+    def test_deck_audit_flags_chart_semantic_mismatch(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Combo mismatch",
+            kind=SlideKind.CHART.value,
+            layout_key="table",
+            body_char_count=0,
+            body_font_sizes=(),
+            profile=profile_for_layout("table"),
+            has_chart=True,
+            content_width=PptxGenerator.FULL_CONTENT_WIDTH_EMU,
+            footer_width=PptxGenerator.FULL_CONTENT_WIDTH_EMU,
+            expected_chart_type=ChartType.COMBO.value,
+            rendered_chart_type=ChartType.COLUMN.value,
+            expected_chart_series_count=3,
+            rendered_chart_series_count=2,
+            rendered_chart_bar_series_count=2,
+            rendered_chart_line_series_count=0,
+        )
+
+        violations = find_capacity_violations([audit])
+
+        rules = {violation.rule for violation in violations}
+        self.assertIn("chart_type_mismatch", rules)
+        self.assertIn("chart_series_count_mismatch", rules)
+        self.assertIn("combo_chart_structure_mismatch", rules)
+
+    def test_deck_audit_flags_chart_axis_number_format_mismatch(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Axis format mismatch",
+            kind=SlideKind.CHART.value,
+            layout_key="table",
+            body_char_count=0,
+            body_font_sizes=(),
+            profile=profile_for_layout("table"),
+            has_chart=True,
+            content_width=PptxGenerator.FULL_CONTENT_WIDTH_EMU,
+            footer_width=PptxGenerator.FULL_CONTENT_WIDTH_EMU,
+            expected_chart_type=ChartType.COLUMN.value,
+            rendered_chart_type=ChartType.COLUMN.value,
+            expected_chart_series_count=1,
+            rendered_chart_series_count=1,
+            expected_chart_value_axis_number_format='0.0,," млн ₽"',
+            rendered_chart_value_axis_number_format="#,##0",
+        )
+
+        violations = find_capacity_violations([audit])
+
+        rules = {violation.rule for violation in violations}
+        self.assertIn("chart_value_axis_number_format_mismatch", rules)
+
+    def test_deck_audit_flags_chart_title_and_subtitle_font_mismatch(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Chart font mismatch",
+            kind=SlideKind.CHART.value,
+            layout_key="table",
+            body_char_count=0,
+            body_font_sizes=(),
+            title_font_sizes=(8.0,),
+            subtitle_font_sizes=(8.0,),
+            profile=profile_for_layout("table"),
+            has_chart=True,
+            content_width=PptxGenerator.FULL_CONTENT_WIDTH_EMU,
+            footer_width=PptxGenerator.FULL_CONTENT_WIDTH_EMU,
+            expected_chart_type=ChartType.COLUMN.value,
+            rendered_chart_type=ChartType.COLUMN.value,
+            expected_chart_series_count=1,
+            rendered_chart_series_count=1,
+        )
+
+        violations = find_capacity_violations([audit])
+
+        rules = {violation.rule for violation in violations}
+        self.assertIn("chart_title_font_mismatch", rules)
+        self.assertIn("chart_subtitle_font_mismatch", rules)
 
     def test_deck_audit_validates_image_layout_geometry(self) -> None:
         small_png_base64 = (
@@ -1968,6 +2097,61 @@ class ProjectContractTests(unittest.TestCase):
                     for shape in slide.shapes
                 )
                 self.assertTrue(rendered_payload.strip() or has_visual_payload)
+
+    def test_prototype_template_chart_image_binding_renders_chart_shape(self) -> None:
+        manifests = [
+            manifest
+            for manifest in self.registry.list_templates()
+            if manifest.generation_mode.value == "prototype"
+            and any(any(token.binding == "chart_image" for token in prototype.tokens) for prototype in manifest.prototype_slides)
+        ]
+        self.assertTrue(manifests)
+
+        for manifest in manifests:
+            template_path = self.settings.templates_dir / manifest.template_id / manifest.source_pptx
+            if not template_path.exists():
+                continue
+
+            with self.subTest(template_id=manifest.template_id):
+                plan = PresentationPlan(
+                    template_id=manifest.template_id,
+                    title=f"{manifest.display_name} Chart Contract",
+                    slides=[
+                        SlideSpec(kind=SlideKind.TITLE, title=f"{manifest.display_name} Chart Contract", preferred_layout_key="cover"),
+                        SlideSpec(
+                            kind=SlideKind.CHART,
+                            title="Выручка",
+                            subtitle="Prototype chart_image binding должен стать реальным chart shape",
+                            chart=ChartSpec(
+                                chart_id="chart_prototype",
+                                source_table_id="table_1",
+                                chart_type=ChartType.COLUMN,
+                                title="Выручка",
+                                categories=["Q1", "Q2", "Q3"],
+                                series=[ChartSeries(name="Выручка", values=[120.0, 200.0, 90.0])],
+                                confidence=ChartConfidence.HIGH,
+                            ),
+                            preferred_layout_key="table",
+                        ),
+                    ],
+                )
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    output_path = self.generator.generate(
+                        template_path=template_path,
+                        manifest=manifest,
+                        plan=plan,
+                        output_dir=Path(temp_dir),
+                    )
+                    presentation = Presentation(str(output_path))
+
+                chart_shapes = [
+                    shape
+                    for slide in presentation.slides
+                    for shape in slide.shapes
+                    if getattr(shape, "has_chart", False)
+                ]
+                self.assertEqual(len(chart_shapes), 1)
 
     def _smoke_slides_for_manifest(self, manifest) -> list[SlideSpec]:
         slides = [SlideSpec(kind=SlideKind.TITLE, title=f"{manifest.display_name} Smoke", preferred_layout_key="cover")]
