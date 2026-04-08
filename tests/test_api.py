@@ -54,7 +54,10 @@ class ApiContractTests(unittest.TestCase):
         importlib.reload(routes_module)
 
     def test_health_endpoint_returns_ok(self) -> None:
-        self.assertEqual(routes_module.healthcheck(), {"status": "ok"})
+        response = routes_module.healthcheck()
+        self.assertEqual(response["status"], "ok")
+        self.assertIn("commit", response)
+        self.assertIn("branch", response)
 
     def test_templates_endpoint_lists_available_templates(self) -> None:
         templates = routes_module.list_templates()

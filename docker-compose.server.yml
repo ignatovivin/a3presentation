@@ -7,6 +7,8 @@ services:
     environment:
       TEMPLATES_DIR: /app/storage/templates
       OUTPUTS_DIR: /data/outputs
+      APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unknown}
+      APP_COMMIT_BRANCH: ${APP_COMMIT_BRANCH:-unknown}
     volumes:
       - ./data/outputs:/data/outputs
 

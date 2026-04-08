@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -38,7 +39,11 @@ generator = PptxGenerator()
 
 @router.get("/health")
 def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "commit": os.getenv("APP_COMMIT_SHA", "unknown"),
+        "branch": os.getenv("APP_COMMIT_BRANCH", "unknown"),
+    }
 
 
 @router.get("/templates")
