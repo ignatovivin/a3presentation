@@ -15,6 +15,8 @@ from a3presentation.domain.presentation import (
 )
 from a3presentation.domain.semantic import DocumentKind, SemanticDocument, SemanticImage, SemanticSection
 from a3presentation.services.layout_capacity import (
+    DENSE_TEXT_FULL_WIDTH_PROFILE,
+    LayoutCapacityProfile,
     LIST_FULL_WIDTH_PROFILE,
     TEXT_FULL_WIDTH_PROFILE,
 )
@@ -223,13 +225,13 @@ class TextToPlanService:
 
         return SlideSpec(
             kind=SlideKind.CHART,
-            title=slide.title,
-            subtitle=slide.subtitle,
-            text=slide.text,
-            bullets=slide.bullets,
-            content_blocks=slide.content_blocks,
-            left_bullets=slide.left_bullets,
-            right_bullets=slide.right_bullets,
+            title=override.selected_chart.title or slide.title,
+            subtitle="",
+            text=None,
+            bullets=[],
+            content_blocks=[],
+            left_bullets=[],
+            right_bullets=[],
             chart=override.selected_chart.model_copy(deep=True),
             source_table_id=table_id,
             notes=slide.notes,
@@ -916,7 +918,11 @@ class TextToPlanService:
         if all(unit.kind == "paragraph" for unit in units):
             slides: list[SlideSpec] = []
             text_units = self._refine_text_continuation_units([unit.text for unit in units])
-            batches = self._chunk_text_for_slides(text_units)
+            batches, profile = self._choose_text_continuation_batches(
+                text_units,
+                title=section.title,
+                subtitle=section.subtitle or "",
+            )
             for index, batch in enumerate(batches):
                 slide_title = section.title if index == 0 else f"{section.title} ({index + 1})"
                 content_blocks = self._paragraph_blocks_from_parts(*batch)
@@ -938,7 +944,7 @@ class TextToPlanService:
                         text=primary_text,
                         notes=secondary_text,
                         content_blocks=content_blocks,
-                        preferred_layout_key="text_full_width",
+                        preferred_layout_key=profile.layout_key,
                     )
                 )
             return slides
@@ -1040,7 +1046,12 @@ class TextToPlanService:
         title: str = "",
         subtitle: str = "",
     ) -> tuple[list[list[str]], LayoutCapacityProfile]:
-        regular_batches = self._chunk_text_for_slides(chunks, profile=self.text_profile)
+        regular_batches = self._chunk_text_for_slides(
+            chunks,
+            profile=self.text_profile,
+            title=title,
+            subtitle=subtitle,
+        )
         dense_batches = self._chunk_text_for_slides(
             chunks,
             profile=DENSE_TEXT_FULL_WIDTH_PROFILE,
@@ -1102,7 +1113,7 @@ class TextToPlanService:
                 and len(current_batch) > 1
                 and self._looks_like_inline_section_heading(current_batch[-1])
                 and not self._looks_like_inline_section_heading(chunk)
-                and current_chars >= int(self.text_profile.max_chars * 0.45)
+                and current_chars >= int(profile.max_chars * 0.45)
             ):
                 trailing_heading = current_batch.pop()
                 batches.append(current_batch)
@@ -1111,9 +1122,9 @@ class TextToPlanService:
                 current_chars = len(trailing_heading)
 
             if current_batch and (
-                len(current_batch) >= self.text_profile.max_items
-                or current_weight + chunk_weight > self._text_slide_weight_budget()
-                or current_chars + len(chunk) > self.text_profile.max_chars
+                len(current_batch) >= profile.max_items
+                or current_weight + chunk_weight > profile.max_weight
+                or current_chars + len(chunk) > profile.max_chars
             ):
                 if (
                     len(current_batch) > 1
@@ -1138,7 +1149,7 @@ class TextToPlanService:
         if current_batch:
             batches.append(current_batch)
 
-        return self._rebalance_text_batches(batches)
+        return self._rebalance_text_batches(batches, profile=profile)
 
     def _refine_text_continuation_units(self, chunks: list[str]) -> list[str]:
         refined: list[str] = []
@@ -1153,11 +1164,17 @@ class TextToPlanService:
             )
         return refined or [chunk for chunk in chunks if chunk.strip()]
 
-    def _rebalance_text_batches(self, batches: list[list[str]]) -> list[list[str]]:
+    def _rebalance_text_batches(
+        self,
+        batches: list[list[str]],
+        *,
+        profile: LayoutCapacityProfile | None = None,
+    ) -> list[list[str]]:
+        profile = profile or self.text_profile
         if len(batches) <= 1:
             return batches
 
-        min_tail_chars = max(int(self.text_profile.target_fill_ratio * self.text_profile.max_chars) - 160, 180)
+        min_tail_chars = max(int(profile.target_fill_ratio * profile.max_chars) - 160, 180)
         rebalanced = [batch.copy() for batch in batches if batch]
         if len(rebalanced) <= 1:
             return rebalanced
@@ -1175,7 +1192,7 @@ class TextToPlanService:
             projected_next = [trailing_chunk, *next_batch]
             projected_chars = sum(len(chunk) for chunk in projected_next)
             projected_weight = sum(self._estimate_text_chunk_weight(chunk) for chunk in projected_next)
-            if projected_chars > self.text_profile.max_chars or projected_weight > self._text_slide_weight_budget():
+            if projected_chars > profile.max_chars or projected_weight > profile.max_weight:
                 continue
             next_batch.insert(0, current.pop())
 
@@ -1195,7 +1212,7 @@ class TextToPlanService:
                 candidate_weight = self._estimate_text_chunk_weight(candidate)
                 projected_chars = current_chars + candidate_chars
                 projected_weight = current_weight + candidate_weight
-                if projected_chars > self.text_profile.max_chars or projected_weight > self._text_slide_weight_budget():
+                if projected_chars > profile.max_chars or projected_weight > profile.max_weight:
                     break
                 current.insert(0, previous.pop())
                 current_chars = projected_chars
@@ -2050,8 +2067,10 @@ class TextToPlanService:
         total_weight = sum(self._continuation_unit_weight(unit) for unit in units)
         total_chars = sum(len(unit.text) for unit in units)
         if all_text:
-            batches = self._chunk_text_for_slides(
-                self._refine_text_continuation_units([unit.text for unit in units if unit.text.strip()])
+            batches, profile = self._choose_text_continuation_batches(
+                self._refine_text_continuation_units([unit.text for unit in units if unit.text.strip()]),
+                title=base_title,
+                subtitle=subtitle,
             )
             rebuilt: list[SlideSpec] = []
             for index, batch in enumerate(batches):
@@ -2070,7 +2089,7 @@ class TextToPlanService:
                         text=primary_text,
                         notes=secondary_text,
                         content_blocks=content_blocks,
-                        preferred_layout_key="text_full_width",
+                        preferred_layout_key=profile.layout_key,
                     )
                 )
             return self._compact_continuation_slides(rebuilt or slides, base_title, subtitle)
@@ -2167,6 +2186,8 @@ class TextToPlanService:
             len(block.items) for block in content_blocks if block.kind == SlideContentBlockKind.BULLET_LIST
         )
         if paragraph_block_count >= bullet_item_count and paragraph_block_count > 0:
+            if preferred_layout_key == "dense_text_full_width":
+                return DENSE_TEXT_FULL_WIDTH_PROFILE.max_chars, DENSE_TEXT_FULL_WIDTH_PROFILE.max_weight, None
             if preferred_layout_key == "text_full_width":
                 return self.text_profile.max_chars, self._text_slide_weight_budget(), None
             return (
@@ -2183,6 +2204,8 @@ class TextToPlanService:
 
     def _continuation_bucket_min_payload_chars(self, units: list[ContinuationUnit]) -> int:
         max_chars, _, _ = self._continuation_units_render_limits(units)
+        if max_chars == DENSE_TEXT_FULL_WIDTH_PROFILE.max_chars:
+            return max(int(DENSE_TEXT_FULL_WIDTH_PROFILE.target_fill_ratio * max_chars) - 260, 220)
         if max_chars <= self.text_profile.max_chars:
             return max(int(self.text_profile.target_fill_ratio * max_chars) - 240, 150)
         return max(int(self.list_profile.target_fill_ratio * max_chars) - 260, 160)
@@ -2489,8 +2512,15 @@ class TextToPlanService:
         )
         if bullet_items:
             if bullet_items <= 1 and paragraph_like_chars >= 180:
+                if (
+                    total_chars > self.text_profile.max_chars
+                    and total_chars <= min(DENSE_TEXT_FULL_WIDTH_PROFILE.max_chars, self.text_profile.max_chars + 60)
+                ):
+                    return "dense_text_full_width"
                 return "text_full_width"
-            if bullet_items <= 2 and paragraph_like_chars >= 260 and total_chars <= self.list_profile.max_chars:
+            if bullet_items <= 2 and paragraph_like_chars >= 260 and total_chars <= DENSE_TEXT_FULL_WIDTH_PROFILE.max_chars:
+                if total_chars > self.text_profile.max_chars and total_chars <= (self.text_profile.max_chars + 60):
+                    return "dense_text_full_width"
                 return "text_full_width"
             return "list_full_width"
 

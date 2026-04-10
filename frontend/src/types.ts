@@ -166,6 +166,7 @@ export type ChartSpec = {
   chart_id: string;
   source_table_id: string;
   chart_type: ChartType;
+  variant_label?: string | null;
   title?: string | null;
   categories: string[];
   series: ChartSeries[];
@@ -177,6 +178,7 @@ export type ChartSpec = {
   stacking: string;
   confidence: ChartConfidence;
   warnings: string[];
+  transpose_allowed: boolean;
 };
 
 export type ChartabilityAssessment = {

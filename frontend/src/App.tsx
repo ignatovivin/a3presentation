@@ -48,6 +48,28 @@ function isSystemHint(hint: string): boolean {
   return hint.startsWith("classified as ") || hint.startsWith("detected ") || hint.startsWith("generated ");
 }
 
+function chartVariantPriority(spec: ChartSpec): number {
+  const label = spec.variant_label?.toLowerCase() ?? "";
+  if (label.startsWith("сравнение")) {
+    return 0;
+  }
+  if (spec.chart_type === "combo" || label.startsWith("комбинированный")) {
+    return 0;
+  }
+  if (label.startsWith("единичный")) {
+    return 1;
+  }
+  return 3;
+}
+
+function isSelectableChartType(chartType: string): boolean {
+  return chartType !== "combo";
+}
+
+function chartControlType(spec: ChartSpec): string {
+  return spec.chart_type === "combo" ? "column" : spec.chart_type;
+}
+
 export function App() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState(PRIMARY_TEMPLATE_ID);
@@ -58,13 +80,9 @@ export function App() {
   const [chartSelectionByTableId, setChartSelectionByTableId] = useState<Record<string, string>>({});
   const [chartModeByTableId, setChartModeByTableId] = useState<Record<string, "table" | "chart">>({});
   const [hiddenSeriesByTableId, setHiddenSeriesByTableId] = useState<Record<string, string[]>>({});
-  const [chartOrientationByTableId, setChartOrientationByTableId] = useState<Record<string, "default" | "transposed">>({});
   const [savedChartSelectionByTableId, setSavedChartSelectionByTableId] = useState<Record<string, string>>({});
   const [savedChartModeByTableId, setSavedChartModeByTableId] = useState<Record<string, "table" | "chart">>({});
   const [savedHiddenSeriesByTableId, setSavedHiddenSeriesByTableId] = useState<Record<string, string[]>>({});
-  const [savedChartOrientationByTableId, setSavedChartOrientationByTableId] = useState<
-    Record<string, "default" | "transposed">
-  >({});
   const [generationResult, setGenerationResult] = useState<GeneratePresentationResponse | null>(null);
   const [error, setError] = useState("");
   const [showLoadingNotice, setShowLoadingNotice] = useState(true);
@@ -107,7 +125,7 @@ export function App() {
           const nextChartSelectionByTableId: Record<string, string> = Object.fromEntries(
             result.chart_assessments
               .filter((assessment) => assessment.candidate_specs.length > 0)
-              .map((assessment) => [assessment.table_id, assessment.candidate_specs[0].chart_id]),
+              .map((assessment) => [assessment.table_id, preferredChartSpec(assessment)?.chart_id ?? assessment.candidate_specs[0].chart_id]),
           );
           const nextChartModeByTableId: Record<string, "table" | "chart"> = Object.fromEntries(
             result.chart_assessments
@@ -124,11 +142,9 @@ export function App() {
           setChartSelectionByTableId(nextChartSelectionByTableId);
           setChartModeByTableId(nextChartModeByTableId);
           setHiddenSeriesByTableId({});
-          setChartOrientationByTableId({});
           setSavedChartSelectionByTableId(nextChartSelectionByTableId);
           setSavedChartModeByTableId(nextChartModeByTableId);
           setSavedHiddenSeriesByTableId({});
-          setSavedChartOrientationByTableId({});
         })
         .catch((err: Error) => {
           setError(err.message);
@@ -151,7 +167,6 @@ export function App() {
       const effectiveChartSelectionByTableId = savedChartSelectionByTableId;
       const effectiveChartModeByTableId = savedChartModeByTableId;
       const effectiveHiddenSeriesByTableId = savedHiddenSeriesByTableId;
-      const effectiveChartOrientationByTableId = savedChartOrientationByTableId;
 
       const chartOverrides: ChartOverride[] = chartAssessments.map((assessment) => {
         const mode = effectiveChartModeByTableId[assessment.table_id] ?? "table";
@@ -161,7 +176,6 @@ export function App() {
                 assessment,
                 effectiveChartSelectionByTableId,
                 effectiveHiddenSeriesByTableId,
-                effectiveChartOrientationByTableId,
               )
             : null;
         return {
@@ -189,52 +203,20 @@ export function App() {
     assessment: ChartabilityAssessment,
     selectionByTableId = chartSelectionByTableId,
     hiddenByTableId = hiddenSeriesByTableId,
-    orientationByTableId = chartOrientationByTableId,
   ): ChartSpec | null {
     const chartId = selectionByTableId[assessment.table_id];
-    const baseSpec = assessment.candidate_specs.find((item) => item.chart_id === chartId) ?? assessment.candidate_specs[0] ?? null;
+    const baseSpec = assessment.candidate_specs.find((item) => item.chart_id === chartId) ?? preferredChartSpec(assessment) ?? null;
     if (!baseSpec) {
       return null;
     }
 
-    const orientation = orientationByTableId[assessment.table_id] ?? "default";
-    const orientedSpec = orientation === "transposed" ? transposeChartSpec(baseSpec) : baseSpec;
     const hiddenSeries = new Set(hiddenByTableId[assessment.table_id] ?? []);
     return {
-      ...orientedSpec,
-      chart_id: `${orientedSpec.chart_id}:${orientation}`,
-      series: orientedSpec.series.map((series) => ({
+      ...baseSpec,
+      chart_id: `${baseSpec.chart_id}:default`,
+      series: baseSpec.series.map((series) => ({
         ...series,
         hidden: hiddenSeries.has(series.name),
-      })),
-    };
-  }
-
-  function canTransposeChart(spec: ChartSpec | null): boolean {
-    if (!spec) {
-      return false;
-    }
-    if (spec.categories.length < 2 || spec.series.length < 2) {
-      return false;
-    }
-    return spec.series.every((series) => series.values.length === spec.categories.length);
-  }
-
-  function transposeChartSpec(spec: ChartSpec): ChartSpec {
-    if (!canTransposeChart(spec)) {
-      return spec;
-    }
-
-    return {
-      ...spec,
-      title: spec.title ? `${spec.title} · разворот` : spec.title,
-      categories: spec.series.map((series) => series.name),
-      series: spec.categories.map((category, categoryIndex) => ({
-        name: category,
-        values: spec.series.map((series) => series.values[categoryIndex] ?? 0),
-        unit: spec.series[0]?.unit ?? null,
-        axis: "primary",
-        hidden: false,
       })),
     };
   }
@@ -257,8 +239,7 @@ export function App() {
   const hasUnsavedStructureChanges =
     JSON.stringify(chartSelectionByTableId) !== JSON.stringify(savedChartSelectionByTableId) ||
     JSON.stringify(chartModeByTableId) !== JSON.stringify(savedChartModeByTableId) ||
-    JSON.stringify(hiddenSeriesByTableId) !== JSON.stringify(savedHiddenSeriesByTableId) ||
-    JSON.stringify(chartOrientationByTableId) !== JSON.stringify(savedChartOrientationByTableId);
+    JSON.stringify(hiddenSeriesByTableId) !== JSON.stringify(savedHiddenSeriesByTableId);
   const chartableAssessments = chartAssessments.filter((assessment) => assessment.chartable);
   const visibleAssessments = showAllTablesInDrawer ? chartAssessments : chartableAssessments;
 
@@ -266,7 +247,6 @@ export function App() {
     setSavedChartSelectionByTableId(chartSelectionByTableId);
     setSavedChartModeByTableId(chartModeByTableId);
     setSavedHiddenSeriesByTableId(hiddenSeriesByTableId);
-    setSavedChartOrientationByTableId(chartOrientationByTableId);
     setIsStructureDrawerOpen(false);
   }
 
@@ -298,6 +278,58 @@ export function App() {
     return chartTypeLabels[chartType] ?? chartType;
   }
 
+  function chartOptionLabel(spec: ChartSpec): string {
+    const variantLabel = spec.variant_label?.trim();
+    if (spec.chart_type === "combo") {
+      return `Сравнение: ${spec.series.map((series) => series.name).join(", ")}`;
+    }
+    if (variantLabel) {
+      return variantLabel;
+    }
+    return chartTypeLabel(spec.chart_type);
+  }
+
+  function chartTypeOptions(assessment: ChartabilityAssessment): string[] {
+    return assessment.candidate_specs.reduce<string[]>((accumulator, spec) => {
+      const chartType = chartControlType(spec);
+      if (isSelectableChartType(chartType) && !accumulator.includes(chartType)) {
+        accumulator.push(chartType);
+      }
+      return accumulator;
+    }, []);
+  }
+
+  function selectedChartType(assessment: ChartabilityAssessment, selectedSpec: ChartSpec | null): string {
+    if (selectedSpec) {
+      const chartType = chartControlType(selectedSpec);
+      if (isSelectableChartType(chartType)) {
+        return chartType;
+      }
+    }
+    return chartTypeOptions(assessment)[0] ?? preferredChartSpec(assessment)?.chart_type ?? "";
+  }
+
+  function candidateSpecsForChartType(assessment: ChartabilityAssessment, chartType: string): ChartSpec[] {
+    return assessment.candidate_specs
+      .filter((spec) => chartControlType(spec) === chartType)
+      .sort((left, right) => chartVariantPriority(left) - chartVariantPriority(right));
+  }
+
+  function hasVariantChoices(assessment: ChartabilityAssessment, chartType: string): boolean {
+    if (!isSelectableChartType(chartType)) {
+      return false;
+    }
+    return candidateSpecsForChartType(assessment, chartType).length > 1;
+  }
+
+  function preferredChartSpec(assessment: ChartabilityAssessment): ChartSpec | null {
+    const selectable = assessment.candidate_specs.filter((spec) => isSelectableChartType(chartControlType(spec)));
+    const ordered = (selectable.length ? selectable : assessment.candidate_specs).sort(
+      (left, right) => chartVariantPriority(left) - chartVariantPriority(right),
+    );
+    return ordered[0] ?? null;
+  }
+
   function chartCardTitle(assessment: ChartabilityAssessment, selectedSpec: ChartSpec | null): string {
     if (selectedSpec?.title?.trim()) {
       return selectedSpec.title.trim();
@@ -313,10 +345,11 @@ export function App() {
     return assessment.chartable ? "Таблица для графика" : "Таблица документа";
   }
 
-  function chartCardDescription(assessment: ChartabilityAssessment): string {
-    return assessment.chartable
-      ? "Эту таблицу можно использовать для графика."
-      : "Для этой таблицы лучше оставить табличный вид, чтобы не исказить данные.";
+  function chartCardDescription(assessment: ChartabilityAssessment, selectedSpec: ChartSpec | null): string {
+    if (!assessment.chartable) {
+      return "Для этой таблицы лучше оставить табличный вид, чтобы не исказить данные.";
+    }
+    return "Эту таблицу можно использовать для графика.";
   }
 
   function assessmentHints(assessment: ChartabilityAssessment): string[] {
@@ -332,7 +365,7 @@ export function App() {
     <main className="app-shell" data-testid="app-shell">
       <section className="hero-block" data-node-id="634:1739">
         <h1 className="hero-title" data-node-id="633:1698">
-          A3 Presentation
+          Создай свою презентацию
         </h1>
         <p className="hero-description" data-node-id="633:3191">
           Превращайте документ в готовую презентацию в корпоративном стиле
@@ -393,7 +426,7 @@ export function App() {
             </div>
 
             <div className="actions-row" data-node-id="634:1772">
-              <label className="secondary-button" data-node-id="633:2618" data-testid="upload-document-trigger">
+              <label className="secondary-button file-button" data-node-id="644:3605" data-testid="upload-document-trigger">
                 <input
                   type="file"
                   accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -402,7 +435,13 @@ export function App() {
                   aria-label="Загрузить документ"
                   onChange={handleTextFileUpload}
                 />
-                <span>Загрузить документ</span>
+                <svg className="file-button-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <path
+                    d="M8 2.25a.75.75 0 0 1 .75.75v5.19l1.72-1.72a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 1.06-1.06l1.72 1.72V3A.75.75 0 0 1 8 2.25ZM3.25 12a.75.75 0 0 1 .75.75h8a.75.75 0 0 1 1.5 0V13a1.25 1.25 0 0 1-1.25 1.25h-8.5A1.25 1.25 0 0 1 2.5 13v-.25A.75.75 0 0 1 3.25 12Z"
+                    fill="currentColor"
+                  />
+                </svg>
+                <span>Файл</span>
               </label>
 
               <div className="actions-group">
@@ -481,7 +520,10 @@ export function App() {
                 const selectedSpec = selectedChartSpec(assessment);
                 const mode = chartModeByTableId[assessment.table_id] ?? "table";
                 const selectedChartId =
-                  chartSelectionByTableId[assessment.table_id] ?? assessment.candidate_specs[0]?.chart_id ?? "";
+                  chartSelectionByTableId[assessment.table_id] ?? preferredChartSpec(assessment)?.chart_id ?? "";
+                const selectedType = selectedChartType(assessment, selectedSpec);
+                const typeOptions = chartTypeOptions(assessment);
+                const variantOptions = candidateSpecsForChartType(assessment, selectedType);
 
                 return (
                   <Card className="preview-card" key={assessment.table_id}>
@@ -491,7 +533,7 @@ export function App() {
                         {chartCardTitle(assessment, selectedSpec)}
                       </CardTitle>
                       <CardDescription>
-                        {chartCardDescription(assessment)}
+                        {chartCardDescription(assessment, selectedSpec)}
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="preview-card-content">
@@ -519,36 +561,42 @@ export function App() {
                         ) : (
                           <div className="preview-toolbar-note">Для этой таблицы вариант с графиком не предлагается.</div>
                         )}
-                        {assessment.chartable && mode === "chart" && assessment.candidate_specs.length > 1 ? (
+                        {assessment.chartable && mode === "chart" && typeOptions.length > 1 ? (
                           <Select
                             className="chart-type-select"
                             data-testid={`chart-type-${assessment.table_id}`}
+                            value={selectedType}
+                            onChange={(event) => {
+                              const nextType = event.target.value;
+                              const nextVariant = candidateSpecsForChartType(assessment, nextType)[0];
+                              if (!nextVariant) {
+                                return;
+                              }
+                              setChartSelectionByTableId((current) => ({ ...current, [assessment.table_id]: nextVariant.chart_id }));
+                              setHiddenSeriesByTableId((current) => ({ ...current, [assessment.table_id]: [] }));
+                            }}
+                          >
+                            {typeOptions.map((chartType) => (
+                              <option key={chartType} value={chartType}>
+                                {chartTypeLabel(chartType)}
+                              </option>
+                            ))}
+                          </Select>
+                        ) : null}
+                        {assessment.chartable && mode === "chart" && hasVariantChoices(assessment, selectedType) ? (
+                          <Select
+                            className="chart-type-select"
+                            data-testid={`chart-variant-${assessment.table_id}`}
                             value={selectedChartId}
                             onChange={(event) =>
                               setChartSelectionByTableId((current) => ({ ...current, [assessment.table_id]: event.target.value }))
                             }
                           >
-                            {assessment.candidate_specs.map((spec) => (
+                            {variantOptions.map((spec) => (
                               <option key={spec.chart_id} value={spec.chart_id}>
-                                {chartTypeLabel(spec.chart_type)}
+                                {chartOptionLabel(spec)}
                               </option>
                             ))}
-                          </Select>
-                        ) : null}
-                        {assessment.chartable && mode === "chart" && canTransposeChart(selectedSpec) ? (
-                          <Select
-                            className="chart-type-select"
-                            data-testid={`chart-orientation-${assessment.table_id}`}
-                            value={chartOrientationByTableId[assessment.table_id] ?? "default"}
-                            onChange={(event) =>
-                              setChartOrientationByTableId((current) => ({
-                                ...current,
-                                [assessment.table_id]: event.target.value as "default" | "transposed",
-                              }))
-                            }
-                          >
-                            <option value="default">Ряды по колонкам</option>
-                            <option value="transposed">Ряды по строкам</option>
                           </Select>
                         ) : null}
                       </div>

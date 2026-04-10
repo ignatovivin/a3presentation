@@ -97,9 +97,9 @@ button {
 .hero-block {
   width: min(920px, 100%);
   position: absolute;
-  top: 50%;
+  top: min(420px, calc(50vh - 105px));
   left: 50%;
-  transform: translate(-50%, -90%);
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -110,8 +110,8 @@ button {
 .hero-title {
   margin: 0;
   font-family: "Mont", "Geist", sans-serif;
-  font-size: clamp(36px, 4vw, 52px);
-  line-height: 1;
+  font-size: 52px;
+  line-height: 40px;
   font-weight: 600;
   color: #222222;
 }
@@ -126,20 +126,25 @@ button {
 }
 
 .composer-card {
-  width: min(608px, 100%);
+  width: min(600px, 100%);
+  height: 204px;
   background: #ffffff;
-  border-radius: 24px;
-  padding: 16px;
-  box-shadow: 0 16px 48px rgba(26, 26, 26, 0.06);
+  border-radius: 16px;
+  padding: 16px 16px 12px;
+  overflow: hidden;
 }
 
 .composer-stack {
-  width: min(608px, 100%);
+  width: min(600px, calc(100% - 32px));
+  position: absolute;
+  top: auto;
+  bottom: 0;
+  left: calc(50% - 4px);
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 20px;
-  margin-top: auto;
 }
 
 .preview-gallery {
@@ -169,13 +174,13 @@ button {
 }
 
 .chart-type-select {
-  height: 42px;
-  min-height: 42px;
+  height: 36px;
+  min-height: 36px;
   min-width: 220px;
   max-width: 260px;
   padding-top: 0;
   padding-bottom: 0;
-  line-height: 42px;
+  line-height: 20px;
   padding-right: 42px;
   appearance: none;
   background-image:
@@ -286,6 +291,10 @@ button {
   align-items: stretch;
 }
 
+.chart-preview-frame.has-secondary-axis {
+  grid-template-columns: 76px minmax(0, 1fr) 76px;
+}
+
 .chart-preview-frame.is-pie {
   align-items: start;
 }
@@ -362,6 +371,7 @@ button {
 }
 
 .chart-preview-bars {
+  height: 220px;
   min-height: 220px;
   display: flex;
   align-items: end;
@@ -371,10 +381,13 @@ button {
 
 .chart-preview-bar-wrap {
   flex: 1 1 0;
+  height: 100%;
   display: grid;
+  grid-template-rows: max-content minmax(14px, 1fr);
   gap: 6px;
   justify-items: center;
   align-items: end;
+  align-content: end;
 }
 
 .chart-preview-bar-value {
@@ -386,6 +399,7 @@ button {
 }
 
 .chart-preview-bar {
+  align-self: end;
   width: min(36px, 100%);
   min-height: 14px;
   border-radius: 10px 10px 4px 4px;
@@ -752,20 +766,23 @@ button {
 .composer-inner {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
+  height: 100%;
 }
 
 .textarea-wrap {
-  min-height: 223px;
-  border: 1px solid #e5e5e5;
+  height: 125px;
+  min-height: 36px;
   border-radius: 8px;
   background: #ffffff;
-  padding: 7.5px 12px;
+  padding: 0;
+  overflow: hidden;
 }
 
 .main-textarea {
   width: 100%;
-  min-height: 206px;
+  height: 125px;
+  min-height: 125px;
   resize: none;
   border: 0;
   outline: none;
@@ -785,6 +802,7 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-height: 36px;
 }
 
 .actions-group {
@@ -810,8 +828,15 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   background: #f5f5f5;
   color: #171717;
+}
+
+.file-button-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
 }
 
 .primary-button {
@@ -1105,6 +1130,7 @@ button {
 
 @media (max-width: 768px) {
   .app-shell {
+    min-height: 100vh;
     padding-top: 48px;
     gap: 48px;
   }
@@ -1116,8 +1142,20 @@ button {
   }
 
   .composer-stack {
-    margin-top: 0;
+    position: static;
+    transform: none;
+    left: auto;
+    top: auto;
     width: min(960px, 100%);
+  }
+
+  .composer-card {
+    height: auto;
+  }
+
+  .hero-title {
+    font-size: 40px;
+    line-height: 44px;
   }
 
   .actions-row {
@@ -1160,6 +1198,10 @@ button {
   .chart-preview-frame {
     grid-template-columns: 64px minmax(0, 1fr);
     gap: 12px;
+  }
+
+  .chart-preview-frame.has-secondary-axis {
+    grid-template-columns: 64px minmax(0, 1fr) 64px;
   }
 
   .chart-preview-pie-layout {

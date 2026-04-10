@@ -17,6 +17,13 @@ QUALITY_TEST_NAMES = [
     "tests.test_regression_corpus.RegressionCorpusTests.test_text_only_markdown_fixture_generates_deck_without_capacity_violations",
     "tests.test_regression_corpus.RegressionCorpusTests.test_mixed_text_fixture_generates_deck_without_capacity_violations",
     "tests.test_regression_corpus.RegressionCorpusTests.test_report_docx_generates_deck_without_capacity_violations",
+    "tests.test_regression_corpus.RegressionCorpusTests.test_source_heavy_report_docx_skips_reference_tail_from_main_deck",
+    "tests.test_regression_corpus.RegressionCorpusTests.test_question_callout_heavy_docx_preserves_semantic_blocks_without_capacity_violations",
+    "tests.test_regression_corpus.RegressionCorpusTests.test_long_title_layout_stress_docx_generates_deck_without_capacity_violations",
+    "tests.test_regression_corpus.RegressionCorpusTests.test_appendix_heavy_docx_generates_appendix_without_capacity_violations",
+    "tests.test_regression_corpus.RegressionCorpusTests.test_long_title_with_subtitle_layout_stress_docx_generates_deck_without_capacity_violations",
+    "tests.test_regression_corpus.RegressionCorpusTests.test_long_title_with_subtitle_dense_continuation_docx_keeps_continuation_balanced",
+    "tests.test_regression_corpus.RegressionCorpusTests.test_long_title_with_subtitle_reference_tail_docx_skips_sources_and_keeps_layout_green",
     "tests.test_regression_corpus.RegressionCorpusTests.test_strategy_edge_case_docx_generates_deck_without_capacity_violations",
     "tests.test_regression_corpus.RegressionCorpusTests.test_form_like_docx_generates_deck_without_capacity_violations",
     "tests.test_regression_corpus.RegressionCorpusTests.test_resume_like_docx_generates_deck_without_capacity_violations",
@@ -24,6 +31,9 @@ QUALITY_TEST_NAMES = [
     "tests.test_regression_corpus.RegressionCorpusTests.test_chart_heavy_docx_generates_chart_slide_and_preserves_text_capacity_contract",
     "tests.test_regression_corpus.RegressionCorpusTests.test_image_heavy_docx_generates_image_slide_and_preserves_text_capacity_contract",
     "tests.test_regression_corpus.RegressionCorpusTests.test_fact_only_docx_generates_appendix_without_capacity_violations",
+    "tests.test_project_contracts.ProjectContractTests.test_deck_audit_uses_analyzer_geometry_metadata_for_uploaded_layout_templates",
+    "tests.test_project_contracts.ProjectContractTests.test_deck_audit_uses_manifest_geometry_metadata_for_uploaded_prototype_templates",
+    "tests.test_project_contracts.ProjectContractTests.test_full_pipeline_contract_for_uploaded_prototype_template_keeps_template_aware_audit_green",
 ]
 
 

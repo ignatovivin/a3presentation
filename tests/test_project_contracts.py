@@ -333,6 +333,8 @@ class ProjectContractTests(unittest.TestCase):
         self.assertFalse(any(item.rule == "body_left_misalignment" for item in violations))
         self.assertFalse(any(item.rule == "body_margin_mismatch" for item in violations))
         self.assertLess(audits[0].profile.max_chars, TEXT_FULL_WIDTH_PROFILE.max_chars)
+        self.assertTrue(audits[0].body_font_sizes)
+        self.assertLessEqual(max(audits[0].body_font_sizes), audits[0].profile.max_font_pt)
 
     def test_generator_applies_manifest_geometry_metadata_for_uploaded_prototype_templates(self) -> None:
         template_id = "razmeshchenie_soglasiy"
@@ -431,7 +433,12 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(audits)
         self.assertFalse(any(item.rule == "body_left_misalignment" for item in violations))
         self.assertFalse(any(item.rule == "body_margin_mismatch" for item in violations))
+        self.assertEqual(audits[0].footer_placeholder_idx, 17)
+        self.assertFalse(any(item.rule == "narrow_footer" for item in violations))
+        self.assertFalse(any(item.rule == "footer_left_misalignment" for item in violations))
         self.assertLess(audits[0].profile.max_chars, TEXT_FULL_WIDTH_PROFILE.max_chars)
+        self.assertTrue(audits[0].body_font_sizes)
+        self.assertLessEqual(max(audits[0].body_font_sizes), audits[0].profile.max_font_pt)
 
     def test_capacity_profile_derivation_reduces_limits_for_narrower_body_geometry(self) -> None:
         reference_body = geometry_policy_for_layout("text_full_width").placeholders[14]
@@ -442,6 +449,19 @@ class ProjectContractTests(unittest.TestCase):
         )
 
         self.assertLess(derived.max_chars, TEXT_FULL_WIDTH_PROFILE.max_chars)
+        self.assertLessEqual(derived.max_font_pt, TEXT_FULL_WIDTH_PROFILE.max_font_pt)
+
+    def test_capacity_profile_derivation_accepts_explicit_reference_geometry(self) -> None:
+        derived = derive_capacity_profile_for_geometry(
+            "text_full_width",
+            width_emu=3600000,
+            height_emu=1800000,
+            reference_width_emu=6000000,
+            reference_height_emu=3000000,
+        )
+
+        self.assertLess(derived.max_chars, TEXT_FULL_WIDTH_PROFILE.max_chars)
+        self.assertLess(derived.max_items, TEXT_FULL_WIDTH_PROFILE.max_items)
         self.assertLessEqual(derived.max_font_pt, TEXT_FULL_WIDTH_PROFILE.max_font_pt)
 
     def test_full_pipeline_contract_for_mixed_docx_document(self) -> None:
@@ -1415,6 +1435,50 @@ class ProjectContractTests(unittest.TestCase):
         violations = find_capacity_violations([audit])
         self.assertIn("subtitle_body_overlap", {violation.rule for violation in violations})
 
+    def test_deck_audit_flags_title_body_gap_drift_for_text_slide(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Раздел",
+            kind=SlideKind.TEXT.value,
+            layout_key="text_full_width",
+            body_char_count=320,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("text_full_width"),
+            title_top=671247,
+            title_height=800000,
+            body_top=2800000,
+            body_height=2400000,
+            footer_top=6384626,
+            footer_width=11198224,
+            body_left=442913,
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("title_body_gap_drift", {violation.rule for violation in violations})
+
+    def test_deck_audit_flags_subtitle_body_gap_drift_for_text_slide(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Раздел",
+            kind=SlideKind.TEXT.value,
+            layout_key="text_full_width",
+            body_char_count=320,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("text_full_width"),
+            title_top=671247,
+            title_height=800000,
+            subtitle_top=1550000,
+            subtitle_height=350000,
+            body_top=3100000,
+            body_height=2200000,
+            footer_top=6384626,
+            footer_width=11198224,
+            body_left=442913,
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("subtitle_body_gap_drift", {violation.rule for violation in violations})
+
     def test_deck_audit_flags_narrow_footer_for_text_layout(self) -> None:
         audit = SlideAudit(
             slide_index=2,
@@ -1435,6 +1499,52 @@ class ProjectContractTests(unittest.TestCase):
 
         violations = find_capacity_violations([audit])
         self.assertIn("narrow_text_footer", {violation.rule for violation in violations})
+
+    def test_deck_audit_flags_narrow_footer_by_placeholder_geometry(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Плотный раздел",
+            kind=SlideKind.TEXT.value,
+            layout_key="dense_text_full_width",
+            body_char_count=320,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("dense_text_full_width"),
+            title_top=671247,
+            title_height=800000,
+            body_top=1900000,
+            body_height=2400000,
+            footer_top=6384626,
+            footer_left=442913,
+            footer_width=3000000,
+            body_left=442913,
+            footer_placeholder_idx=17,
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("narrow_footer", {violation.rule for violation in violations})
+
+    def test_deck_audit_flags_footer_left_misalignment(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Раздел",
+            kind=SlideKind.TEXT.value,
+            layout_key="text_full_width",
+            body_char_count=320,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("text_full_width"),
+            title_top=671247,
+            title_height=800000,
+            body_top=1900000,
+            body_height=2400000,
+            footer_top=6384626,
+            footer_left=900000,
+            footer_width=3371850,
+            body_left=442913,
+            footer_placeholder_idx=17,
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("footer_left_misalignment", {violation.rule for violation in violations})
 
     def test_deck_audit_accepts_balanced_dense_slides_without_capacity_violations(self) -> None:
         plan = PresentationPlan(
@@ -1647,6 +1757,95 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(chart_audit.rendered_chart_value_axis_number_format, '0.0,," млн ₽"')
         self.assertEqual(find_capacity_violations(audits), [])
 
+    def test_deck_audit_validates_secondary_chart_value_axis_number_format(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Chart Secondary Axis Format",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Chart Secondary Axis Format", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.CHART,
+                    title="Выручка и маржа",
+                    chart=ChartSpec(
+                        chart_id="chart_combo_secondary_axis_audit",
+                        source_table_id="table_1",
+                        chart_type=ChartType.COMBO,
+                        title="Выручка и маржа",
+                        categories=["Q1", "Q2", "Q3"],
+                        series=[
+                            ChartSeries(name="Выручка", values=[104_300_000.0, 111_300_000.0, 135_700_000.0], unit="RUB"),
+                            ChartSeries(name="Маржа", values=[18.0, 22.0, 27.0], unit="%"),
+                        ],
+                        confidence=ChartConfidence.HIGH,
+                        value_format="number",
+                    ),
+                    preferred_layout_key="table",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        chart_audit = next(audit for audit in audits if audit.kind == SlideKind.CHART.value)
+        self.assertTrue(chart_audit.expected_chart_secondary_value_axis)
+        self.assertTrue(chart_audit.rendered_chart_secondary_value_axis)
+        self.assertEqual(chart_audit.expected_chart_value_axis_number_format, '0.0,," млн ₽"')
+        self.assertEqual(chart_audit.rendered_chart_value_axis_number_format, '0.0,," млн ₽"')
+        self.assertEqual(chart_audit.expected_chart_secondary_value_axis_number_format, '0"%"')
+        self.assertEqual(chart_audit.rendered_chart_secondary_value_axis_number_format, '0"%"')
+        self.assertEqual(find_capacity_violations(audits), [])
+
+    def test_mixed_unit_single_axis_chart_does_not_format_primary_axis_as_percent(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Mixed Axis Safety",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Mixed Axis Safety", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.CHART,
+                    title="Рынок и доля",
+                    chart=ChartSpec(
+                        chart_id="chart_mixed_axis_safety",
+                        source_table_id="table_1",
+                        chart_type=ChartType.COLUMN,
+                        title="Рынок и доля",
+                        categories=["ЖКХ", "Налоги", "Образование"],
+                        series=[
+                            ChartSeries(name="Объем рынка", values=[8_496_000_000_000.0, 55_600_000_000_000.0, 851_000_000_000.0]),
+                            ChartSeries(name="Доля А3", values=[2.12, 0.02, 0.06], unit="%"),
+                        ],
+                        confidence=ChartConfidence.HIGH,
+                        value_format="percent",
+                    ),
+                    preferred_layout_key="table",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                plan=plan,
+                template_path=template_path,
+                manifest=manifest,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        chart_audit = next(audit for audit in audits if audit.kind == SlideKind.CHART.value)
+        self.assertEqual(chart_audit.expected_chart_value_axis_number_format, '0.0,,," млрд"')
+        self.assertEqual(chart_audit.rendered_chart_value_axis_number_format, '0.0,,," млрд"')
+
     def test_deck_audit_flags_chart_semantic_mismatch(self) -> None:
         audit = SlideAudit(
             slide_index=2,
@@ -1698,6 +1897,27 @@ class ProjectContractTests(unittest.TestCase):
 
         rules = {violation.rule for violation in violations}
         self.assertIn("chart_value_axis_number_format_mismatch", rules)
+
+    def test_deck_audit_flags_secondary_chart_axis_number_format_mismatch(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Secondary axis format mismatch",
+            kind=SlideKind.CHART.value,
+            layout_key="table",
+            body_char_count=0,
+            body_font_sizes=(),
+            profile=profile_for_layout("table"),
+            has_chart=True,
+            expected_chart_secondary_value_axis=True,
+            rendered_chart_secondary_value_axis=True,
+            expected_chart_secondary_value_axis_number_format='0"%"',
+            rendered_chart_secondary_value_axis_number_format="#,##0",
+        )
+
+        violations = find_capacity_violations([audit])
+
+        rules = {violation.rule for violation in violations}
+        self.assertIn("chart_secondary_value_axis_number_format_mismatch", rules)
 
     def test_deck_audit_flags_chart_title_and_subtitle_font_mismatch(self) -> None:
         audit = SlideAudit(
@@ -1859,7 +2079,7 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(contacts_audit.auxiliary_widths)
         self.assertEqual([v.rule for v in violations if v.slide_index == contacts_audit.slide_index], [])
 
-    def test_deck_audit_flags_underfilled_body_height_for_full_width_text(self) -> None:
+    def test_deck_audit_flags_underfilled_placeholder_fill_for_full_width_text(self) -> None:
         audit = SlideAudit(
             slide_index=2,
             title="Раздел",
@@ -1878,7 +2098,44 @@ class ProjectContractTests(unittest.TestCase):
         )
 
         violations = find_capacity_violations([audit])
-        self.assertIn("underfilled_body_height", {violation.rule for violation in violations})
+        self.assertIn("underfilled_placeholder_fill", {violation.rule for violation in violations})
+
+    def test_deck_audit_flags_underfilled_placeholder_fill_for_dense_text(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Плотный раздел",
+            kind=SlideKind.TEXT.value,
+            layout_key="dense_text_full_width",
+            body_char_count=180,
+            body_font_sizes=(12.0,),
+            profile=derive_capacity_profile_for_geometry("dense_text_full_width", width_emu=11198224, height_emu=3550000),
+            title_top=671247,
+            title_height=800000,
+            body_top=1900000,
+            body_height=1600000,
+            footer_top=6384626,
+            footer_width=11198224,
+            body_left=442913,
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("underfilled_placeholder_fill", {violation.rule for violation in violations})
+
+    def test_deck_audit_flags_underfilled_auxiliary_placeholder_fill(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Колонки",
+            kind=SlideKind.TWO_COLUMN.value,
+            layout_key="list_with_icons",
+            body_char_count=0,
+            body_font_sizes=(),
+            profile=profile_for_layout("text_full_width"),
+            auxiliary_char_counts={12: 0},
+            expected_auxiliary_char_counts={12: 14},
+        )
+
+        violations = find_capacity_violations([audit])
+        self.assertIn("underfilled_auxiliary_placeholder_fill", {violation.rule for violation in violations})
 
     def test_deck_audit_keeps_body_text_frame_margin_contract_for_full_width_text(self) -> None:
         plan = PresentationPlan(
@@ -2152,6 +2409,75 @@ class ProjectContractTests(unittest.TestCase):
                     if getattr(shape, "has_chart", False)
                 ]
                 self.assertEqual(len(chart_shapes), 1)
+
+    def test_prototype_template_chart_image_binding_keeps_chart_audit_green(self) -> None:
+        manifests = [
+            manifest
+            for manifest in self.registry.list_templates()
+            if manifest.generation_mode.value == "prototype"
+            and any(any(token.binding == "chart_image" for token in prototype.tokens) for prototype in manifest.prototype_slides)
+        ]
+        self.assertTrue(manifests)
+
+        for manifest in manifests:
+            template_path = self.settings.templates_dir / manifest.template_id / manifest.source_pptx
+            if not template_path.exists():
+                continue
+
+            with self.subTest(template_id=manifest.template_id):
+                plan = PresentationPlan(
+                    template_id=manifest.template_id,
+                    title=f"{manifest.display_name} Chart Audit Contract",
+                    slides=[
+                        SlideSpec(
+                            kind=SlideKind.TITLE,
+                            title=f"{manifest.display_name} Chart Audit Contract",
+                            preferred_layout_key="cover",
+                        ),
+                        SlideSpec(
+                            kind=SlideKind.CHART,
+                            title="Выручка и маржа",
+                            subtitle="Prototype chart_image binding должен проходить template-aware chart audit",
+                            chart=ChartSpec(
+                                chart_id="chart_prototype_audit",
+                                source_table_id="table_1",
+                                chart_type=ChartType.COMBO,
+                                title="Выручка и маржа",
+                                categories=["Q1", "Q2", "Q3"],
+                                series=[
+                                    ChartSeries(name="Выручка", values=[104_300_000.0, 111_300_000.0, 135_700_000.0], unit="RUB"),
+                                    ChartSeries(name="Маржа", values=[18.0, 22.0, 27.0], unit="%"),
+                                ],
+                                confidence=ChartConfidence.HIGH,
+                                value_format="number",
+                            ),
+                            preferred_layout_key="table",
+                        ),
+                    ],
+                )
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    output_path = self.generator.generate(
+                        template_path=template_path,
+                        manifest=manifest,
+                        plan=plan,
+                        output_dir=Path(temp_dir),
+                    )
+                    audits = audit_generated_presentation(output_path, plan, manifest)
+                    violations = find_capacity_violations(audits)
+
+                chart_audit = next(audit for audit in audits if audit.kind == SlideKind.CHART.value)
+                self.assertTrue(chart_audit.has_chart)
+                self.assertEqual(chart_audit.expected_chart_type, ChartType.COMBO.value)
+                self.assertEqual(chart_audit.rendered_chart_type, ChartType.COMBO.value)
+                self.assertTrue(chart_audit.expected_chart_secondary_value_axis)
+                self.assertTrue(chart_audit.rendered_chart_secondary_value_axis)
+                self.assertEqual(chart_audit.expected_chart_value_axis_number_format, '0.0,," млн ₽"')
+                self.assertEqual(chart_audit.rendered_chart_value_axis_number_format, '0.0,," млн ₽"')
+                self.assertEqual(chart_audit.expected_chart_secondary_value_axis_number_format, '0"%"')
+                self.assertEqual(chart_audit.rendered_chart_secondary_value_axis_number_format, '0"%"')
+                self.assertFalse(any(item.rule == "narrow_chart_content" for item in violations))
+                self.assertEqual(violations, [])
 
     def _smoke_slides_for_manifest(self, manifest) -> list[SlideSpec]:
         slides = [SlideSpec(kind=SlideKind.TITLE, title=f"{manifest.display_name} Smoke", preferred_layout_key="cover")]

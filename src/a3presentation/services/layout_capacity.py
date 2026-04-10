@@ -70,6 +70,19 @@ TEXT_FULL_WIDTH_PROFILE = LayoutCapacityProfile(
     continuation_balance_tolerance=0.18,
 )
 
+DENSE_TEXT_FULL_WIDTH_PROFILE = LayoutCapacityProfile(
+    layout_key="dense_text_full_width",
+    max_items=9,
+    max_weight=11.5,
+    max_chars=900,
+    max_primary_chars=520,
+    min_font_pt=11,
+    max_font_pt=15,
+    target_fill_ratio=0.8,
+    max_fill_ratio=0.98,
+    continuation_balance_tolerance=0.16,
+)
+
 LIST_FULL_WIDTH_PROFILE = LayoutCapacityProfile(
     layout_key="list_full_width",
     max_items=8,
@@ -311,6 +324,8 @@ CONTACTS_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
 
 
 def profile_for_layout(layout_key: str) -> LayoutCapacityProfile:
+    if layout_key == "dense_text_full_width":
+        return DENSE_TEXT_FULL_WIDTH_PROFILE
     if layout_key == "table":
         return TABLE_PROFILE
     if layout_key == "image_text":
@@ -331,18 +346,26 @@ def derive_capacity_profile_for_geometry(
     *,
     width_emu: int | None = None,
     height_emu: int | None = None,
+    reference_width_emu: int | None = None,
+    reference_height_emu: int | None = None,
 ) -> LayoutCapacityProfile:
     base_profile = profile_for_layout(layout_key)
     if width_emu is None or height_emu is None or base_profile.max_chars <= 0:
         return base_profile
 
-    reference_geometry = geometry_policy_for_layout(layout_key)
-    reference_body = reference_geometry.placeholders.get(14)
-    if reference_body is None or reference_body.width_emu <= 0 or reference_body.height_emu <= 0:
+    if reference_width_emu is None or reference_height_emu is None:
+        reference_geometry = geometry_policy_for_layout(layout_key)
+        reference_body = reference_geometry.placeholders.get(14)
+        if reference_body is None:
+            return base_profile
+        reference_width_emu = reference_body.width_emu
+        reference_height_emu = reference_body.height_emu
+
+    if reference_width_emu <= 0 or reference_height_emu <= 0:
         return base_profile
 
-    width_ratio = max(0.55, min(width_emu / reference_body.width_emu, 1.45))
-    height_ratio = max(0.55, min(height_emu / reference_body.height_emu, 1.45))
+    width_ratio = max(0.55, min(width_emu / reference_width_emu, 1.45))
+    height_ratio = max(0.55, min(height_emu / reference_height_emu, 1.45))
     area_ratio = max(0.45, min(width_ratio * height_ratio, 1.6))
     item_ratio = max(0.75, min(height_ratio, 1.2))
     min_ratio = min(width_ratio, height_ratio)
@@ -371,6 +394,8 @@ def derive_capacity_profile_for_geometry(
 
 
 def geometry_policy_for_layout(layout_key: str) -> LayoutGeometryPolicy:
+    if layout_key == "dense_text_full_width":
+        return TEXT_LAYOUT_GEOMETRY_POLICY
     if layout_key == "table":
         return TABLE_LAYOUT_GEOMETRY_POLICY
     if layout_key == "image_text":
@@ -387,6 +412,8 @@ def geometry_policy_for_layout(layout_key: str) -> LayoutGeometryPolicy:
 
 
 def spacing_policy_for_layout(layout_key: str) -> LayoutSpacingPolicy:
+    if layout_key == "dense_text_full_width":
+        return TEXT_LAYOUT_SPACING_POLICY
     if layout_key == "table":
         return TABLE_LAYOUT_SPACING_POLICY
     if layout_key == "image_text":

@@ -1,14 +1,14 @@
-# A3 Presentation Project Overview
+# Обзор проекта A3 Presentation
 
-## Purpose
+## Назначение
 
-This project is a focused service for turning structured business documents into branded PowerPoint presentations.
+Этот проект представляет собой специализированный сервис, который превращает структурированные бизнес-документы в брендированные PowerPoint-презентации.
 
-The target workflow is:
+Целевой workflow:
 
-1. User uploads a `docx` or other text document.
-2. The system reads the document structure.
-3. The system understands where the document has:
+1. Пользователь загружает `docx` или другой текстовый документ.
+2. Система читает структуру документа.
+3. Система понимает, где в документе находятся:
    - title
    - section headings
    - subheadings
@@ -16,14 +16,14 @@ The target workflow is:
    - bullet lists
    - tables
    - images
-4. The planner converts that structure into a slide plan.
-5. The PowerPoint generator renders the plan into a branded `.pptx` using the corporate PowerPoint template.
+4. Planner превращает эту структуру в slide plan.
+5. PowerPoint generator рендерит план в брендированный `.pptx` с использованием корпоративного шаблона.
 
-This is not a generic "any presentation style" tool.
-It is intentionally focused on structured business decks, a controlled set of slide types, and a template-aware rendering pipeline.
-The current built-in corporate template is important, but it must not be treated as a permanent constant because users and companies can upload their own templates.
+Это не универсальный инструмент «для любых презентаций».
+Проект намеренно сфокусирован на структурированных бизнес-колодах, ограниченном наборе slide types и template-aware rendering pipeline.
+Текущий встроенный корпоративный шаблон важен, но его нельзя считать вечной константой, потому что пользователи и компании смогут загружать свои шаблоны.
 
-## Stack
+## Технологический стек
 
 ### Backend
 
@@ -40,22 +40,23 @@ The current built-in corporate template is important, but it must not be treated
 - Vite
 - TypeScript
 - `shadcn/ui`
-- Tailwind-based styling approach through `shadcn/ui`
+- Tailwind-подход через `shadcn/ui`
 
-### Storage
+### Хранилище
 
-- Local filesystem
-- Templates stored in `storage/templates`
-- Generated presentations stored in `storage/outputs`
-- Production outputs on Timeweb stored in `data/outputs`
+- локальная файловая система
+- шаблоны в `storage/templates`
+- сгенерированные презентации в `storage/outputs`
+- production outputs на Timeweb в `data/outputs`
 
-## Main Project Structure
+## Основная структура проекта
 
 ```text
 src/a3presentation/
   api/                  FastAPI routes
-  domain/               Pydantic models for API, templates, presentation plan
-  services/             Core business logic
+  domain/               Pydantic-модели для API, шаблонов и presentation plan
+  services/             Основная бизнес-логика
+    chart_render_contract.py
     chart_style.py
     deck_audit.py
     document_text_extractor.py
@@ -66,39 +67,37 @@ src/a3presentation/
     table_chart_analyzer.py
     template_analyzer.py
     template_registry.py
-  settings.py           Project paths
+  settings.py           Пути проекта
 
 frontend/               React UI
-docs/                   Internal documentation
+docs/                   Внутренняя документация
 storage/
   templates/            PowerPoint templates + manifests
   outputs/              Generated presentations
 ```
 
-## Core Pipeline
+## Сквозной pipeline
 
-### Current process links
+Текущая карта backend/frontend-процесса выглядит так:
 
-The current backend and frontend process map is:
+1. UI flow начинается в [App.tsx](../frontend/src/App.tsx) и вызывает [api.ts](../frontend/src/api.ts).
+2. Template registry и template analysis обрабатываются в [template_registry.py](../src/a3presentation/services/template_registry.py) и [template_analyzer.py](../src/a3presentation/services/template_analyzer.py).
+3. Исходные документы извлекаются [document_text_extractor.py](../src/a3presentation/services/document_text_extractor.py) в text, ordered document blocks, tables, hyperlinks и image blocks.
+4. Извлечённые таблицы анализируются в [table_chart_analyzer.py](../src/a3presentation/services/table_chart_analyzer.py); chartable candidates могут вернуться в pipeline как chart overrides.
+5. [planner.py](../src/a3presentation/services/planner.py) строит `PresentationPlan` на основе source blocks, tables, chart overrides и [semantic_normalizer.py](../src/a3presentation/services/semantic_normalizer.py).
+6. [pptx_generator.py](../src/a3presentation/services/pptx_generator.py) рендерит план против активного `TemplateManifest` и исходного `.pptx`.
+7. [deck_audit.py](../src/a3presentation/services/deck_audit.py) и [layout_capacity.py](../src/a3presentation/services/layout_capacity.py) держат planner/generator согласованными по capacity, geometry и mixed-content order.
+8. [run_quality_contracts.py](../scripts/run_quality_contracts.py) является выделенным quality gate для generated decks.
+9. Production delivery обеспечивается GitHub Actions, [deploy_server.sh](../scripts/deploy_server.sh) и [docker-compose.server.yml](../docker-compose.server.yml).
 
-1. UI flow starts in [App.tsx](../frontend/src/App.tsx) and calls [api.ts](../frontend/src/api.ts).
-2. Template registry and analysis are handled by [template_registry.py](../src/a3presentation/services/template_registry.py) and [template_analyzer.py](../src/a3presentation/services/template_analyzer.py).
-3. Source documents are extracted by [document_text_extractor.py](../src/a3presentation/services/document_text_extractor.py) into text, ordered document blocks, tables, hyperlinks, and image blocks.
-4. Extracted tables are assessed by [table_chart_analyzer.py](../src/a3presentation/services/table_chart_analyzer.py); chartable candidates can be passed back as chart overrides.
-5. [planner.py](../src/a3presentation/services/planner.py) builds a `PresentationPlan` using source blocks, tables, chart overrides, and [semantic_normalizer.py](../src/a3presentation/services/semantic_normalizer.py).
-6. [pptx_generator.py](../src/a3presentation/services/pptx_generator.py) renders the plan against the active `TemplateManifest` and source `.pptx`.
-7. [deck_audit.py](../src/a3presentation/services/deck_audit.py) and [layout_capacity.py](../src/a3presentation/services/layout_capacity.py) keep planner/generator capacity, geometry, and mixed-content order contracts aligned.
-8. [run_quality_contracts.py](../scripts/run_quality_contracts.py) is the curated quality gate for generated decks.
-9. Production delivery is handled by GitHub Actions plus [deploy_server.sh](../scripts/deploy_server.sh) and [docker-compose.server.yml](../docker-compose.server.yml).
+## 1. Извлечение документа
 
-### 1. Document extraction
-
-Main file:
+Главный файл:
 - [document_text_extractor.py](../src/a3presentation/services/document_text_extractor.py)
 
-The extractor reads input documents and converts them into structured blocks.
+Extractor читает входные документы и превращает их в структурированные blocks.
 
-For `docx`, it preserves document order and emits:
+Для `docx` он сохраняет порядок документа и выдаёт:
 
 - `title`
 - `heading`
@@ -108,47 +107,39 @@ For `docx`, it preserves document order and emits:
 - `table`
 - `image`
 
-The important part is that the extractor does not just read plain text.
-It tries to preserve document semantics:
+Ключевой момент в том, что extractor не читает документ как просто plain text.
+Он старается сохранить семантику документа:
 
-- heading detection from Word styles
-- list detection from:
+- определение heading по Word styles
+- определение list через:
   - list styles
   - numbering properties (`numPr`)
-  - numbering inherited from style
-  - hanging indent typical for Word lists
-  - explicit list-like text prefixes
-- tables extracted as structured rows and headers
-- image blocks preserved for semantic planning
+  - numbering, унаследованный от style
+  - hanging indent, типичный для Word lists
+  - явные list-like text prefixes
+- извлечение таблиц как структурированных headers и rows
+- сохранение image blocks для semantic planning
 
-This means the system can distinguish:
+## 2. Планирование слайдов
 
-- simple text paragraph
-- actual bullet list
-- actual table
-
-instead of treating everything as raw text.
-
-### 2. Planning slides
-
-Main file:
+Главный файл:
 - [planner.py](../src/a3presentation/services/planner.py)
 
-Related files:
+Связанные файлы:
 - [semantic_normalizer.py](../src/a3presentation/services/semantic_normalizer.py)
 - [layout_capacity.py](../src/a3presentation/services/layout_capacity.py)
 - [table_chart_analyzer.py](../src/a3presentation/services/table_chart_analyzer.py)
 
-The planner converts document blocks into a `PresentationPlan`.
+Planner превращает document blocks в `PresentationPlan`.
 
-Key idea:
-- not `block -> slide`
-- but `section -> 1..N slides`
+Ключевая идея:
+- не `block -> slide`
+- а `section -> 1..N slides`
 
-Sections are built primarily from headings and subheadings.
-The planner tries to keep related content together on one slide when it fits.
+Sections строятся в основном из headings и subheadings.
+Planner старается держать связанный контент вместе на одном слайде, если он помещается.
 
-Supported logical slide outcomes include:
+Поддерживаемые логические slide outcomes:
 
 - `cover`
 - `text_full_width`
@@ -159,275 +150,166 @@ Supported logical slide outcomes include:
 - `cards_3`
 - `contacts`
 
-The API contract for this stage is [PresentationPlan](../src/a3presentation/domain/presentation.py).
-The frontend mirror of that contract is [types.ts](../frontend/src/types.ts).
+API contract для этого этапа описан в [presentation.py](../src/a3presentation/domain/presentation.py), а frontend mirror лежит в [types.ts](../frontend/src/types.ts).
 
-Important planner behavior that was implemented:
+Что уже реализовано в planner:
 
-- first page of the document becomes the cover slide
-- cover title is built from leading lines before the first real section
-- normal lists now go to `list_full_width`
-- blue-card list layouts are not used for ordinary bullet lists
-- `cards_3` is restricted to very short, label-like items only
-- long sections are split only when needed
-- tiny text tails are not split into separate meaningless fragments
-- mixed `paragraph -> list -> paragraph` order is preserved on the main planning path
-- top-level headings are preserved instead of getting lost
-- compact tables stay on one slide when possible
-- larger tables are paginated across slides
-- chart overrides can replace selected table slides with chart slides
-- semantic image blocks can become image slides
-- first real numbered section is protected from being swallowed by cover heuristics
+- первая страница документа становится cover slide
+- cover title строится из leading lines до первого настоящего section
+- обычные lists отправляются в `list_full_width`
+- blue-card layouts не используются для обычных bullet lists
+- `cards_3` разрешён только для очень короткого label-like content
+- длинные sections делятся только когда это действительно нужно
+- крошечные text tails не выделяются в отдельные бессмысленные fragments
+- порядок mixed `paragraph -> list -> paragraph` сохраняется на основном пути
+- top-level headings не теряются
+- компактные таблицы остаются на одном слайде, большие таблицы пагинируются
+- chart overrides могут заменять table slides на chart slides
+- semantic image blocks могут становиться image slides
+- первая настоящая numbered section защищена от cover heuristics
+- dense narrative continuation path теперь может выбирать `dense_text_full_width`, когда это уменьшает число continuation slides без нарушения quality bounds
 
-### 3. Template resolution
+## 3. Разрешение шаблонов
 
-Main files:
+Главные файлы:
 - [template_registry.py](../src/a3presentation/services/template_registry.py)
 - [template_analyzer.py](../src/a3presentation/services/template_analyzer.py)
 - [manifest.json](../storage/templates/corp_light_v1/manifest.json)
 
-The project currently ships with one main built-in template:
+Сейчас проект поставляется с основным встроенным шаблоном:
 
 - `corp_light_v1`
 
-But the architecture is moving toward template-aware generation rather than hard-coding one fixed template forever.
-Users and companies may upload their own templates, and analyzer/manifest metadata should drive generator and audit behavior for those templates too.
+Но архитектура движется в сторону template-aware generation, а не жёсткой привязки к одному шаблону навсегда.
+Пользователи и компании смогут загружать свои шаблоны, а analyzer/manifest metadata должны управлять и generator, и audit.
 
-The user does not need to think in terms of internal layout mapping.
-Instead, the system chooses among logical slide types and then resolves them against the active template.
+Система выбирает не физические layout'ы напрямую, а логические slide types, после чего резолвит их против активного template manifest.
 
-The manifest defines which PowerPoint layouts correspond to which logical slide type.
+## 4. Генерация PowerPoint
 
-For example:
-
-- `cover`
-- `text_full_width`
-- `list_full_width`
-- `table`
-- `image_text`
-- `cards_3`
-- `list_with_icons`
-- `contacts`
-
-## Working rules for analysis and implementation
-
-This project should be evolved under these constraints:
-
-- fixes must target the general mechanism, not one document or one slide
-- every significant planner/generator/audit change must be checked against document classes, not one regression case
-- the active template must not be assumed to be permanently fixed
-- if the next implementation step is safe and follows directly from the current task, it should be executed without stopping for redundant confirmation
-
-## PowerPoint Generation
-
-Main file:
+Главный файл:
 - [pptx_generator.py](../src/a3presentation/services/pptx_generator.py)
 
-Related files:
+Связанные файлы:
+- [chart_render_contract.py](../src/a3presentation/services/chart_render_contract.py)
 - [deck_audit.py](../src/a3presentation/services/deck_audit.py)
 - [chart_style.py](../src/a3presentation/services/chart_style.py)
 - [layout_capacity.py](../src/a3presentation/services/layout_capacity.py)
 
-The generator renders the `PresentationPlan` into a real `.pptx`.
+Generator рендерит `PresentationPlan` в реальный `.pptx`.
 
-### Important architectural decision
+Важное архитектурное решение:
 
-The implementation moved away from unsafe manual slide cloning as the primary path.
+- проект ушёл от unsafe manual slide cloning как основного пути
+- стабильный режим теперь основан на layout-based generation через PowerPoint masters и layouts
 
-The current stable mode is layout-based generation using PowerPoint masters and layouts.
-
-This is important because `.pptx` is an Open XML package, and naive slide cloning can corrupt:
+Это важно, потому что `.pptx` является Open XML package, и наивное клонирование слайдов может повредить:
 
 - relationships
 - media references
 - layout links
-- internal package structure
+- внутреннюю структуру пакета
 
-The generator now validates output after save:
+После сохранения generator валидирует output:
 
-- checks ZIP integrity
-- checks duplicate entries
-- reopens the generated file through `python-pptx`
+- ZIP integrity
+- отсутствие duplicate entries
+- повторное открытие файла через `python-pptx`
 
-If the file is invalid, it is rejected instead of being silently returned.
+Если выходной файл невалиден, он удаляется, а не возвращается молча.
 
-## What Was Improved
+## 5. Графики
 
-### 1. Cover slide
+Текущее поведение chart pipeline:
 
-Problem before:
-- cover title was positioned incorrectly
-- title and meta were treated as technical text
-- cover typography did not match the branded style
+- chartable tables могут превращаться в реальные chart slides
+- analyzer предлагает pie для composition tables и stacked charts для безопасных same-unit multi-series tables
+- mixed-unit default candidates ограничены `column/line`; combo остаётся поддержанным только для explicit specs и legacy plans
+- transpose разрешён только для chart specs, которые остаются семантически корректными после обмена series и categories
+- unsafe mixed-unit tables и ordinal/status `1..N` tables считаются not chartable
+- summary rows отфильтровываются до построения chart series
+- column, bar, line, stacked, pie и explicit combo покрыты generator XML tests
+- rendered charts валидируются в regression, API, generator, deck-audit и frontend smoke tests
+- chart slides используют тот же layout-quality contract, что и остальная колода
+- chart audit валидирует rendered type, series count, combo structure, размеры title/subtitle и compact value-axis number formats
+- generator и deck audit теперь используют общий backend chart render contract для visible-series и combo-fallback semantics
+- mixed-unit combo scenarios теперь могут использовать secondary value axis вместо принудительного single-axis render
+- dense text continuation flow теперь не только объявлен в planner, но и реально доходит до runtime `.pptx` через `dense_text_full_width`
 
-Current behavior:
-- first document page is mapped to the cover
-- title is built from leading document lines
-- cover title is rendered large
-- cover body/meta is rendered as the main supporting block, not as a footer
-- text color is adjusted for the dark blue cover background
+## 6. Frontend
 
-### 2. Tables
-
-Problem before:
-- tables were detached from document context
-- table titles were wrong
-- tables often overflowed
-- rows were stretched too much
-- some tables were split unnecessarily
-
-Current behavior:
-- tables are extracted in document order
-- tables stay attached to the nearest logical section
-- table widths are computed more intelligently
-- row heights are reduced instead of stretching to full placeholder height
-- compact tables stay on one slide
-- larger tables split across multiple slides when truly necessary
-- table colors are aligned with the corporate palette
-- footer and content width on table slides are normalized to the active layout contract
-
-### 3. Charts
-
-Current behavior:
-
-- chartable tables can be promoted to real chart slides
-- analyzer suggests pie for composition tables and stacked charts for safe same-unit multi-series tables
-- mixed-unit default candidates are limited to column/line; combo remains supported only for explicit specs and legacy plans
-- unsafe mixed-unit tables and ordinal/status `1..N` tables are rejected as not chartable
-- summary rows are filtered out before chart series are built
-- column, bar, line, stacked, pie, and explicit combo scenarios are covered by generator XML tests
-- rendered charts are validated in regression, API, generator, deck-audit, and frontend smoke tests
-- chart slides use the same layout-quality contract as the rest of the deck
-- chart audit validates rendered type, series count, combo structure, title/subtitle sizes, and compact value-axis number formats
-
-### 4. Bullet lists
-
-Problem before:
-- real lists were sometimes treated as plain text
-- some short lists turned into blue cards unexpectedly
-- PowerPoint slides showed separate lines but not real bullet markers
-
-Current behavior:
-- extractor identifies lists from Word structure
-- planner routes ordinary lists to `list_full_width`
-- planner uses ordered block sections from source documents when available instead of flattening mixed content too early
-- `cards_3` is reserved for very short card-like content only
-- generator now writes real PowerPoint bullet markers (`buChar`) into paragraph XML
-- continuation slides are rebalanced to avoid obviously underfilled tails
-- deck audit checks rendered bullet/text order against the planned content order
-
-### 5. Text slides
-
-Problem before:
-- normal text sometimes went into image-based layouts
-- narrow text columns looked bad
-- some slides contained placeholder garbage from PowerPoint
-
-Current behavior:
-- text-only content uses dedicated wide layouts
-- unused placeholders are cleared
-- the system avoids leaving PowerPoint instructional placeholder text
-- planner and generator now share a common capacity-contract layer for text and bullets
-
-### 6. Images
-
-Current behavior:
-
-- semantic image blocks can be rendered as image slides
-- cover-skip heuristics no longer swallow numbered first sections that include images
-- image layouts are now covered by deck-level quality contracts
-
-## Frontend
-
-Main frontend files:
+Главные frontend-файлы:
 - [App.tsx](../frontend/src/App.tsx)
 - [api.ts](../frontend/src/api.ts)
+- [chart-preview.tsx](../frontend/src/components/chart-preview.tsx)
 
-Frontend responsibilities:
+Ответственность frontend:
 
-- upload source document
-- upload/refresh template if needed
-- trigger plan creation
-- trigger PPTX generation
-- download result
-- review extracted structure before generation
-- switch chartable tables between `table` and `chart`
-- preview supported chart layouts in the drawer before generation
-- preserve selected chart type and hidden series in `chart_overrides`
+- загрузка исходного документа
+- загрузка/обновление шаблона при необходимости
+- запуск построения плана
+- запуск генерации PPTX
+- скачивание результата
+- review извлечённой структуры перед генерацией
+- переключение chartable tables между `table` и `chart`
+- preview поддерживаемых chart layouts до генерации
+- сохранение выбранного chart type и hidden series в `chart_overrides`
 
-UI was simplified from a technical admin-like screen into a more user-oriented flow:
+## Текущие слои проверки
 
-1. upload template or use the system template
-2. enter or upload source text/document
-3. generate presentation
-4. download `.pptx`
-
-## Current State
-
-The project is now in a working state for the main scenarios:
-
-- input: business `docx`, markdown, and mixed text
-- output: branded `.pptx`
-- style: `corp_light_v1`
-
-The most important end-to-end capabilities are working:
-
-- cover generation
-- heading-based section planning
-- bullet list recognition
-- table extraction and rendering
-- chart generation
-- image slide generation
-- PowerPoint file validity
-- frontend smoke and visual checks
-- backend quality-contract suite for deck-level layout safety
-- production deployment on Timeweb with Let's Encrypt HTTPS
-- GitHub Actions SSH auto-deploy for `dev`
-
-## Current Verification Layers
-
-- unit and regression backend tests
+- unit и regression backend tests
 - API contract tests
 - planner/generator compatibility tests
 - deck-level quality-contract tests
-- dedicated `quality-contracts` runner
-- frontend `playwright` smoke and visual checks
+- отдельный runner `quality-contracts`
+- frontend `playwright` smoke и visual checks
+- chart preview smoke matrix
+- свежая runtime-генерация `.pptx` обязательна после значимых правок planner/generator/audit и уже используется для dense-text и template-aware verification
+- `deck_audit` теперь контролирует не только overlap, но и аномально большой `title/subtitle -> body` gap, чтобы пустые провалы в layout не проходили как зелёный runtime
 
-## Production Runtime
+## Текущее production runtime
 
-Current production topology:
+- host nginx на Ubuntu завершает HTTPS для `a3presentation.ru`
+- host nginx проксирует в docker nginx на `127.0.0.1:8080`
+- docker nginx маршрутизирует `/` на frontend и `/api/*` на backend
+- backend читает bundled templates из `/app/storage/templates`
+- runtime outputs сохраняются в `data/outputs`
+- push в `dev` может авто-деплоиться через GitHub Actions после прохождения всех checks
 
-- host nginx on Ubuntu terminates HTTPS for `a3presentation.ru`
-- host nginx proxies to docker nginx on `127.0.0.1:8080`
-- docker nginx routes `/` to frontend and `/api/*` to backend
-- backend reads bundled templates from `/app/storage/templates`
-- runtime outputs are persisted in `data/outputs`
-- pushes to `dev` can auto-deploy through GitHub Actions after all checks pass
+## Текущие рабочие правила
 
-## Remaining Improvements
+Проект должен развиваться при следующих ограничениях:
 
-These are no longer core blockers, but they can improve quality further:
+- исправления должны целиться в общий механизм, а не в один документ или один слайд
+- любые значимые изменения planner/generator/audit должны проверяться по классам документов, а не по одному regression case
+- активный шаблон нельзя считать навсегда фиксированным
+- если следующий implementation step безопасен и прямо следует из текущей задачи, его нужно выполнять без лишних остановок
 
-- extend deck-audit further for more layout-specific geometry rules
-- expand visual snapshots for more frontend and generated-slide scenarios
-- introduce template-specific typography rules per layout
-- add export previews
+## Что ещё улучшать
 
-## Summary
+Это уже не core blockers, но это даст следующий прирост качества:
 
-The project is a document-to-presentation engine built around one branded PowerPoint style.
+- дальше расширять deck-audit для более тонких layout-specific geometry rules
+- расширять visual snapshots для frontend и generated-slide scenarios
+- вводить template-specific typography rules на уровне layout
+- добавлять export previews
+- расширять parity и quality checks вокруг secondary value axis и mixed-unit chart scenarios
 
-Its main architecture is:
+## Краткое резюме
+
+Проект A3 Presentation это document-to-presentation engine, построенный вокруг брендированного PowerPoint-стиля.
+
+Его основная архитектура:
 
 `docx -> structured blocks -> slide plan -> branded pptx`
 
-The key work completed during implementation was not just "generate slides", but to make the system understand:
+Главная ценность выполненной работы не просто в том, что проект «генерирует слайды», а в том, что он уже понимает:
 
-- what is a title
-- what is a section
-- what is a paragraph
-- what is a real list
-- what is a table
-- which corporate slide type should be used for each case
+- что такое title
+- что такое section
+- что такое paragraph
+- что такое настоящий list
+- что такое table
+- какой corporate slide type должен использоваться в каждом случае
 
-That is why the current result is much closer to a usable product than the initial MVP.
+Поэтому текущий результат уже существенно ближе к рабочему продукту, чем исходный MVP.

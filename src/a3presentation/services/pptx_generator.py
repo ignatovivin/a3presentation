@@ -8,7 +8,9 @@ import zipfile
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
+from copy import deepcopy
 
+from pptx.chart.axis import ValueAxis
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.oxml.xmlchemy import OxmlElement
@@ -34,8 +36,17 @@ from a3presentation.domain.template import (
     TemplateManifest,
 )
 from a3presentation.services.chart_style import CHART_STYLE_CONFIG
+from a3presentation.services.chart_render_contract import (
+    PRIMARY_AXIS,
+    SECONDARY_AXIS,
+    chart_axis_number_format,
+    chart_axis_number_format_for_axis,
+    render_chart_spec,
+    uses_secondary_value_axis,
+)
 from a3presentation.services.layout_capacity import (
     LayoutCapacityProfile,
+    derive_capacity_profile_for_geometry,
     geometry_policy_for_layout,
     profile_for_layout,
     spacing_policy_for_layout,
@@ -69,6 +80,18 @@ class PptxGenerator:
     FOOTER_HEIGHT_EMU = 260000
     DEFAULT_TEXT_MARGIN_X_EMU = 91440
     DEFAULT_TEXT_MARGIN_Y_EMU = 45720
+    GEOMETRY_PROFILE_TOLERANCE_EMU = 120000
+    BUILTIN_LAYOUT_KEYS = {
+        "text_full_width",
+        "dense_text_full_width",
+        "list_full_width",
+        "table",
+        "image_text",
+        "cards_3",
+        "list_with_icons",
+        "contacts",
+        "cover",
+    }
     _CHART_STYLE_CONFIG = None
 
     @classmethod
@@ -221,7 +244,8 @@ class PptxGenerator:
     def _replace_tokens_in_slide(self, slide, prototype: PrototypeSlideSpec, slide_spec: SlideSpec, presentation_title: str) -> None:
         token_values = self._build_token_value_map(slide_spec, presentation_title)
         used_shapes: set[str] = set()
-        layout_profile = profile_for_layout(slide_spec.preferred_layout_key or "text_full_width")
+        layout_key = slide_spec.preferred_layout_key or "text_full_width"
+        layout_profile = profile_for_layout(layout_key)
 
         # Preferred path for real templates: bind by explicit shape name from manifest.
         for token_spec in prototype.tokens:
@@ -231,7 +255,8 @@ class PptxGenerator:
             if target_shape is None:
                 continue
             self._apply_shape_spec_metadata(target_shape, token_spec)
-            self._fill_shape_by_binding(target_shape, token_spec.binding, slide_spec, presentation_title, layout_profile)
+            shape_profile = self._capacity_profile_for_shape(layout_key, target_shape, layout_profile)
+            self._fill_shape_by_binding(target_shape, token_spec.binding, slide_spec, presentation_title, shape_profile)
             self._apply_shape_spec_metadata(target_shape, token_spec)
             used_shapes.add(token_spec.shape_name)
 
@@ -251,10 +276,11 @@ class PptxGenerator:
             if single_token_match:
                 token_name = single_token_match.group(1)
                 token_value = token_values.get(token_name, "")
+                shape_profile = self._capacity_profile_for_shape(layout_key, shape, layout_profile)
                 if isinstance(token_value, list):
-                    self._set_bullets(shape, token_value, layout_profile)
+                    self._set_bullets(shape, token_value, shape_profile)
                 else:
-                    self._set_text(shape, str(token_value), layout_profile)
+                    self._set_text(shape, str(token_value), shape_profile)
                 continue
 
             replaced_text = original_text
@@ -263,7 +289,8 @@ class PptxGenerator:
                 if isinstance(token_value, list):
                     token_value = "\n".join(token_value)
                 replaced_text = re.sub(r"{{\s*" + re.escape(token_name) + r"\s*}}", str(token_value), replaced_text)
-            self._set_text(shape, replaced_text, layout_profile)
+            shape_profile = self._capacity_profile_for_shape(layout_key, shape, layout_profile)
+            self._set_text(shape, replaced_text, shape_profile)
 
     def _build_token_value_map(self, slide_spec: SlideSpec, presentation_title: str) -> dict[str, str | list[str]]:
         token_map: dict[str, str | list[str]] = {
@@ -337,7 +364,8 @@ class PptxGenerator:
         if layout.key == "cover":
             self._populate_cover_slide(slide, slide_spec)
             return
-        layout_profile = profile_for_layout(slide_spec.preferred_layout_key or layout.key)
+        layout_key = slide_spec.preferred_layout_key or layout.key
+        layout_profile = profile_for_layout(layout_key)
         placeholders = {placeholder.placeholder_format.idx: placeholder for placeholder in slide.placeholders}
         used_placeholder_indices: set[int] = set()
 
@@ -347,19 +375,20 @@ class PptxGenerator:
             shape = placeholders[placeholder_spec.idx]
             used_placeholder_indices.add(placeholder_spec.idx)
             self._apply_shape_spec_metadata(shape, placeholder_spec)
+            shape_profile = self._capacity_profile_for_shape(layout_key, shape, layout_profile)
             if placeholder_spec.binding:
-                self._fill_shape_by_binding(shape, placeholder_spec.binding, slide_spec, presentation_title, layout_profile)
+                self._fill_shape_by_binding(shape, placeholder_spec.binding, slide_spec, presentation_title, shape_profile)
                 if placeholder_spec.binding != "table":
                     self._apply_shape_spec_metadata(shape, placeholder_spec)
                 continue
             if placeholder_spec.kind == PlaceholderKind.TITLE:
-                self._set_text(shape, slide_spec.title or "", layout_profile)
+                self._set_text(shape, slide_spec.title or "", shape_profile)
             elif placeholder_spec.kind == PlaceholderKind.SUBTITLE:
-                self._set_text(shape, slide_spec.subtitle or "", layout_profile)
+                self._set_text(shape, slide_spec.subtitle or "", shape_profile)
             elif placeholder_spec.kind == PlaceholderKind.BODY:
-                self._fill_body(shape, slide_spec, layout_profile)
+                self._fill_body(shape, slide_spec, shape_profile)
             elif placeholder_spec.kind == PlaceholderKind.FOOTER:
-                self._set_text(shape, slide_spec.notes or "", layout_profile)
+                self._set_text(shape, slide_spec.notes or "", shape_profile)
             elif placeholder_spec.kind == PlaceholderKind.TABLE:
                 self._fill_table_or_chart(shape, slide_spec)
             elif placeholder_spec.kind == PlaceholderKind.CHART:
@@ -373,6 +402,42 @@ class PptxGenerator:
             self._clear_placeholder(placeholder)
 
         self._apply_layout_expansion_and_flow(slide, slide_spec.preferred_layout_key or layout.key, slide_spec)
+
+    def _capacity_profile_for_shape(
+        self,
+        layout_key: str,
+        shape,
+        base_profile: LayoutCapacityProfile,
+    ) -> LayoutCapacityProfile:
+        width = getattr(shape, "width", None)
+        height = getattr(shape, "height", None)
+        if width is None or height is None:
+            return base_profile
+        if layout_key in self.BUILTIN_LAYOUT_KEYS:
+            return base_profile
+        reference_width = None
+        reference_height = None
+        placeholder_format = getattr(shape, "placeholder_format", None)
+        placeholder_idx = getattr(placeholder_format, "idx", None)
+        base_geometry = geometry_policy_for_layout(layout_key)
+        reference_placeholder = base_geometry.placeholders.get(placeholder_idx or -1)
+        if reference_placeholder is None and placeholder_idx in {None, 14}:
+            reference_placeholder = base_geometry.placeholders.get(14)
+        if reference_placeholder is not None:
+            reference_width = reference_placeholder.width_emu
+            reference_height = reference_placeholder.height_emu
+            if (
+                abs(width - reference_width) <= self.GEOMETRY_PROFILE_TOLERANCE_EMU
+                and abs(height - reference_height) <= self.GEOMETRY_PROFILE_TOLERANCE_EMU
+            ):
+                return base_profile
+        return derive_capacity_profile_for_geometry(
+            layout_key,
+            width_emu=width,
+            height_emu=height,
+            reference_width_emu=reference_width,
+            reference_height_emu=reference_height,
+        )
 
     def _apply_layout_expansion_and_flow(self, slide, layout_key: str, slide_spec: SlideSpec | None = None) -> None:
         geometry_layout_key = "text_full_width" if layout_key == "dense_text_full_width" else layout_key
@@ -732,6 +797,16 @@ class PptxGenerator:
             return
         if isinstance(binding_value, list):
             self._set_bullets(shape, [str(item) for item in binding_value], layout_profile)
+            return
+        if slide_spec.kind == SlideKind.CHART and binding == "title":
+            self._set_text(shape, str(binding_value), layout_profile)
+            self._configure_title_text_frame(shape)
+            self._apply_font_size(shape, self._title_font_size_points(slide_spec.preferred_layout_key or "table"))
+            return
+        if slide_spec.kind == SlideKind.CHART and binding == "subtitle":
+            self._set_text(shape, str(binding_value), layout_profile)
+            self._configure_subtitle_text_frame(shape)
+            self._apply_font_size(shape, self._table_subtitle_font_size_points(str(binding_value)))
             return
         self._set_text(shape, str(binding_value), layout_profile)
 
@@ -1479,16 +1554,16 @@ class PptxGenerator:
         if not chart_spec.categories or not chart_spec.series:
             self._clear_placeholder(shape)
             return
-        render_chart_spec = self._visible_chart_spec(chart_spec)
-        if not render_chart_spec.series:
+        resolved_chart_spec = render_chart_spec(chart_spec)
+        if resolved_chart_spec is None or not resolved_chart_spec.series:
             self._clear_placeholder(shape)
             return
 
         try:
-            chart_type = self._resolve_chart_type(render_chart_spec)
+            chart_type = self._resolve_chart_type(resolved_chart_spec)
             chart_data = CategoryChartData()
-            chart_data.categories = render_chart_spec.categories
-            for series in render_chart_spec.series:
+            chart_data.categories = resolved_chart_spec.categories
+            for series in resolved_chart_spec.series:
                 chart_data.add_series(series.name or "Ряд", series.values)
 
             slide_shapes = shape.part.slide.shapes
@@ -1501,25 +1576,15 @@ class PptxGenerator:
 
             graphic_frame = slide_shapes.add_chart(chart_type, left, top, width, height, chart_data)
             chart = graphic_frame.chart
-            if render_chart_spec.chart_type == ChartType.COMBO:
-                self._convert_chart_to_combo(chart)
-            self._style_chart(chart, render_chart_spec)
+            if resolved_chart_spec.chart_type == ChartType.COMBO:
+                self._convert_chart_to_combo(chart, resolved_chart_spec)
+            self._style_chart(chart, resolved_chart_spec)
         except Exception:
             if getattr(shape, "has_text_frame", False):
                 self._set_text(shape, "Не удалось построить график", profile_for_layout("text_full_width"))
             else:
                 self._clear_placeholder(shape)
-
-    def _visible_chart_spec(self, chart_spec: ChartSpec) -> ChartSpec:
-        visible_series = [series for series in chart_spec.series if not series.hidden]
-        chart_type = chart_spec.chart_type
-        if chart_type == ChartType.COMBO:
-            combo_line_visible = bool(chart_spec.series and not chart_spec.series[-1].hidden and len(visible_series) >= 2)
-            if not combo_line_visible:
-                chart_type = ChartType.COLUMN
-        return chart_spec.model_copy(update={"series": visible_series, "chart_type": chart_type}, deep=True)
-
-    def _convert_chart_to_combo(self, chart) -> None:
+    def _convert_chart_to_combo(self, chart, chart_spec: ChartSpec) -> None:
         chart_space = chart._chartSpace
         plot_area = chart_space.chart.plotArea
         bar_charts = plot_area.xpath("./c:barChart")
@@ -1542,13 +1607,50 @@ class PptxGenerator:
         self._ensure_line_series_shape(line_series)
         line_chart.append(line_series)
 
-        for ax_id in bar_chart.xpath("./c:axId"):
-            cloned_ax_id = OxmlElement("c:axId")
-            cloned_ax_id.set("val", ax_id.get("val"))
-            line_chart.append(cloned_ax_id)
+        bar_axis_ids = [ax_id.get("val") for ax_id in bar_chart.xpath("./c:axId")]
+        if uses_secondary_value_axis(chart_spec):
+            secondary_axis_id = self._ensure_secondary_value_axis(chart)
+            for axis_id in [bar_axis_ids[0], secondary_axis_id]:
+                cloned_ax_id = OxmlElement("c:axId")
+                cloned_ax_id.set("val", axis_id)
+                line_chart.append(cloned_ax_id)
+        else:
+            for ax_id in bar_chart.xpath("./c:axId"):
+                cloned_ax_id = OxmlElement("c:axId")
+                cloned_ax_id.set("val", ax_id.get("val"))
+                line_chart.append(cloned_ax_id)
 
         insert_at = list(plot_area).index(bar_chart) + 1
         plot_area.insert(insert_at, line_chart)
+
+    def _ensure_secondary_value_axis(self, chart) -> str:
+        chart_space = chart._chartSpace
+        plot_area = chart_space.chart.plotArea
+        value_axes = plot_area.xpath("./c:valAx")
+        if len(value_axes) > 1:
+            return value_axes[1].xpath("./c:axId")[0].get("val")
+
+        category_axis = (plot_area.xpath("./c:catAx") or plot_area.xpath("./c:dateAx"))[0]
+        primary_value_axis = value_axes[0]
+        category_axis_id = category_axis.xpath("./c:axId")[0].get("val")
+        secondary_axis_id = self._next_chart_axis_id(chart)
+        secondary_axis = deepcopy(primary_value_axis)
+        secondary_axis.xpath("./c:axId")[0].set("val", secondary_axis_id)
+        secondary_axis.xpath("./c:axPos")[0].set("val", "r")
+        secondary_axis.xpath("./c:crossAx")[0].set("val", category_axis_id)
+        for gridlines in secondary_axis.xpath("./c:majorGridlines"):
+            secondary_axis.remove(gridlines)
+        plot_area.insert(list(plot_area).index(primary_value_axis) + 1, secondary_axis)
+        return secondary_axis_id
+
+    def _next_chart_axis_id(self, chart) -> str:
+        axis_ids = [
+            int(axis_id.get("val"))
+            for axis_id in chart._chartSpace.xpath(".//c:axId")
+            if axis_id.get("val") is not None
+        ]
+        next_id = max((abs(value) for value in axis_ids), default=1) + 1
+        return str(next_id)
 
     def _ensure_line_series_shape(self, series_element) -> None:
         if not series_element.xpath("./c:marker"):
@@ -1610,14 +1712,18 @@ class PptxGenerator:
             except Exception:
                 pass
 
-        if hasattr(chart, "value_axis"):
+        for axis_index, axis in enumerate(self._value_axes(chart)):
+            axis_role = PRIMARY_AXIS if axis_index == 0 else SECONDARY_AXIS
             try:
-                chart.value_axis.has_title = bool(chart_spec.y_axis_title)
-                if chart_spec.y_axis_title:
-                    chart.value_axis.axis_title.text_frame.text = chart_spec.y_axis_title
-                    self._style_axis_title(chart.value_axis)
-                chart.value_axis.has_major_gridlines = True
-                self._style_value_axis(chart.value_axis, chart_spec)
+                if axis_role == PRIMARY_AXIS:
+                    axis.has_title = bool(chart_spec.y_axis_title)
+                    if chart_spec.y_axis_title:
+                        axis.axis_title.text_frame.text = chart_spec.y_axis_title
+                        self._style_axis_title(axis)
+                else:
+                    axis.has_title = False
+                axis.has_major_gridlines = axis_role == PRIMARY_AXIS
+                self._style_value_axis(axis, chart_spec, axis_role=axis_role)
             except Exception:
                 pass
 
@@ -1714,18 +1820,22 @@ class PptxGenerator:
         self._style_axis_line(axis)
         self._style_tick_labels(axis, chart_spec)
 
-    def _style_value_axis(self, axis, chart_spec: ChartSpec) -> None:
+    def _style_value_axis(self, axis, chart_spec: ChartSpec, *, axis_role: str = PRIMARY_AXIS) -> None:
         self._style_axis_line(axis)
         self._style_tick_labels(axis, chart_spec)
         try:
-            axis.major_gridlines.format.line.color.rgb = self._style_rgb("gridColor")
-            axis.major_gridlines.format.line.width = Pt(0.8)
+            if axis_role == PRIMARY_AXIS and axis.has_major_gridlines:
+                axis.major_gridlines.format.line.color.rgb = self._style_rgb("gridColor")
+                axis.major_gridlines.format.line.width = Pt(0.8)
         except Exception:
             pass
         try:
-            axis.tick_labels.number_format = self._chart_axis_number_format(chart_spec)
+            axis.tick_labels.number_format = chart_axis_number_format_for_axis(chart_spec, axis_role) or self._chart_axis_number_format(chart_spec)
         except Exception:
             pass
+
+    def _value_axes(self, chart) -> list[ValueAxis]:
+        return [ValueAxis(element) for element in chart._chartSpace.valAx_lst]
 
     def _style_axis_line(self, axis) -> None:
         try:
@@ -1750,30 +1860,7 @@ class PptxGenerator:
         return "General"
 
     def _chart_axis_number_format(self, chart_spec: ChartSpec) -> str:
-        if chart_spec.value_format == "percent":
-            return '0"%"'
-
-        max_value = max(
-            (abs(value) for series in chart_spec.series if not series.hidden for value in series.values),
-            default=0.0,
-        )
-
-        if chart_spec.value_format == "currency":
-            if max_value >= 1_000_000_000:
-                return '0.0,,," млрд ₽"'
-            if max_value >= 1_000_000:
-                return '0.0,," млн ₽"'
-            if max_value >= 1_000:
-                return '0," тыс ₽"'
-            return '#,##0" ₽"'
-
-        if max_value >= 1_000_000_000:
-            return '0.0,,," млрд"'
-        if max_value >= 1_000_000:
-            return '0.0,," млн"'
-        if max_value >= 1_000:
-            return '0," тыс"'
-        return "#,##0"
+        return chart_axis_number_format(chart_spec) or "#,##0"
 
     def _chart_tick_font_size(self, chart_spec: ChartSpec) -> int:
         config = self._chart_style_config()

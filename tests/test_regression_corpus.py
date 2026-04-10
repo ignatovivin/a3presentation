@@ -466,6 +466,231 @@ class RegressionCorpusTests(unittest.TestCase):
         self.assertTrue(all(slide.kind == SlideKind.TEXT for slide in narrative_slides))
         self.assertGreaterEqual(len(narrative_slides), 2)
 
+    def test_source_heavy_report_docx_skips_reference_tail_from_main_deck(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("source-heavy-report.docx", self._build_report_with_reference_tail_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        payload = "\n".join(
+            " ".join(
+                part
+                for part in (
+                    slide.title or "",
+                    slide.subtitle or "",
+                    slide.text or "",
+                    slide.notes or "",
+                    *slide.bullets,
+                )
+                if part
+            )
+            for slide in plan.slides
+        )
+
+        self.assertTrue(any((slide.title or "").startswith("1. Контекст") for slide in plan.slides))
+        self.assertFalse(any("Источники" in (slide.title or "") for slide in plan.slides))
+        self.assertNotIn("https://example.com/source-1", payload)
+        self.assertNotIn("https://example.com/source-2", payload)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_question_callout_heavy_docx_preserves_semantic_blocks_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("question-callout.docx", self._build_question_callout_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        target_slides = [slide for slide in plan.slides if (slide.title or "").startswith("FAQ и выводы")]
+        self.assertTrue(target_slides)
+        self.assertEqual(target_slides[0].kind, SlideKind.TEXT)
+        self.assertTrue(any(block.kind.value == "qa_item" for block in target_slides[0].content_blocks))
+        self.assertTrue(any(block.kind.value == "callout" for block in target_slides[0].content_blocks))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_long_title_layout_stress_docx_generates_deck_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("long-title-stress.docx", self._build_long_title_layout_stress_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        self.assertTrue(
+            any(
+                (slide.title or "").startswith(
+                    "1. Архитектурная модель устойчивого масштабирования партнерской инфраструктуры"
+                )
+                for slide in plan.slides
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_appendix_heavy_docx_generates_appendix_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract("appendix-heavy.docx", self._build_appendix_heavy_docx())
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        appendix_slides = [slide for slide in plan.slides if "Приложение" in (slide.title or "")]
+        self.assertTrue(appendix_slides)
+        appendix_payload = "\n".join(
+            part
+            for slide in appendix_slides
+            for part in [slide.title or "", slide.subtitle or "", slide.text or "", slide.notes or "", *slide.bullets]
+            if part
+        )
+        self.assertIn("ФИО: Иван Игнатов", appendix_payload)
+        self.assertIn("Дата: 05.09.2025", appendix_payload)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_long_title_with_subtitle_layout_stress_docx_generates_deck_without_capacity_violations(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract(
+            "long-title-subtitle-stress.docx",
+            self._build_long_title_with_subtitle_layout_stress_docx(),
+        )
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        target_slides = [
+            slide
+            for slide in plan.slides
+            if (slide.title or "").startswith("1. Архитектурная модель устойчивого масштабирования")
+        ]
+        self.assertTrue(target_slides)
+        self.assertTrue(any((slide.subtitle or "").strip() for slide in target_slides))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_long_title_with_subtitle_dense_continuation_docx_keeps_continuation_balanced(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract(
+            "long-title-subtitle-dense-continuation.docx",
+            self._build_long_title_with_subtitle_dense_continuation_docx(),
+        )
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        target_slides = [
+            slide
+            for slide in plan.slides
+            if (slide.title or "").startswith("1. Архитектурная модель устойчивого масштабирования")
+        ]
+        self.assertGreaterEqual(len(target_slides), 2)
+        self.assertTrue((target_slides[0].subtitle or "").strip())
+        self.assertTrue(all(not (slide.subtitle or "").strip() for slide in target_slides[1:]))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
+    def test_long_title_with_subtitle_reference_tail_docx_skips_sources_and_keeps_layout_green(self) -> None:
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        text, tables, blocks = extractor.extract(
+            "long-title-subtitle-reference-tail.docx",
+            self._build_long_title_with_subtitle_reference_tail_docx(),
+        )
+        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+        target_slides = [
+            slide
+            for slide in plan.slides
+            if (slide.title or "").startswith("1. Архитектурная модель устойчивого масштабирования")
+        ]
+        self.assertGreaterEqual(len(target_slides), 2)
+        self.assertTrue((target_slides[0].subtitle or "").strip())
+        self.assertTrue(all(not (slide.subtitle or "").strip() for slide in target_slides[1:]))
+
+        payload = "\n".join(
+            part
+            for slide in plan.slides
+            for part in [slide.title or "", slide.subtitle or "", slide.text or "", slide.notes or "", *slide.bullets]
+            if part
+        )
+        self.assertNotIn("https://example.com/source-1", payload)
+        self.assertNotIn("https://example.com/source-2", payload)
+        self.assertFalse(any("Источники" in (slide.title or "") for slide in plan.slides))
+        self.assertFalse(any("Приложение" in (slide.title or "") for slide in plan.slides))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan)
+
+        violations = find_capacity_violations(audits)
+        self.assertEqual(violations, [])
+
     def test_report_docx_skips_reference_tail_from_main_deck(self) -> None:
         extractor = DocumentTextExtractor()
         planner = TextToPlanService()
@@ -714,6 +939,150 @@ class RegressionCorpusTests(unittest.TestCase):
         )
         document.add_heading("2. Выводы", level=1)
         document.add_paragraph("Нужно сохранить только смысловые выводы и убрать голые ссылки из основной части презентации.")
+        document.add_paragraph("[1] https://example.com/source-1")
+        document.add_paragraph("https://example.com/source-1")
+        document.add_paragraph("[2] https://example.com/source-2")
+        document.add_paragraph("https://example.com/source-2")
+        return self._save_document(document)
+
+    def _build_question_callout_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("A3")
+        document.add_paragraph("FAQ по устойчивости платформы")
+        document.add_heading("FAQ и выводы", level=1)
+        document.add_paragraph("Вопрос: почему нужен второй контур инфраструктуры?")
+        document.add_paragraph("Важно: резервный контур удерживает SLA в часы пиковой нагрузки.")
+        document.add_paragraph("Итог: архитектура снижает риск простоя без усложнения операционной модели.")
+        document.add_heading("Следующий раздел", level=1)
+        document.add_paragraph("Короткий завершающий блок.")
+        return self._save_document(document)
+
+    def _build_long_title_layout_stress_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("A3")
+        document.add_paragraph("Архитектурный стресс-тест компоновки")
+        document.add_heading(
+            "1. Архитектурная модель устойчивого масштабирования партнерской инфраструктуры "
+            "в условиях длинных заголовков и плотного narrative-контента",
+            level=1,
+        )
+        document.add_paragraph(
+            "Раздел проверяет, что длинный заголовок не ломает вертикальный поток слайда и не вытесняет основной текст "
+            "в зону footer даже тогда, когда narrative остаётся достаточно плотным и требует аккуратной работы с "
+            "title height, body top и общими gap-инвариантами."
+        )
+        document.add_paragraph(
+            "Одновременно этот кейс должен подтвердить, что planner не распадается на искусственные короткие хвосты, "
+            "а generator сохраняет читаемую вёрстку без локальной подгонки под один шаблон или один документ."
+        )
+        document.add_heading("2. Следующий раздел", level=1)
+        document.add_paragraph("Короткий контрольный блок для проверки границы между секциями.")
+        return self._save_document(document)
+
+    def _build_appendix_heavy_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("Паспорт клиента и реквизиты")
+        document.add_paragraph("ФИО: Иван Игнатов")
+        document.add_paragraph("Дата: 05.09.2025")
+        document.add_paragraph("Email: ivan@example.com")
+        document.add_paragraph("Телефон: +7 999 000-00-00")
+        document.add_paragraph("Город: Екатеринбург")
+        document.add_paragraph("Компания: A3")
+        document.add_paragraph("Должность: Руководитель платформы")
+        document.add_paragraph("Подписант: Иван Игнатов")
+        return self._save_document(document)
+
+    def _build_long_title_with_subtitle_layout_stress_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("A3")
+        document.add_paragraph("Стресс-тест narrative компоновки")
+        document.add_heading(
+            "1. Архитектурная модель устойчивого масштабирования партнерской инфраструктуры "
+            "в условиях длинного заголовка, выделенного subtitle и плотного narrative-потока",
+            level=1,
+        )
+        document.add_heading(
+            "Подзаголовок: как удержать смысловой акцент и не разрушить вертикальный layout-контракт",
+            level=2,
+        )
+        document.add_paragraph(
+            "Первый абзац должен проверить, что planner сохраняет subtitle как самостоятельный смысловой слой, "
+            "а generator корректно пересчитывает title height и body start без переполнения и без слишком большого пустого провала."
+        )
+        document.add_paragraph(
+            "Второй абзац нужен для проверки плотного narrative-потока: текст остаётся связанным, не распадается на искусственные bullets "
+            "и не требует ручной подгонки только из-за длинного title и присутствия subtitle в том же разделе."
+        )
+        document.add_heading("2. Следующий раздел", level=1)
+        document.add_paragraph("Короткий контрольный блок для проверки перехода к следующей секции.")
+        return self._save_document(document)
+
+    def _build_long_title_with_subtitle_dense_continuation_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("A3")
+        document.add_paragraph("Стресс-тест continuation narrative компоновки")
+        document.add_heading(
+            "1. Архитектурная модель устойчивого масштабирования партнерской инфраструктуры "
+            "в условиях длинного заголовка, выделенного subtitle и многочастного narrative-потока",
+            level=1,
+        )
+        document.add_heading(
+            "Подзаголовок: как сохранить управляемый continuation без разрыва смысла и без пустых хвостов",
+            level=2,
+        )
+        document.add_paragraph(
+            "Первый абзац формирует достаточно плотный стартовый блок и проверяет, что planner не расходует слишком "
+            "много вертикального пространства только на title и subtitle, а оставляет место для реального payload."
+        )
+        document.add_paragraph(
+            "Второй абзац усиливает narrative-нагрузку и нужен затем, чтобы continuation собирался не по грубому "
+            "числу символов, а с учетом связности смысловых блоков и читаемого перехода между слайдами."
+        )
+        document.add_paragraph(
+            "Третий абзац добавляет ещё один плотный фрагмент о роли резервного контура, распределении запросов, "
+            "ограничении деградации и согласовании эксплуатационных правил в моменты неравномерного трафика."
+        )
+        document.add_paragraph(
+            "Четвёртый абзац фиксирует, что narrative должен оставаться paragraph-first: bullets здесь не являются "
+            "основной формой представления, а continuation не должен превращать связный текст в формальный список."
+        )
+        document.add_paragraph(
+            "Пятый абзац нужен для проверки tail-balance: последний continuation-слайд не должен оказаться слишком "
+            "пустым, даже если заголовок длинный, subtitle занят и основной текст распределяется по нескольким частям."
+        )
+        document.add_heading("2. Следующий раздел", level=1)
+        document.add_paragraph("Короткий контрольный блок для проверки перехода к следующей секции.")
+        return self._save_document(document)
+
+    def _build_long_title_with_subtitle_reference_tail_docx(self) -> bytes:
+        document = Document()
+        document.add_paragraph("A3")
+        document.add_paragraph("Стресс-тест source-heavy narrative компоновки")
+        document.add_heading(
+            "1. Архитектурная модель устойчивого масштабирования партнерской инфраструктуры "
+            "в условиях длинного заголовка, subtitle и source-heavy narrative-хвоста",
+            level=1,
+        )
+        document.add_heading(
+            "Подзаголовок: как удержать основной narrative и не раздувать колоду техническими ссылками",
+            level=2,
+        )
+        document.add_paragraph(
+            "Первый абзац проверяет, что длинный заголовок и subtitle не выталкивают основной смысловой текст в хвостовые "
+            "короткие continuation-слайды и не ломают базовый narrative-поток."
+        )
+        document.add_paragraph(
+            "Второй абзац добавляет плотную narrative-нагрузку, чтобы механизм continuation работал вместе с фильтрацией "
+            "reference-tail, а не независимо от неё."
+        )
+        document.add_paragraph(
+            "Третий абзац фиксирует, что итоговая презентация должна сохранить только содержательные выводы о резервном "
+            "контуре, SLA и балансировке трафика без переноса чисто технического списка источников в основную колоду."
+        )
+        document.add_heading("2. Выводы", level=1)
+        document.add_paragraph(
+            "Нужно сохранить смысловые выводы и не превратить source-heavy хвост в отдельный appendix или мусорный слайд."
+        )
         document.add_paragraph("[1] https://example.com/source-1")
         document.add_paragraph("https://example.com/source-1")
         document.add_paragraph("[2] https://example.com/source-2")

@@ -15,6 +15,7 @@ from a3presentation.domain.chart import (
     StructuredTable,
 )
 from a3presentation.domain.presentation import TableBlock
+from a3presentation.services.chart_render_contract import can_transpose_chart_spec
 
 
 @dataclass
@@ -251,10 +252,7 @@ class TableChartAnalyzer:
         unit: str | None = None
         value_type = ChartValueType.NUMBER
 
-        if "%" in lowered:
-            value_type = ChartValueType.PERCENT
-            unit = "%"
-        elif "₽" in lowered or "руб" in lowered:
+        if "₽" in lowered or "руб" in lowered:
             value_type = ChartValueType.CURRENCY
             unit = "RUB"
             if "млрд" in lowered:
@@ -269,6 +267,9 @@ class TableChartAnalyzer:
             value *= 1_000_000
         elif "тыс" in lowered:
             value *= 1_000
+        elif "%" in lowered:
+            value_type = ChartValueType.PERCENT
+            unit = "%"
 
         annotation = None
         if "—" in text:
@@ -340,21 +341,28 @@ class TableChartAnalyzer:
         classification: ChartTableClassification,
     ) -> list[ChartSpec]:
         series: list[ChartSeries] = []
-        units = set()
         for column_index in structured.numeric_columns:
             values: list[float] = []
             for row in data_rows:
                 if column_index >= len(row) or row[column_index].parsed_value is None:
                     break
-                values.append(row[column_index].parsed_value)
-                if row[column_index].unit:
-                    units.add(row[column_index].unit)
+                values.append(self._normalized_cell_value(structured, row, column_index))
             else:
                 if len(values) == len(categories):
                     series_name = self._series_name(structured, column_index)
-                    series.append(ChartSeries(name=series_name, values=values, unit=self._series_unit(data_rows, column_index)))
+                    series.append(
+                        ChartSeries(
+                            name=series_name,
+                            values=values,
+                            unit=self._series_unit(structured, data_rows, column_index),
+                        )
+                    )
 
         if not series:
+            return []
+
+        if self._has_mixed_point_units(structured, data_rows):
+            structured.warnings.append("single value series mixes incompatible point units")
             return []
 
         if self._looks_like_ordinal_index_series(structured, categories, series):
@@ -385,8 +393,14 @@ class TableChartAnalyzer:
             if len(series_unit_keys) > 2 or len(series) > 3:
                 structured.warnings.append("mixed units are too ambiguous for automatic chart suggestion")
                 return []
-            suggested_types = [ChartType.COLUMN, ChartType.LINE]
-            warnings.append("mixed-unit chart uses a single value axis; interpretation should be reviewed")
+            warnings.append("mixed-unit chart uses a secondary value axis")
+            return self._build_mixed_unit_candidates(
+                structured=structured,
+                categories=categories,
+                series=series,
+                confidence=confidence,
+                warnings=warnings,
+            )
         elif classification == ChartTableClassification.COMPOSITION:
             suggested_types = [ChartType.PIE, ChartType.COLUMN, ChartType.BAR]
         elif classification == ChartTableClassification.TIME_SERIES:
@@ -402,27 +416,240 @@ class TableChartAnalyzer:
         else:
             suggested_types = [ChartType.COLUMN, ChartType.LINE]
 
+        units = {series.unit for series in series if series.unit}
         value_format = "currency" if any(unit == "RUB" for unit in units) else "percent" if "%" in units else "number"
         y_axis_title = self._series_name(structured, structured.numeric_columns[0]) if len(series) == 1 else None
 
-        return [
-            ChartSpec(
-                chart_id=f"{structured.table_id}_{chart_type.value}",
-                source_table_id=structured.table_id,
-                chart_type=chart_type,
-                categories=categories,
-                series=candidate_series_by_type.get(chart_type, series),
-                x_axis_title=self._series_name(structured, structured.label_columns[0]) if structured.label_columns else None,
-                y_axis_title=y_axis_title,
-                legend_visible=len(series) > 1,
-                value_format="number" if chart_type == ChartType.COMBO and mixed_series_units else value_format,
-                stacking="stacked" if chart_type in {ChartType.STACKED_BAR, ChartType.STACKED_COLUMN} else "none",
-                data_labels_visible=chart_type == ChartType.PIE,
-                confidence=confidence,
-                warnings=warnings.copy(),
+        specs: list[ChartSpec] = []
+        for chart_type in suggested_types:
+            chart_series = candidate_series_by_type.get(chart_type, series)
+            specs.extend(
+                self._build_chart_type_variants(
+                    structured=structured,
+                    categories=categories,
+                    chart_type=chart_type,
+                    series=chart_series,
+                    y_axis_title=y_axis_title,
+                    value_format="number" if chart_type == ChartType.COMBO and mixed_series_units else value_format,
+                    stacking="stacked" if chart_type in {ChartType.STACKED_BAR, ChartType.STACKED_COLUMN} else "none",
+                    data_labels_visible=chart_type == ChartType.PIE,
+                    confidence=confidence,
+                    warnings=warnings,
+                )
             )
-            for chart_type in suggested_types
+        return [spec.model_copy(update={"transpose_allowed": can_transpose_chart_spec(spec)}) for spec in specs]
+
+    def _build_mixed_unit_candidates(
+        self,
+        *,
+        structured: StructuredTable,
+        categories: list[str],
+        series: list[ChartSeries],
+        confidence: ChartConfidence,
+        warnings: list[str],
+    ) -> list[ChartSpec]:
+        unit_groups: dict[str, list[ChartSeries]] = {}
+        for item in series:
+            unit_groups.setdefault(self._series_unit_key(item), []).append(item)
+
+        specs: list[ChartSpec] = []
+        candidates: list[tuple[int, ChartSeries, list[ChartSeries]]] = []
+        for index, line_series in enumerate(series):
+            primary_series = [item for item_index, item in enumerate(series) if item_index != index]
+            if not primary_series:
+                continue
+            primary_unit_keys = {self._series_unit_key(item) for item in primary_series}
+            if len(primary_unit_keys) != 1:
+                continue
+            candidates.append((index, line_series, primary_series))
+
+        preferred_candidates = sorted(
+            candidates,
+            key=lambda item: (
+                0 if item[1].unit == "%" else 1,
+                len({self._series_unit_key(series_item) for series_item in item[2]}),
+                item[0],
+            ),
+        )
+        for variant_index, (_, line_series, primary_series) in enumerate(preferred_candidates, start=1):
+            ordered_series = [item.model_copy(update={"axis": "primary"}) for item in primary_series] + [
+                line_series.model_copy(update={"axis": "secondary"})
+            ]
+            specs.append(
+                ChartSpec(
+                    chart_id=f"{structured.table_id}_{ChartType.COMBO.value}_{variant_index}",
+                    source_table_id=structured.table_id,
+                    chart_type=ChartType.COMBO,
+                    variant_label=self._mixed_unit_combo_variant_label(primary_series, line_series),
+                    categories=categories,
+                    series=ordered_series,
+                    x_axis_title=self._series_name(structured, structured.label_columns[0]) if structured.label_columns else None,
+                    y_axis_title=None,
+                    legend_visible=len(series) > 1,
+                    value_format="number",
+                    stacking="none",
+                    data_labels_visible=False,
+                    confidence=confidence,
+                    warnings=warnings.copy(),
+                    transpose_allowed=False,
+                )
+            )
+        for chart_type in (ChartType.COLUMN, ChartType.LINE):
+            for group_index, group_series in enumerate(unit_groups.values(), start=1):
+                specs.extend(
+                    self._build_mixed_group_variants(
+                        structured=structured,
+                        categories=categories,
+                        chart_type=chart_type,
+                        series=group_series,
+                        group_index=group_index,
+                        confidence=confidence,
+                        warnings=warnings,
+                    )
+                )
+        return specs
+
+    def _mixed_compare_series(self, series: list[ChartSeries]) -> list[ChartSeries]:
+        if len(series) < 2:
+            return []
+        percent_series = [item for item in series if item.unit == "%"]
+        non_percent_series = [item for item in series if item.unit != "%"]
+        if percent_series and non_percent_series:
+            primary = [item.model_copy(update={"axis": "primary"}) for item in non_percent_series]
+            secondary = [item.model_copy(update={"axis": "secondary"}) for item in percent_series]
+            return primary + secondary
+        primary_group = [series[0].model_copy(update={"axis": "primary"})]
+        secondary_group = [item.model_copy(update={"axis": "secondary"}) for item in series[1:]]
+        return primary_group + secondary_group
+
+    def _build_mixed_group_variants(
+        self,
+        *,
+        structured: StructuredTable,
+        categories: list[str],
+        chart_type: ChartType,
+        series: list[ChartSeries],
+        group_index: int,
+        confidence: ChartConfidence,
+        warnings: list[str],
+    ) -> list[ChartSpec]:
+        base_kwargs = {
+            "source_table_id": structured.table_id,
+            "chart_type": chart_type,
+            "categories": categories,
+            "x_axis_title": self._series_name(structured, structured.label_columns[0]) if structured.label_columns else None,
+            "value_format": self._value_format_for_series_group(series),
+            "stacking": "none",
+            "data_labels_visible": False,
+            "confidence": confidence,
+            "warnings": warnings.copy(),
+        }
+        primary_series = [item.model_copy(update={"axis": "primary"}) for item in series]
+        if len(primary_series) <= 1:
+            return [
+                ChartSpec(
+                    chart_id=f"{structured.table_id}_{chart_type.value}_{group_index}",
+                    variant_label=f"Единичный: {self._series_group_label(series)}",
+                    y_axis_title=self._series_group_axis_title(series),
+                    series=primary_series,
+                    legend_visible=False,
+                    transpose_allowed=False,
+                    **base_kwargs,
+                )
+            ]
+
+        specs = [
+            ChartSpec(
+                chart_id=f"{structured.table_id}_{chart_type.value}_{group_index}_compare",
+                variant_label=f"Сравнение: {self._series_group_label(series)}",
+                y_axis_title=None,
+                series=primary_series,
+                legend_visible=True,
+                transpose_allowed=can_transpose_chart_spec(
+                    ChartSpec(
+                        chart_id="preview",
+                        source_table_id=structured.table_id,
+                        chart_type=chart_type,
+                        categories=categories,
+                        series=series,
+                    )
+                ),
+                **base_kwargs,
+            )
         ]
+        specs.extend(
+            ChartSpec(
+                chart_id=f"{structured.table_id}_{chart_type.value}_{group_index}_{index}",
+                variant_label=f"Единичный: {item.name}",
+                y_axis_title=item.name,
+                series=[item.model_copy(update={"axis": "primary"})],
+                legend_visible=False,
+                transpose_allowed=False,
+                **base_kwargs,
+            )
+            for index, item in enumerate(series, start=1)
+        )
+        return specs
+
+    def _build_chart_type_variants(
+        self,
+        *,
+        structured: StructuredTable,
+        categories: list[str],
+        chart_type: ChartType,
+        series: list[ChartSeries],
+        y_axis_title: str | None,
+        value_format: str,
+        stacking: str,
+        data_labels_visible: bool,
+        confidence: ChartConfidence,
+        warnings: list[str],
+    ) -> list[ChartSpec]:
+        base_kwargs = {
+            "source_table_id": structured.table_id,
+            "chart_type": chart_type,
+            "categories": categories,
+            "x_axis_title": self._series_name(structured, structured.label_columns[0]) if structured.label_columns else None,
+            "value_format": value_format,
+            "stacking": stacking,
+            "data_labels_visible": data_labels_visible,
+            "confidence": confidence,
+            "warnings": warnings.copy(),
+        }
+
+        if len(series) <= 1 or chart_type in {ChartType.STACKED_BAR, ChartType.STACKED_COLUMN, ChartType.PIE, ChartType.COMBO}:
+            return [
+                ChartSpec(
+                    chart_id=f"{structured.table_id}_{chart_type.value}",
+                    y_axis_title=y_axis_title,
+                    series=series,
+                    legend_visible=len(series) > 1,
+                    **base_kwargs,
+                )
+            ]
+
+        specs = [
+            ChartSpec(
+                chart_id=f"{structured.table_id}_{chart_type.value}_compare",
+                variant_label=f"Сравнение: {self._series_group_label(series)}",
+                y_axis_title=None,
+                series=series,
+                legend_visible=True,
+                **base_kwargs,
+            )
+        ]
+        specs.extend(
+            ChartSpec(
+                chart_id=f"{structured.table_id}_{chart_type.value}_{index}",
+                variant_label=f"Единичный: {item.name}",
+                y_axis_title=item.name,
+                series=[item],
+                legend_visible=False,
+                **base_kwargs,
+            )
+            for index, item in enumerate(series, start=1)
+        )
+        return specs
 
     def _looks_like_ordinal_index_series(
         self,
@@ -456,8 +683,57 @@ class TableChartAnalyzer:
         ordered.append(series[line_index])
         return ordered
 
+    def _mixed_unit_combo_variant_label(self, primary_series: list[ChartSeries], line_series: ChartSeries) -> str:
+        primary_label = ", ".join(series.name for series in primary_series)
+        return f"Комбинированный: столбцы {primary_label}; линия {line_series.name}"
+
+    def _series_group_label(self, series_group: list[ChartSeries]) -> str:
+        if len(series_group) == 1:
+            return series_group[0].name
+        return ", ".join(series.name for series in series_group)
+
+    def _series_group_axis_title(self, series_group: list[ChartSeries]) -> str | None:
+        if len(series_group) == 1:
+            return series_group[0].name
+        return None
+
+    def _value_format_for_series_group(self, series_group: list[ChartSeries]) -> str:
+        units = {series.unit for series in series_group if series.unit}
+        if any(unit == "RUB" for unit in units):
+            return "currency"
+        if "%" in units:
+            return "percent"
+        return "number"
+
     def _series_unit_key(self, series: ChartSeries) -> str:
         return series.unit or "number"
+
+    def _normalized_cell_value(self, structured: StructuredTable, row: list[StructuredCell], column_index: int) -> float:
+        cell = row[column_index]
+        value = cell.parsed_value
+        if value is None:
+            return 0.0
+        if cell.unit:
+            return value
+        if self._cell_has_scale_hint(cell):
+            return value
+        return value * self._series_scale_from_header(structured, column_index)
+
+    def _has_mixed_point_units(self, structured: StructuredTable, rows: list[list[StructuredCell]]) -> bool:
+        for column_index in structured.numeric_columns:
+            header_unit = self._series_unit_from_header(structured, rows, column_index)
+            point_units = set()
+            for row in rows:
+                if column_index >= len(row) or row[column_index].parsed_value is None:
+                    continue
+                point_units.add(row[column_index].unit or header_unit or "number")
+            if len(point_units) > 1:
+                return True
+        return False
+
+    def _cell_has_scale_hint(self, cell: StructuredCell) -> bool:
+        text = cell.normalized_text
+        return any(token in text for token in ("млрд", "млн", "тыс", "bn", "billion", "million", "thousand"))
 
     def _series_name(self, structured: StructuredTable, column_index: int) -> str:
         if structured.cells and structured.header_rows and column_index < len(structured.cells[0]):
@@ -466,11 +742,54 @@ class TableChartAnalyzer:
                 return header
         return f"Series {column_index + 1}"
 
-    def _series_unit(self, rows: list[list[StructuredCell]], column_index: int) -> str | None:
+    def _series_unit(
+        self,
+        structured: StructuredTable,
+        rows: list[list[StructuredCell]],
+        column_index: int,
+    ) -> str | None:
         for row in rows:
             if column_index < len(row) and row[column_index].unit:
                 return row[column_index].unit
+        return self._series_unit_from_header(structured, rows, column_index)
+
+    def _series_unit_from_header(
+        self,
+        structured: StructuredTable,
+        rows: list[list[StructuredCell]],
+        column_index: int,
+    ) -> str | None:
+        if not structured.cells or not structured.header_rows or column_index >= len(structured.cells[0]):
+            return None
+
+        header = structured.cells[0][column_index].normalized_text
+        values = [
+            row[column_index].parsed_value
+            for row in rows
+            if column_index < len(row) and row[column_index].parsed_value is not None
+        ]
+
+        if "%" in header or any(token in header for token in ("доля", "процент", "проц", "share", "rate")):
+            if values and all(-100.0 <= value <= 100.0 for value in values):
+                return "%"
+
+        if "₽" in header or "руб" in header or "rur" in header or "rub" in header:
+            return "RUB"
+
         return None
+
+    def _series_scale_from_header(self, structured: StructuredTable, column_index: int) -> float:
+        if not structured.cells or not structured.header_rows or column_index >= len(structured.cells[0]):
+            return 1.0
+
+        header = structured.cells[0][column_index].normalized_text
+        if "млрд" in header or "bn" in header or "billion" in header:
+            return 1_000_000_000.0
+        if "млн" in header or "m " in f"{header} " or "million" in header:
+            return 1_000_000.0
+        if "тыс" in header or "k " in f"{header} " or "thousand" in header:
+            return 1_000.0
+        return 1.0
 
     def _build_reasons(
         self,

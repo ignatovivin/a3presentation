@@ -224,7 +224,7 @@ Current coverage:
 
 Current risk:
 
-- secondary value axis is not implemented, so money + percent views still use a single value axis when the user explicitly picks a chart
+- secondary value axis уже поддержана для mixed-unit combo chart scenarios, но это покрытие пока требует дальнейшего parity и regression hardening
 - frontend preview is an HTML/SVG approximation of PowerPoint charts and must stay covered by parity/smoke checks
 
 ### 8. Image-heavy document

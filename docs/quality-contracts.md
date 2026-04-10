@@ -1,26 +1,40 @@
 # Quality Contracts
 
-`quality-contracts` is a dedicated verification layer for generated decks.
+`quality-contracts` это отдельный слой верификации для сгенерированных колод.
 
-It is narrower than the full backend test suite and focuses on end-to-end layout quality contracts:
+Он уже, чем полный backend test suite, и сосредоточен на end-to-end layout-контрактах:
 
-- text and bullets capacity
-- continuation balance
-- mixed-content order preservation
-- table layout geometry
-- chart layout geometry
-- chart semantic contracts:
-  - rendered chart type
-  - rendered series count
-  - combo bar/line structure
-  - title/subtitle font sizes
-  - value-axis number format for compact large-number display
-- image layout geometry
-- template-aware behavior for uploaded or analyzer-derived templates
-- representative document classes:
+- вместимость текста и bullets
+- баланс continuation slides
+- сохранение порядка mixed-content
+- геометрия table layout
+- геометрия chart layout
+- семантические chart-контракты:
+  - тип отрендеренного графика
+  - число отрендеренных рядов
+  - combo-структура bar/line
+  - размеры шрифтов title/subtitle
+  - number format value-axis для компактного отображения больших чисел
+- геометрия image layout
+- template-aware поведение для uploaded и analyzer-derived templates
+- quality gate теперь включает отдельные зелёные сценарии для:
+  - analyzer-derived uploaded layout template
+  - uploaded prototype template
+  - uploaded prototype template с `chart_image` binding
+- для template-aware text paths quality gate теперь дополнительно подтверждает placeholder-aware вместимость:
+  - audit-profile уменьшается от реальной геометрии placeholder, а не только от `layout_key`
+  - generator подбирает body font bounds из фактических размеров shape
+  - это подтверждается и test suite, и свежей runtime-генерацией `.pptx` в `storage/outputs`
+- представительные классы документов:
   - text-only
   - mixed text
   - report-like
+  - source-heavy report с reference-tail
+  - question/callout-heavy report
+  - long-title/layout-stress report
+  - long-title + subtitle + dense continuation report
+  - source-heavy report с long title + subtitle stress
+  - appendix-heavy structured docx
   - strategy-heavy
   - form-like
   - resume-like
@@ -29,88 +43,118 @@ It is narrower than the full backend test suite and focuses on end-to-end layout
   - image-heavy
   - fact-only
 
-Current runner:
+Текущий runner:
 
 - [run_quality_contracts.py](../scripts/run_quality_contracts.py)
 
-## Why a dedicated runner
+## Почему используется отдельный runner
 
-The project already uses `unittest` everywhere.
+Проект уже использует `unittest` везде.
 
-A dedicated runner is the lowest-friction option because it:
+Отдельный runner здесь самый практичный вариант, потому что он:
 
-- reuses the current test stack
-- avoids introducing another task runner or marker system
-- gives a stable command for local checks and CI gates
-- keeps the quality gate intentionally curated instead of coupling it to every backend test
+- переиспользует текущий test stack
+- не требует вводить ещё один task runner или marker system
+- даёт стабильную команду для локальных проверок и CI gate
+- удерживает quality gate как намеренно отобранный набор проверок, а не как смесь со всем backend suite
 
-## Run
+## Как запускать
 
-From the repo root:
+Из корня репозитория:
 
 ```bash
 .venv\Scripts\python.exe scripts/run_quality_contracts.py
 ```
 
-## When to run
+## Когда запускать
 
-Recommended cases:
+Рекомендуемые случаи:
 
-- after changes in `planner`
-- after changes in `pptx_generator`
-- after layout/template changes
-- after changes in template analyzer or template-aware geometry logic
-- before moving changes from `dev` to `test`
-- before release verification
+- после изменений в `planner`
+- после изменений в `pptx_generator`
+- после изменений в layout/template logic
+- после изменений в template analyzer или template-aware geometry logic
+- перед переносом изменений из `dev` в `test`
+- перед release verification
 
-## Scope Boundary
+## Граница ответственности
 
-This layer is intended to answer:
+Этот слой должен отвечать на вопросы:
 
-- did the deck render with the expected layout contracts?
-- did planner and generator stay aligned on slide capacity rules?
-- did mixed paragraph/list content keep its expected order after rendering?
-- did representative document classes remain stable?
-- did the change remain valid beyond one built-in template or one regression document?
+- отрендерилась ли колода с ожидаемыми layout-контрактами?
+- остались ли planner и generator согласованы по slide capacity rules?
+- сохранился ли порядок mixed paragraph/list content после рендера?
+- остались ли стабильными представительные document classes?
+- остаётся ли изменение корректным не только для одного built-in template или одного regression document?
 
-It is not intended to replace:
+Он не должен заменять:
 
-- the full backend suite
+- полный backend suite
 - API contract tests
-- frontend smoke and visual tests
+- frontend smoke и visual tests
 
-Those layers should continue to run alongside `quality-contracts`, not instead of it.
+Эти слои должны запускаться вместе с `quality-contracts`, а не вместо него.
 
-## Chart-Specific Contracts
+## Контракты, связанные с графиками
 
-Current chart behavior:
+Для axis labels, `numFmt`, compact values, `%`, `₽`, data labels и mixed-unit charts
+обязательная внешняя документация фиксируется в [analysis_rule.md](analysis_rule.md).
+Именно она должна определять chart-formatting contract, а не локальная эвристика одного компонента.
 
-- chartable tables can be promoted to real chart slides through explicit chart overrides
-- default chart candidates include column, line, bar, stacked column/bar, and pie where appropriate
-- combo remains supported by the generator for explicit specs and legacy plans, but is not offered as the default mixed-unit UI option
-- unsafe mixed-unit tables with too many unit families are rejected as not chartable
-- ordinal/status tables with `1..N` index-like values are rejected as not chartable
-- summary rows such as `Итого` are filtered out before chart series are built
-- column, bar, line, stacked, pie, and explicit combo scenarios are covered by generator XML tests
-- chart slides use the same layout-quality contract as the rest of the deck
-- chart value axes are audited for compact number formats such as `млн`, `млрд`, `%`, and `₽`
-- chart title/subtitle sizes are audited against the shared `28 pt` / `18 pt` contract
+Текущее поведение chart pipeline:
 
-Frontend-adjacent checks:
+- chartable tables могут превращаться в реальные chart slides через explicit chart overrides
+- default chart candidates включают column, line, bar, stacked column/bar и pie там, где это уместно
+- combo остаётся поддержанным в generator для explicit specs и legacy plans
+- безопасный mixed-unit сценарий `number/RUB + %` теперь должен по умолчанию идти как `combo` с secondary value axis,
+  а не как single-axis column/line
+- shared backend chart render semantics теперь централизованы, поэтому generator и deck-audit используют один и тот же contract для visible series, combo fallback и axis formats
+- mixed-unit combo charts теперь могут рендериться с secondary value axis, когда это требуется render contract'ом
+- unsafe mixed-unit tables с слишком большим числом unit families считаются not chartable
+- ordinal/status tables с индексоподобными значениями `1..N` считаются not chartable
+- summary rows вроде `Итого` отфильтровываются до построения chart series
+- column, bar, line, stacked, pie и explicit combo покрыты generator XML tests
+- chart slides используют тот же layout-quality contract, что и остальная колода
+- для chart value axis проверяются компактные форматы вроде `млн`, `млрд`, `%` и `₽`
+- для chart title/subtitle проверяется общий контракт `28 pt` / `18 pt`
+- template-aware audit не должен применять image-panel rules к text slides только потому, что prototype layout основан на `image_text`
+- placeholder-aware capacity contract теперь общий для generator и deck-audit: smaller uploaded placeholders должны давать более строгий `max_chars` и не выходить за свои font bounds в реальном артефакте
+- dense narrative continuation contract теперь тоже закреплён: planner обязан реально использовать `dense_text_full_width`, когда он уменьшает число continuation slides без нарушений quality bounds
+- тот же dense contract теперь распространяется и на paragraph-dominant mixed narrative + bullets scenarios, если bullets только уточняют основной narrative, а не превращают слайд в list-first layout
+- quality gate теперь отдельно подтверждает continuation-balance для narrative stress-case с длинным title, явным subtitle и многочастным body; subtitle должен оставаться только на первом слайде continuation-group
+- quality gate теперь дополнительно подтверждает, что source-heavy reference-tail не попадает в main deck даже в stress-case с длинным title, явным subtitle и continuation
+- `deck_audit` теперь проверяет body underfill как placeholder-level fill contract и использует явную footer geometry там, где footer привязан к реальному placeholder idx
+- `deck_audit` теперь дополнительно ловит аномально большой разрыв между `title/subtitle` и `body`, но делает это как runtime-эвристику для реального layout-контракта, не штрафуя штатный стандартный gap встроенного и uploaded template path'ов
+- для prototype templates footer geometry теперь тоже проходит через synthetic footer idx в `deck_audit`, поэтому проверки `narrow_footer` и `footer_left_misalignment` больше не ограничены только обычными placeholder-layout путями
+- placeholder-aware fill contract расширен и на детерминированный auxiliary text placeholder в `list_with_icons`;
+  если ожидаемый payload левой колонки потерялся при рендере, `deck_audit` теперь возвращает `underfilled_auxiliary_placeholder_fill`
+- template-aware chart contract расширен на prototype templates с `chart_image` binding:
+  generator обязан рендерить реальный chart shape, применять chart title/subtitle contract `28/18 pt`,
+  а `deck_audit` обязан выбирать тот же chart prototype, что и generator, и сравнивать chart/footer width с template slot, а не с full-width встроенным layout
 
-- structure drawer smoke verifies chart/table mode switching
-- chart type select no longer exposes combo for default mixed-unit candidates
-- hidden series are preserved in the `chart_overrides` payload
-- preview smoke covers column, bar, line, stacked column, stacked bar, pie, and explicit combo render paths
-- line preview smoke checks marker/line/label counts and guards against invalid `NaN` coordinates
+Смежные frontend-проверки:
 
-## Execution rule
+- structure drawer smoke проверяет переключение между `table` и `chart`
+- chart type select больше не показывает combo для default mixed-unit candidates
+- hidden series сохраняются в `chart_overrides` payload
+- transpose mode разрешён только для chart specs, которые остаются семантически безопасными после обмена местами series и categories
+- preview smoke покрывает column, bar, line, stacked column, stacked bar, pie и explicit combo paths
+- line preview smoke проверяет marker/line/label counts и защищает от `NaN` координат
+- runtime chart smoke должен мокать только `/documents/extract-text`; далее `/plans/from-text`, `/presentations/generate`
+  и download должны идти через реальный локальный backend
+- mocked extraction fixture в runtime smoke обязан повторять форму реального extractor: если таблица есть в `tables`,
+  соответствующий ordered block должен идти как `DocumentBlock(kind="table", table=...)`; иначе planner может создать
+  лишний table-slide рядом с chart-slide и smoke перестанет доказывать чистый table->chart override path
+- chart axis format contract теперь дополнительно запрещает применять percent format к primary axis,
+  если на ней есть непроцентные series; `%` допустим только для оси, где все series процентные
 
-This verification layer should support the general working standard of the project:
+## Правило исполнения
 
-- fixes are accepted as global only if they survive document-class and template-aware checks
-- one problematic file is a regression case, not proof that a local tweak is acceptable
-- after fixing one manifestation, related manifestations in neighboring components, layouts, or render paths should also be checked and covered by verification where applicable
-- verification after changes should include targeted regressions, representative document classes, and the broader backend suite rather than a single happy-path rerun
-- generation-related fixes must include a fresh `.pptx` generation after the code change and direct inspection of the newly generated artifact; inspecting an old deck is diagnostic only
-- after identifying a safe next verification or implementation step, work should continue automatically without redundant stop-and-ask behavior
+Этот verification layer должен поддерживать общий рабочий стандарт проекта:
+
+- исправление считается глобальным только если проходит document-class и template-aware проверки
+- один проблемный файл является regression case, но не доказательством допустимости локальной подгонки
+- после исправления одного проявления нужно проверять и соседние проявления в связанных компонентах, layout'ах и render path'ах
+- верификация после изменений должна включать targeted regressions, representative document classes и более широкий backend suite, а не только один happy-path rerun
+- для generation-related fixes обязательна свежая генерация `.pptx` после изменений и прямая проверка нового артефакта; анализ старой колоды допустим только для диагностики причины
+- после нахождения следующего безопасного шага работа должна продолжаться автоматически без лишних stop-and-ask пауз

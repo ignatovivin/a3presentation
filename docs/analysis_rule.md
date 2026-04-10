@@ -1,5 +1,23 @@
 # Analysis Rule
 
+## Обязательное стартовое правило для каждой задачи
+
+Каждая новая задача в этом проекте должна начинаться с анализа проектных правил из папки `docs`.
+Минимальный стартовый набор:
+
+- [analysis_rule.md](analysis_rule.md)
+- [document_class_matrix.md](document_class_matrix.md)
+- [quality-contracts.md](quality-contracts.md)
+- [system_backlog.md](system_backlog.md)
+- [project_overview.md](project_overview.md)
+
+Если задача затрагивает frontend, visual checks или chart preview, дополнительно нужно читать:
+
+- [frontend-visual-contracts.md](frontend-visual-contracts.md)
+
+Если задача выглядит простой технической командой, например показать `git status`, это правило можно не разворачивать в полный анализ.
+Во всех остальных случаях сначала нужно сверить запрос с этими rule-docs, а уже потом читать код, менять файлы или делать выводы.
+
 ## Обязательный порядок разбора и исправления проблем
 
 Для задач, связанных с генерацией, анализом и исправлением PowerPoint и DOCX, рабочий порядок такой:
@@ -159,6 +177,45 @@
 - смешения narrative текста и bullet layout
 - проблем с таблицами и графиками
 - расхождений между `.docx` структурой и итоговым `.pptx`
+
+## Обязательная документация по значениям на графиках
+
+Для любых задач, где затрагиваются подписи значений, шкалы осей, `numFmt`, compact formats, `%`, `₽`,
+data labels или mixed-unit charts, нужно опираться на следующий набор документации как на обязательную базу:
+
+1. `python-pptx` chart tick labels:
+   `https://python-pptx.readthedocs.io/en/stable/dev/analysis/cht-tick-labels.html`
+2. `python-pptx` chart data labels:
+   `https://python-pptx.readthedocs.io/en/latest/dev/analysis/cht-data-labels.html`
+3. `python-pptx` chart API:
+   `https://python-pptx.readthedocs.io/en/stable/api/chart.html`
+4. `python-pptx` chart-data API:
+   `https://python-pptx.readthedocs.io/en/latest/api/chart-data.html`
+5. Open XML chart axis / `c:numFmt`:
+   `https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.drawing.charts.valueaxis.numberingformat?view=openxml-3.0.1`
+6. Open XML chart structure examples:
+   `https://learn.microsoft.com/en-us/office/open-xml/spreadsheet/how-to-insert-a-chart-into-a-spreadsheet`
+
+### Рабочие правила, которые считаются обязательными
+
+1. Формат подписей оси задаётся через `tick_labels.number_format`, а не через data labels.
+2. Формат data labels и формат value-axis labels это разные контракты, их нельзя смешивать.
+3. Если `number_format_is_linked` или `sourceLinked=1`, PowerPoint может тянуть формат из embedded workbook;
+   при явном runtime-контракте формат нужно задавать как unlink'ed.
+4. Процентный формат допустим только на оси, где все series процентные.
+5. Mixed-unit график `number/RUB + %` не должен рендериться как single-axis chart с общей левой осью в `%`.
+6. Для безопасного mixed-unit сценария нужно использовать `combo` и secondary value axis.
+7. Compact number formats вроде `млн`, `млрд`, `₽`, `%` нужно назначать отдельно для каждой оси по фактическому набору series на этой оси.
+8. Если серия процентов определяется не по ячейкам, а по semantic header вроде `Доля`, `Маржа`, `Процент`, это всё равно должно учитываться при выборе axis semantics.
+
+### Операционное правило
+
+Перед любым изменением логики chart formatting нужно:
+
+1. свериться с этой документацией,
+2. проверить текущий `chart_render_contract`,
+3. проверить `TableChartAnalyzer -> planner -> generator -> deck_audit`,
+4. после правки сделать свежую генерацию `.pptx` и проверить реальный chart XML/runtime artifact.
 
 ## Рабочее правило применения
 

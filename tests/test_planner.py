@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from pptx import Presentation
+from pptx.chart.axis import ValueAxis
 from pptx.shapes.autoshape import Shape
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE, XL_MARKER_STYLE
@@ -20,7 +21,7 @@ from a3presentation.domain.presentation import (
     SlideSpec,
     TableBlock,
 )
-from a3presentation.services.layout_capacity import TEXT_FULL_WIDTH_PROFILE
+from a3presentation.services.layout_capacity import DENSE_TEXT_FULL_WIDTH_PROFILE, TEXT_FULL_WIDTH_PROFILE
 from a3presentation.services.pptx_generator import PptxGenerator
 from a3presentation.services.planner import ContinuationUnit, Section, TextToPlanService
 from a3presentation.services.template_registry import TemplateRegistry
@@ -346,6 +347,28 @@ class TextToPlanServiceTests(unittest.TestCase):
 
         self.assertNotIn("Конкурентные преимущества А3", first_slide_payload)
         self.assertIn("Конкурентные преимущества А3", second_slide_payload)
+
+    def test_choose_text_continuation_batches_can_select_dense_text_profile(self) -> None:
+        service = TextToPlanService()
+        chunks = ["A" * 430, "B" * 430, "C" * 430, "D" * 430]
+
+        batches, profile = service._choose_text_continuation_batches(chunks, title="Плотный narrative", subtitle="")
+
+        self.assertEqual(profile.layout_key, DENSE_TEXT_FULL_WIDTH_PROFILE.layout_key)
+        self.assertEqual(len(batches), 2)
+        self.assertTrue(all(sum(len(chunk) for chunk in batch) >= 800 for batch in batches))
+
+    def test_split_large_section_uses_dense_text_layout_for_balanced_dense_narrative(self) -> None:
+        service = TextToPlanService()
+        section = Section(
+            title="Плотный narrative",
+            paragraphs=["A" * 430, "B" * 430, "C" * 430, "D" * 430],
+        )
+
+        slides = service._split_large_section(section)
+
+        self.assertEqual(len(slides), 2)
+        self.assertTrue(all(slide.preferred_layout_key == "dense_text_full_width" for slide in slides))
 
     def test_cover_meta_stays_compact_for_long_first_section(self) -> None:
         service = TextToPlanService()
@@ -705,6 +728,45 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertEqual(target_slides[0].kind, SlideKind.TEXT)
         self.assertTrue(any(block.kind == SlideContentBlockKind.BULLET_LIST for block in target_slides[0].content_blocks))
 
+    def test_preferred_textual_layout_uses_dense_text_for_paragraph_dominant_mixed_payload(self) -> None:
+        service = TextToPlanService()
+        layout_key = service._preferred_textual_layout_key(
+            [
+                SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text="A" * 260),
+                SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text="B" * 260),
+                SlideContentBlock(kind=SlideContentBlockKind.BULLET_LIST, items=["Первый короткий тезис.", "Второй короткий тезис."]),
+            ],
+            total_chars=560,
+        )
+
+        self.assertEqual(layout_key, "dense_text_full_width")
+
+    def test_continuation_units_fit_single_slide_uses_dense_text_for_paragraph_dominant_mixed_payload(self) -> None:
+        service = TextToPlanService()
+        units = [
+            ContinuationUnit(kind="paragraph", text="A" * 260),
+            ContinuationUnit(kind="paragraph", text="B" * 260),
+            ContinuationUnit(kind="bullet", text="Первый короткий тезис."),
+            ContinuationUnit(kind="bullet", text="Второй короткий тезис."),
+        ]
+
+        self.assertTrue(service._continuation_units_fit_single_slide(units))
+
+    def test_build_continuation_slide_uses_dense_text_for_paragraph_dominant_mixed_payload(self) -> None:
+        service = TextToPlanService()
+        units = [
+            ContinuationUnit(kind="paragraph", text="A" * 260),
+            ContinuationUnit(kind="paragraph", text="B" * 260),
+            ContinuationUnit(kind="bullet", text="Первый короткий тезис."),
+            ContinuationUnit(kind="bullet", text="Второй короткий тезис."),
+        ]
+
+        slide = service._build_continuation_slide("Гибридный раздел", "", units)
+
+        self.assertEqual(slide.kind, SlideKind.TEXT)
+        self.assertEqual(slide.preferred_layout_key, "dense_text_full_width")
+        self.assertTrue(any(block.kind == SlideContentBlockKind.BULLET_LIST for block in slide.content_blocks))
+
     def test_first_section_with_tables_is_not_swallowed_by_cover(self) -> None:
         service = TextToPlanService()
         blocks = [
@@ -887,6 +949,10 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertEqual(len(chart_slides), 1)
         self.assertEqual(chart_slides[0].source_table_id, "table_1")
         self.assertIsNotNone(chart_slides[0].chart)
+        self.assertEqual(chart_slides[0].title, "Лиды по каналам")
+        self.assertEqual(chart_slides[0].subtitle, "")
+        self.assertIsNone(chart_slides[0].text)
+        self.assertEqual(chart_slides[0].bullets, [])
         self.assertIsNone(chart_slides[0].table)
 
     def test_split_table_keeps_compact_two_column_ten_row_table_on_single_slide(self) -> None:
@@ -1614,6 +1680,55 @@ class TextToPlanServiceTests(unittest.TestCase):
             self.assertEqual(len(bar_charts), 1)
             self.assertEqual(len(line_charts), 0)
             self.assertEqual(len(bar_charts[0].xpath("./c:ser")), 2)
+
+    def test_generator_renders_secondary_value_axis_for_mixed_unit_combo(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="A3 Presentation",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.CHART,
+                    title="Combo secondary axis",
+                    chart=ChartSpec(
+                        chart_id="chart_combo_secondary_axis",
+                        source_table_id="table_1",
+                        chart_type=ChartType.COMBO,
+                        title="Выручка и маржа",
+                        categories=["Q1", "Q2", "Q3"],
+                        series=[
+                            ChartSeries(name="Выручка", values=[104_300_000.0, 111_300_000.0, 135_700_000.0], unit="RUB"),
+                            ChartSeries(name="Маржа", values=[18.0, 22.0, 27.0], unit="%"),
+                        ],
+                        confidence=ChartConfidence.HIGH,
+                        value_format="number",
+                    ),
+                    preferred_layout_key="table",
+                ),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+            chart = next(shape.chart for shape in presentation.slides[1].shapes if getattr(shape, "has_chart", False))
+            chart_space = chart._chartSpace
+            line_charts = chart_space.xpath(".//c:lineChart")
+            value_axes = chart_space.xpath(".//c:valAx")
+
+            self.assertEqual(len(line_charts), 1)
+            self.assertEqual(len(value_axes), 2)
+            self.assertEqual(ValueAxis(value_axes[0]).tick_labels.number_format, '0.0,," млн ₽"')
+            self.assertEqual(ValueAxis(value_axes[1]).tick_labels.number_format, '0"%"')
+            self.assertEqual(
+                [element.get("val") for element in line_charts[0].xpath("./c:axId")],
+                [chart_space.xpath(".//c:catAx/c:axId")[0].get("val"), value_axes[1].xpath("./c:axId")[0].get("val")],
+            )
 
     def test_generator_formats_value_axis_in_millions_for_large_currency_values(self) -> None:
         settings = get_settings()

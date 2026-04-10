@@ -80,6 +80,7 @@ class ChartSpec(BaseModel):
     chart_id: str
     source_table_id: str
     chart_type: ChartType
+    variant_label: str | None = None
     title: str | None = None
     categories: list[str] = Field(default_factory=list)
     series: list[ChartSeries] = Field(default_factory=list)
@@ -91,6 +92,7 @@ class ChartSpec(BaseModel):
     stacking: str = "none"
     confidence: ChartConfidence = ChartConfidence.NONE
     warnings: list[str] = Field(default_factory=list)
+    transpose_allowed: bool = False
 
 
 class ChartabilityAssessment(BaseModel):

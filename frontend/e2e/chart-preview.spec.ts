@@ -27,6 +27,7 @@ function chartSpec(tableId: string, chartType: string, title: string, overrides 
     stacking: chartType.startsWith("stacked") ? "stacked" : "none",
     confidence: "high",
     warnings: [],
+    transpose_allowed: true,
     ...overrides,
   };
 }
@@ -75,10 +76,11 @@ const chartAssessments = [
     table_id: "table_combo",
     candidate_specs: [
       chartSpec("table_combo", "combo", "Combo preview", {
+        categories: ["Q1", "Q2", "Q3", "Q4"],
         series: [
-          { name: "План", values: [120, 140, 160, 190], unit: null, axis: "primary", hidden: false },
-          { name: "Факт", values: [100, 150, 170, 200], unit: null, axis: "primary", hidden: false },
-          { name: "Маржа", values: [18, 22, 24, 27], unit: null, axis: "primary", hidden: false },
+          { name: "План", values: [120_000_000, 140_000_000, 160_000_000, 190_000_000], unit: "RUB", axis: "primary", hidden: false },
+          { name: "Факт", values: [100_000_000, 150_000_000, 170_000_000, 200_000_000], unit: "RUB", axis: "primary", hidden: false },
+          { name: "Маржа", values: [18, 22, 24, 27], unit: "%", axis: "primary", hidden: false },
         ],
       }),
     ],
@@ -143,6 +145,11 @@ test("@smoke chart preview renders every supported chart layout", async ({ page 
   const columnCard = page.getByTestId("assessment-card-table_column");
   await page.getByTestId("mode-chart-table_column").click();
   await expect(columnCard.locator(".chart-preview-bar")).toHaveCount(8);
+  const columnBarHeights = await columnCard.locator(".chart-preview-bar").evaluateAll((items) =>
+    items.map((item) => (item as HTMLElement).getBoundingClientRect().height),
+  );
+  expect(columnBarHeights.every((height) => height > 14)).toBeTruthy();
+  expect(new Set(columnBarHeights.map((height) => Math.round(height))).size).toBeGreaterThan(1);
 
   const barCard = page.getByTestId("assessment-card-table_bar");
   await page.getByTestId("mode-chart-table_bar").click();
@@ -177,4 +184,43 @@ test("@smoke chart preview renders every supported chart layout", async ({ page 
   await expect(comboCard.locator(".chart-preview-bar")).toHaveCount(8);
   await expect(comboCard.locator(".chart-preview-line-svg path.chart-preview-line")).toHaveCount(1);
   await expect(comboCard.locator(".chart-preview-line-marker")).toHaveCount(4);
+  await expect(comboCard.locator(".chart-preview-axis")).toHaveCount(2);
+  await expect(comboCard.locator(".chart-preview-line-label").first()).toContainText("%");
+  await expect(comboCard.locator(".chart-preview-bar-value").first()).toContainText("₽");
+  await expect(comboCard.locator(".chart-preview-axis").first()).not.toContainText("%");
+  await expect(comboCard.locator(".chart-preview-axis").nth(1)).toContainText("%");
+});
+
+test("@smoke combo preview falls back to column when line series is hidden", async ({ page }) => {
+  await openStructureDrawer(page);
+
+  const comboCard = page.getByTestId("assessment-card-table_combo");
+  await page.getByTestId("mode-chart-table_combo").click();
+  await expect(comboCard.locator(".chart-preview-line-svg path.chart-preview-line")).toHaveCount(1);
+
+  await page.getByTestId("series-toggle-table_combo-Маржа").click();
+
+  await expect(comboCard.locator(".chart-preview-line-svg path.chart-preview-line")).toHaveCount(0);
+  await expect(comboCard.locator(".chart-preview-line-marker")).toHaveCount(0);
+  await expect(comboCard.locator(".chart-preview-bar")).toHaveCount(8);
+  await expect(comboCard.locator(".chart-preview-legend")).not.toContainText("Маржа");
+});
+
+test("@visual chart preview cards stay visually stable", async ({ page }) => {
+  await openStructureDrawer(page);
+
+  const columnCard = page.getByTestId("assessment-card-table_column");
+  await page.getByTestId("mode-chart-table_column").click();
+  await expect(columnCard).toHaveScreenshot("chart-preview-column-negative.png");
+
+  const lineCard = page.getByTestId("assessment-card-table_line");
+  await page.getByTestId("mode-chart-table_line").click();
+  await expect(lineCard).toHaveScreenshot("chart-preview-line-dense.png");
+
+  const comboCard = page.getByTestId("assessment-card-table_combo");
+  await page.getByTestId("mode-chart-table_combo").click();
+  await expect(comboCard).toHaveScreenshot("chart-preview-combo-mixed-units.png");
+
+  await page.getByTestId("series-toggle-table_combo-Маржа").click();
+  await expect(comboCard).toHaveScreenshot("chart-preview-combo-fallback-hidden-line.png");
 });

@@ -97,7 +97,7 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(len(payload.tables), 1)
         self.assertEqual(len(payload.chart_assessments), 1)
 
-    def test_extract_text_endpoint_does_not_offer_combo_for_mixed_unit_table(self) -> None:
+    def test_extract_text_endpoint_offers_safe_combo_variants_for_mixed_unit_table(self) -> None:
         document = Document()
         document.add_heading("Метрики", level=1)
         table = document.add_table(rows=4, cols=3)
@@ -121,8 +121,22 @@ class ApiContractTests(unittest.TestCase):
         payload = asyncio.run(routes_module.extract_document_text(upload))
 
         self.assertEqual(len(payload.chart_assessments), 1)
-        chart_types = [spec.chart_type.value for spec in payload.chart_assessments[0].candidate_specs]
-        self.assertEqual(chart_types, ["column", "line"])
+        chart_specs = payload.chart_assessments[0].candidate_specs
+        self.assertEqual(
+            [spec.chart_type.value for spec in chart_specs],
+            ["combo", "combo", "column", "column", "line", "line"],
+        )
+        self.assertEqual(
+            [spec.variant_label for spec in chart_specs],
+            [
+                "Комбинированный: столбцы Выручка; линия Маржа",
+                "Комбинированный: столбцы Маржа; линия Выручка",
+                "Единичный: Выручка",
+                "Единичный: Маржа",
+                "Единичный: Выручка",
+                "Единичный: Маржа",
+            ],
+        )
 
     def test_extract_text_endpoint_rejects_too_ambiguous_mixed_unit_chart(self) -> None:
         document = Document()

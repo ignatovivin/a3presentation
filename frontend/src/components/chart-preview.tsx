@@ -6,6 +6,8 @@ type ChartPreviewProps = {
   spec: ChartSpec;
 };
 
+type AxisRole = "primary" | "secondary";
+
 type RenderChartSpec = ChartSpec & {
   series: ChartSeries[];
   chart_type: ChartType;
@@ -17,47 +19,94 @@ type ScaleDomain = {
   span: number;
 };
 
-function formatCompactValue(value: number, valueFormat: string): string {
-  const compact = new Intl.NumberFormat("ru-RU", {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(value);
-
-  if (valueFormat === "currency") {
-    return `${compact} ₽`;
-  }
-  if (valueFormat === "percent") {
-    return `${value}%`;
-  }
-  return compact;
+function visibleSeries(spec: ChartSpec): ChartSeries[] {
+  return spec.series.filter((series) => !series.hidden);
 }
 
-function shortenCategoryLabel(label: string, maxChars: number): string {
-  if (label.length <= maxChars) {
-    return label;
-  }
-  return `${label.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+function unitKey(series: ChartSeries): string {
+  return series.unit ?? "number";
 }
 
-function renderChartSpec(spec: ChartSpec): RenderChartSpec {
-  const visibleSeries = spec.series.filter((series) => !series.hidden);
-  const shouldRenderCombo =
-    spec.chart_type === "combo" &&
-    Boolean(spec.series.length && !spec.series[spec.series.length - 1].hidden && visibleSeries.length >= 2);
+function resolveSeriesAxes(spec: ChartSpec, series: ChartSeries[]): ChartSeries[] {
+  if (spec.chart_type !== "combo") {
+    const explicitSecondary = series.some((item) => item.axis === "secondary");
+    return series.map((item) => ({ ...item, axis: explicitSecondary && item.axis === "secondary" ? "secondary" : "primary" }));
+  }
+
+  const explicitSecondary = series.some((item) => item.axis === "secondary");
+  const mixedUnits = new Set(series.map(unitKey)).size > 1;
+  const autoSecondaryIndex = mixedUnits && series.length >= 2 ? series.length - 1 : null;
+
+  return series.map((item, index) => {
+    let axis: AxisRole = item.axis === "secondary" ? "secondary" : "primary";
+    if (!explicitSecondary && autoSecondaryIndex !== null && index === autoSecondaryIndex) {
+      axis = "secondary";
+    } else if (axis !== "secondary") {
+      axis = "primary";
+    }
+    return { ...item, axis };
+  });
+}
+
+function comboLineVisible(spec: ChartSpec, series: ChartSeries[]): boolean {
+  if (spec.chart_type !== "combo") {
+    return false;
+  }
+  return Boolean(spec.series.length && !spec.series[spec.series.length - 1].hidden && series.length >= 2);
+}
+
+function renderChartSpec(spec: ChartSpec): RenderChartSpec | null {
+  const visible = visibleSeries(spec);
+  if (!visible.length) {
+    return null;
+  }
+
+  const resolvedSeries = resolveSeriesAxes(spec, visible);
+  const shouldRenderCombo = comboLineVisible(spec, resolvedSeries);
+  const resolvedType = spec.chart_type === "combo" && !shouldRenderCombo ? "column" : spec.chart_type;
+  const normalizedSeries = resolvedSeries;
 
   return {
     ...spec,
-    chart_type: spec.chart_type === "combo" && !shouldRenderCombo ? "column" : spec.chart_type,
-    series: visibleSeries,
+    chart_type: resolvedType,
+    series: normalizedSeries,
   };
+}
+
+function seriesForAxis(spec: RenderChartSpec, axis: AxisRole): ChartSeries[] {
+  return spec.series.filter((series) => series.axis === axis);
+}
+
+function usesSecondaryAxis(spec: RenderChartSpec): boolean {
+  return spec.series.some((series) => series.axis === "secondary");
 }
 
 function scaleDomain(series: ChartSeries[]): ScaleDomain {
   const values = series.flatMap((item) => item.values);
+  if (!values.length) {
+    return { min: 0, max: 1, span: 1 };
+  }
   const minValue = Math.min(...values, 0);
   const maxValue = Math.max(...values, 1);
   const span = Math.max(maxValue - minValue, 1);
   return { min: minValue, max: maxValue, span };
+}
+
+function tickValuesForDomain(domain: ScaleDomain, gridSteps: number): number[] {
+  return Array.from({ length: gridSteps + 1 }, (_, index) => {
+    const ratio = (gridSteps - index) / gridSteps;
+    return domain.min + domain.span * ratio;
+  });
+}
+
+function scaleDomainForStacked(series: ChartSeries[], categoryCount: number): ScaleDomain {
+  const maxValue = Math.max(
+    1,
+    ...Array.from({ length: categoryCount }, (_, categoryIndex) =>
+      series.reduce((sum, item) => sum + Math.max(0, item.values[categoryIndex] ?? 0), 0),
+    ),
+  );
+  return { min: 0, max: maxValue, span: maxValue };
 }
 
 function positiveHeightPercent(value: number, domain: ScaleDomain, minimum = 6): number {
@@ -75,6 +124,64 @@ function pointXPercent(index: number, valueCount: number): number {
   return valueCount === 1 ? 50 : ((index + 0.5) / Math.max(valueCount, 1)) * 100;
 }
 
+function compactNumber(value: number): string {
+  return new Intl.NumberFormat("ru-RU", {
+    notation: "compact",
+    maximumFractionDigits: Math.abs(value) >= 10 ? 0 : 1,
+  }).format(value);
+}
+
+function formatSeriesValue(value: number, series: ChartSeries, fallbackFormat: string): string {
+  const effectiveFormat = series.unit === "%" ? "percent" : series.unit === "RUB" ? "currency" : fallbackFormat;
+  if (effectiveFormat === "percent") {
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(value >= 10 ? 0 : 1)}%`;
+  }
+  if (effectiveFormat === "currency") {
+    return `${compactNumber(value)} ₽`;
+  }
+  return compactNumber(value);
+}
+
+function axisKindForSeries(spec: RenderChartSpec, series: ChartSeries[]): "percent" | "currency" | "number" {
+  if (series.length && series.every((item) => item.unit === "%")) {
+    return "percent";
+  }
+  if (series.some((item) => item.unit === "RUB") || spec.value_format === "currency") {
+    return "currency";
+  }
+  return "number";
+}
+
+function formatAxisValue(value: number, spec: RenderChartSpec, series: ChartSeries[]): string {
+  const axisKind = axisKindForSeries(spec, series);
+  if (axisKind === "percent") {
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(value >= 10 ? 0 : 1)}%`;
+  }
+
+  const absValue = Math.abs(value);
+  const suffix = axisKind === "currency" ? " ₽" : "";
+  if (absValue >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(absValue >= 10_000_000_000 ? 0 : 1)} млрд${suffix}`;
+  }
+  if (absValue >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(absValue >= 10_000_000 ? 0 : 1)} млн${suffix}`;
+  }
+  if (absValue >= 1_000) {
+    return `${(value / 1_000).toFixed(absValue >= 10_000 ? 0 : 1)} тыс${suffix}`;
+  }
+  if (axisKind === "currency") {
+    return `${Math.round(value)} ₽`;
+  }
+  return `${Math.round(value)}`;
+}
+
+function shortenCategoryLabel(label: string, maxChars: number): string {
+  if (label.length <= maxChars) {
+    return label;
+  }
+  return `${label.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
 function categoryTotal(series: ChartSeries[], categoryIndex: number): number {
   return series.reduce((sum, item) => sum + (item.values[categoryIndex] ?? 0), 0);
 }
@@ -85,30 +192,32 @@ function compactSeriesMagnitude(series: ChartSeries): number {
 
 export function ChartPreview({ spec }: ChartPreviewProps) {
   const renderSpec = renderChartSpec(spec);
-  const visibleSeries = renderSpec.series;
-  const valueDomain = scaleDomain(visibleSeries);
-  const pieSeries = renderSpec.chart_type === "pie" ? visibleSeries[0] ?? null : null;
+  if (!renderSpec) {
+    return <div className="chart-empty-state">Нет доступных рядов для визуализации.</div>;
+  }
+
+  const visible = renderSpec.series;
+  const primarySeries = seriesForAxis(renderSpec, "primary");
+  const secondarySeries = seriesForAxis(renderSpec, "secondary");
+  const hasSecondaryAxis = usesSecondaryAxis(renderSpec) && secondarySeries.length > 0;
+  const primaryDomain = scaleDomain(primarySeries.length ? primarySeries : visible);
+  const secondaryDomain = scaleDomain(secondarySeries.length ? secondarySeries : visible);
+  const pieSeries = renderSpec.chart_type === "pie" ? visible[0] ?? null : null;
   const pieTotal = pieSeries ? Math.max(pieSeries.values.reduce((sum, value) => sum + value, 0), 1) : 1;
-  const stackedMaxValue = Math.max(
-    ...renderSpec.categories.map((_, categoryIndex) => categoryTotal(visibleSeries, categoryIndex)),
-    1,
-  );
   const categoryCount = renderSpec.categories.length;
-  const seriesCount = visibleSeries.length;
+  const seriesCount = visible.length;
   const gridSteps = 4;
   const isPieChart = renderSpec.chart_type === "pie";
   const isHorizontalBarChart = renderSpec.chart_type === "bar";
   const isHorizontalStackedChart = renderSpec.chart_type === "stacked_bar";
   const isStackedChart = renderSpec.chart_type === "stacked_bar" || renderSpec.chart_type === "stacked_column";
-  const tickValues = Array.from({ length: gridSteps + 1 }, (_, index) => {
-    const ratio = (gridSteps - index) / gridSteps;
-    if (isStackedChart) {
-      return Math.max(0, stackedMaxValue * ratio);
-    }
-    return valueDomain.min + valueDomain.span * ratio;
-  });
+  const stackedDomain = scaleDomainForStacked(visible, categoryCount);
+  const axisDomain = isStackedChart ? stackedDomain : primaryDomain;
+  const primaryTickValues = tickValuesForDomain(axisDomain, gridSteps);
+  const secondaryTickValues = tickValuesForDomain(secondaryDomain, gridSteps);
   const isLineChart = renderSpec.chart_type === "line";
   const isComboChart = renderSpec.chart_type === "combo";
+  const isSecondaryColumnChart = renderSpec.chart_type === "column" && hasSecondaryAxis;
   const isDense = categoryCount >= chartStyle.denseCategoryThreshold;
   const isVeryDense = categoryCount >= chartStyle.veryDenseCategoryThreshold;
   const categorySlotWidth = isVeryDense
@@ -122,25 +231,21 @@ export function ChartPreview({ spec }: ChartPreviewProps) {
     : isDense
       ? chartStyle.categoryLabelMaxChars.dense
       : chartStyle.categoryLabelMaxChars.default;
-  const comboLineSeries = isComboChart ? visibleSeries[visibleSeries.length - 1] ?? null : null;
-  const comboBarSeries = isComboChart ? visibleSeries.slice(0, -1) : visibleSeries;
-  const comboBarDomain = scaleDomain(comboBarSeries);
+  const comboLineSeries = isComboChart ? secondarySeries[secondarySeries.length - 1] ?? null : null;
+  const comboBarSeries = isComboChart ? primarySeries : visible;
+  const comboBarDomain = scaleDomain(comboBarSeries.length ? comboBarSeries : visible);
   const labeledLineSeriesIndex =
-    isLineChart && visibleSeries.length > 1
-      ? visibleSeries.reduce((lowestIndex, series, index) => {
-          return compactSeriesMagnitude(series) < compactSeriesMagnitude(visibleSeries[lowestIndex]) ? index : lowestIndex;
+    isLineChart && visible.length > 1
+      ? visible.reduce((lowestIndex, series, index) => {
+          return compactSeriesMagnitude(series) < compactSeriesMagnitude(visible[lowestIndex]) ? index : lowestIndex;
         }, 0)
       : 0;
 
-  if (!visibleSeries.length) {
-    return <div className="chart-empty-state">Нет доступных рядов для визуализации.</div>;
-  }
-
-  function buildLinePath(values: number[]): string {
+  function buildLinePath(values: number[], domain: ScaleDomain): string {
     return values
       .map((value, index) => {
         const x = pointXPercent(index, values.length);
-        const y = 100 - pointBottomPercent(value, valueDomain);
+        const y = 100 - pointBottomPercent(value, domain);
         return `${index === 0 ? "M" : "L"} ${x} ${y}`;
       })
       .join(" ");
@@ -188,7 +293,7 @@ export function ChartPreview({ spec }: ChartPreviewProps) {
         </div>
         {renderSpec.legend_visible ? (
           <div className="chart-preview-legend">
-            {visibleSeries.map((series, index) => (
+            {visible.map((series, index) => (
               <span className="chart-preview-legend-item" key={series.name}>
                 <span className="chart-preview-swatch" style={{ background: seriesColor(index) }} />
                 {series.name}
@@ -198,7 +303,7 @@ export function ChartPreview({ spec }: ChartPreviewProps) {
         ) : null}
       </div>
 
-      <div className={`chart-preview-frame${isPieChart ? " is-pie" : ""}`}>
+      <div className={`chart-preview-frame${isPieChart ? " is-pie" : ""}${hasSecondaryAxis ? " has-secondary-axis" : ""}`}>
         {isPieChart ? (
           <>
             <div className="chart-preview-axis chart-preview-axis-pie">
@@ -220,7 +325,7 @@ export function ChartPreview({ spec }: ChartPreviewProps) {
                 <div className="chart-preview-pie-total">
                   <span className="chart-preview-pie-total-label">Всего</span>
                   <span className="chart-preview-pie-total-value">
-                    {formatCompactValue(pieTotal, renderSpec.value_format)}
+                    {formatSeriesValue(pieTotal, pieSeries ?? visible[0], renderSpec.value_format)}
                   </span>
                 </div>
               </div>
@@ -238,7 +343,7 @@ export function ChartPreview({ spec }: ChartPreviewProps) {
                         </span>
                       </div>
                       <div className="chart-preview-pie-item-metrics">
-                        <span>{formatCompactValue(value, renderSpec.value_format)}</span>
+                        <span>{formatSeriesValue(value, pieSeries ?? visible[0], renderSpec.value_format)}</span>
                         <span>{percent.toFixed(percent >= 10 ? 0 : 1)}%</span>
                       </div>
                     </div>
@@ -249,254 +354,265 @@ export function ChartPreview({ spec }: ChartPreviewProps) {
           </>
         ) : (
           <>
-        <div className="chart-preview-axis">
-          {tickValues.map((value, index) => (
-            <div className="chart-preview-axis-tick" key={`${renderSpec.chart_id}-tick-${index}`}>
-              {formatCompactValue(value, renderSpec.value_format)}
-            </div>
-          ))}
-        </div>
-
-        <div className="chart-preview-stage-scroll">
-          <div className="chart-preview-stage" style={{ width: `${contentWidth}px` }}>
-            <div className="chart-preview-gridlines">
-              {tickValues.map((_, index) => (
-                <div className="chart-preview-gridline" key={`${renderSpec.chart_id}-grid-${index}`} />
+            <div className="chart-preview-axis">
+              {primaryTickValues.map((value, index) => (
+                <div className="chart-preview-axis-tick" key={`${renderSpec.chart_id}-tick-primary-${index}`}>
+                  {formatAxisValue(value, renderSpec, isStackedChart ? visible : primarySeries.length ? primarySeries : visible)}
+                </div>
               ))}
             </div>
 
-            {isLineChart ? (
-              <div className="chart-preview-line-stage">
-                <svg className="chart-preview-line-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                  {visibleSeries.map((series, seriesIndex) => (
-                    <path
-                      key={series.name}
-                      d={buildLinePath(series.values)}
-                      className="chart-preview-line"
-                      style={{ stroke: seriesColor(seriesIndex) }}
-                    />
-                  ))}
-                </svg>
-
-                <div className="chart-preview-line-marker-layer">
-                  {visibleSeries.flatMap((series, seriesIndex) =>
-                    series.values.map((value, categoryIndex) => {
-                      const x = pointXPercent(categoryIndex, series.values.length);
-                      const bottom = pointBottomPercent(value, valueDomain);
-                      const shouldShowLabel = visibleSeries.length === 1 || seriesIndex === labeledLineSeriesIndex;
-                      return (
-                        <div
-                          className="chart-preview-line-marker"
-                          key={`${series.name}-${renderSpec.categories[categoryIndex] ?? categoryIndex}-marker`}
-                          style={{ left: `${x}%`, bottom: `${bottom}%` }}
-                          title={`${series.name}: ${formatCompactValue(value, renderSpec.value_format)}`}
-                        >
-                          <span className="chart-preview-point" style={{ background: seriesColor(seriesIndex) }} />
-                          {shouldShowLabel ? (
-                            <span className="chart-preview-line-label">
-                              {formatCompactValue(value, renderSpec.value_format)}
-                            </span>
-                          ) : null}
-                        </div>
-                      );
-                    }),
-                  )}
-                </div>
-
-                <div className="chart-preview-grid line-layout">
-                  {renderSpec.categories.map((category, categoryIndex) => (
-                    <div className="chart-preview-group" key={`${renderSpec.chart_id}-${category}`}>
-                      <div className="chart-preview-line-spacer" aria-hidden="true" />
-                      <div className="chart-preview-category" title={category}>
-                        {shortenCategoryLabel(category, categoryLabelMaxChars)}
-                      </div>
-                    </div>
+            <div className="chart-preview-stage-scroll" style={{ minWidth: 0 }}>
+              <div className="chart-preview-stage" style={{ width: `${contentWidth}px` }}>
+                <div className="chart-preview-gridlines">
+                  {primaryTickValues.map((_, index) => (
+                    <div className="chart-preview-gridline" key={`${renderSpec.chart_id}-grid-${index}`} />
                   ))}
                 </div>
-              </div>
-            ) : isHorizontalStackedChart ? (
-              <div className="chart-preview-horizontal-list">
-                {renderSpec.categories.map((category, categoryIndex) => (
-                  <div className="chart-preview-horizontal-row" key={`${renderSpec.chart_id}-${category}`}>
-                    <div className="chart-preview-horizontal-label" title={category}>
-                      {shortenCategoryLabel(category, categoryLabelMaxChars)}
-                    </div>
-                    <div className="chart-preview-horizontal-track">
-                      <div className="chart-preview-horizontal-stack">
-                        {visibleSeries.map((series, seriesIndex) => {
-                          const value = series.values[categoryIndex] ?? 0;
-                          const widthPercent = Math.max(4, (value / stackedMaxValue) * 100);
+
+                {isLineChart ? (
+                  <div className="chart-preview-line-stage">
+                    <svg className="chart-preview-line-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                      {visible.map((series, seriesIndex) => (
+                        <path
+                          key={series.name}
+                          d={buildLinePath(series.values, series.axis === "secondary" ? secondaryDomain : primaryDomain)}
+                          className="chart-preview-line"
+                          style={{ stroke: seriesColor(seriesIndex) }}
+                        />
+                      ))}
+                    </svg>
+
+                    <div className="chart-preview-line-marker-layer">
+                      {visible.flatMap((series, seriesIndex) =>
+                        series.values.map((value, categoryIndex) => {
+                          const x = pointXPercent(categoryIndex, series.values.length);
+                          const bottom = pointBottomPercent(value, series.axis === "secondary" ? secondaryDomain : primaryDomain);
+                          const shouldShowLabel = visible.length === 1 || seriesIndex === labeledLineSeriesIndex;
                           return (
                             <div
-                              className="chart-preview-horizontal-segment"
-                              key={`${series.name}-${category}`}
-                              style={{ width: `${widthPercent}%`, background: seriesColor(seriesIndex) }}
-                              title={`${series.name}: ${formatCompactValue(value, renderSpec.value_format)}`}
-                            />
+                              className="chart-preview-line-marker"
+                              key={`${series.name}-${renderSpec.categories[categoryIndex] ?? categoryIndex}-marker`}
+                              style={{ left: `${x}%`, bottom: `${bottom}%` }}
+                              title={`${series.name}: ${formatSeriesValue(value, series, renderSpec.value_format)}`}
+                            >
+                              <span className="chart-preview-point" style={{ background: seriesColor(seriesIndex) }} />
+                              {shouldShowLabel ? (
+                                <span className="chart-preview-line-label">
+                                  {formatSeriesValue(value, series, renderSpec.value_format)}
+                                </span>
+                              ) : null}
+                            </div>
                           );
-                        })}
-                      </div>
-                    </div>
-                    <div className="chart-preview-horizontal-value">
-                      {formatCompactValue(
-                        categoryTotal(visibleSeries, categoryIndex),
-                        renderSpec.value_format,
+                        }),
                       )}
                     </div>
-                  </div>
-                ))}
-              </div>
-            ) : isHorizontalBarChart ? (
-              <div className="chart-preview-horizontal-list">
-                {renderSpec.categories.map((category, categoryIndex) => (
-                  <div className="chart-preview-horizontal-row" key={`${renderSpec.chart_id}-${category}`}>
-                    <div className="chart-preview-horizontal-label" title={category}>
-                      {shortenCategoryLabel(category, categoryLabelMaxChars)}
-                    </div>
-                    <div className="chart-preview-horizontal-track">
-                      {visibleSeries.map((series, seriesIndex) => {
-                        const value = series.values[categoryIndex] ?? 0;
-                        const widthPercent = positiveHeightPercent(value, valueDomain, 4);
-                        return (
-                          <div className="chart-preview-horizontal-series" key={`${series.name}-${category}`}>
-                            <div
-                              className="chart-preview-horizontal-bar"
-                              style={{ width: `${widthPercent}%`, background: seriesColor(seriesIndex) }}
-                            />
+
+                    <div className="chart-preview-grid line-layout">
+                      {renderSpec.categories.map((category) => (
+                        <div className="chart-preview-group" key={`${renderSpec.chart_id}-${category}`}>
+                          <div className="chart-preview-line-spacer" aria-hidden="true" />
+                          <div className="chart-preview-category" title={category}>
+                            {shortenCategoryLabel(category, categoryLabelMaxChars)}
                           </div>
-                        );
-                      })}
-                    </div>
-                    <div className="chart-preview-horizontal-value">
-                      {formatCompactValue(categoryTotal(visibleSeries, categoryIndex), renderSpec.value_format)}
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
-              </div>
-            ) : isStackedChart ? (
-              <div className="chart-preview-grid">
-                {renderSpec.categories.map((category, categoryIndex) => (
-                  <div className="chart-preview-group" key={`${renderSpec.chart_id}-${category}`}>
-                    <div className="chart-preview-bars">
-                      <div className="chart-preview-bar-wrap stacked-wrap">
-                        <div className="chart-preview-bar-value">
-                          {formatCompactValue(
-                            categoryTotal(visibleSeries, categoryIndex),
-                            renderSpec.value_format,
-                          )}
+                ) : isHorizontalStackedChart ? (
+                  <div className="chart-preview-horizontal-list">
+                    {renderSpec.categories.map((category, categoryIndex) => (
+                      <div className="chart-preview-horizontal-row" key={`${renderSpec.chart_id}-${category}`}>
+                        <div className="chart-preview-horizontal-label" title={category}>
+                          {shortenCategoryLabel(category, categoryLabelMaxChars)}
                         </div>
-                        <div className="chart-preview-stack">
-                          {visibleSeries.map((series, seriesIndex) => {
+                        <div className="chart-preview-horizontal-track">
+                          <div className="chart-preview-horizontal-stack">
+                            {visible.map((series, seriesIndex) => {
+                              const value = series.values[categoryIndex] ?? 0;
+                              const widthPercent = Math.max(4, (value / stackedDomain.max) * 100);
+                              return (
+                                <div
+                                  className="chart-preview-horizontal-segment"
+                                  key={`${series.name}-${category}`}
+                                  style={{ width: `${widthPercent}%`, background: seriesColor(seriesIndex) }}
+                                  title={`${series.name}: ${formatSeriesValue(value, series, renderSpec.value_format)}`}
+                                />
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="chart-preview-horizontal-value">
+                          {formatAxisValue(categoryTotal(visible, categoryIndex), renderSpec, visible)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : isHorizontalBarChart ? (
+                  <div className="chart-preview-horizontal-list">
+                    {renderSpec.categories.map((category, categoryIndex) => (
+                      <div className="chart-preview-horizontal-row" key={`${renderSpec.chart_id}-${category}`}>
+                        <div className="chart-preview-horizontal-label" title={category}>
+                          {shortenCategoryLabel(category, categoryLabelMaxChars)}
+                        </div>
+                        <div className="chart-preview-horizontal-track">
+                          {visible.map((series, seriesIndex) => {
                             const value = series.values[categoryIndex] ?? 0;
-                            const heightPercent = Math.max(6, (value / stackedMaxValue) * 100);
+                            const widthPercent = positiveHeightPercent(value, primaryDomain, 4);
                             return (
-                              <div
-                                className="chart-preview-stack-segment"
-                                key={`${series.name}-${category}`}
-                                style={{ height: `${heightPercent}%`, background: seriesColor(seriesIndex) }}
-                                title={`${series.name}: ${formatCompactValue(value, renderSpec.value_format)}`}
-                              />
+                              <div className="chart-preview-horizontal-series" key={`${series.name}-${category}`}>
+                                <div
+                                  className="chart-preview-horizontal-bar"
+                                  style={{ width: `${widthPercent}%`, background: seriesColor(seriesIndex) }}
+                                />
+                              </div>
                             );
                           })}
                         </div>
-                      </div>
-                    </div>
-                    <div className="chart-preview-category" title={category}>
-                      {shortenCategoryLabel(category, categoryLabelMaxChars)}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : isComboChart ? (
-              <div className="chart-preview-line-stage">
-                {comboLineSeries ? (
-                  <svg className="chart-preview-line-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                    <path
-                      d={buildLinePath(comboLineSeries.values)}
-                      className="chart-preview-line"
-                      style={{ stroke: seriesColor(visibleSeries.length - 1) }}
-                    />
-                  </svg>
-                ) : null}
-
-                {comboLineSeries ? (
-                  <div className="chart-preview-line-marker-layer">
-                    {comboLineSeries.values.map((value, categoryIndex) => {
-                      const x = pointXPercent(categoryIndex, comboLineSeries.values.length);
-                      const bottom = pointBottomPercent(value, valueDomain);
-                      return (
-                        <div
-                          className="chart-preview-line-marker"
-                          key={`${comboLineSeries.name}-${renderSpec.categories[categoryIndex] ?? categoryIndex}-marker`}
-                          style={{ left: `${x}%`, bottom: `${bottom}%` }}
-                          title={`${comboLineSeries.name}: ${formatCompactValue(value, renderSpec.value_format)}`}
-                        >
-                          <span
-                            className="chart-preview-point"
-                            style={{ background: seriesColor(visibleSeries.length - 1) }}
-                          />
-                          <span className="chart-preview-line-label">
-                            {formatCompactValue(value, renderSpec.value_format)}
-                          </span>
+                        <div className="chart-preview-horizontal-value">
+                          {formatAxisValue(categoryTotal(visible, categoryIndex), renderSpec, visible)}
                         </div>
-                      );
-                    })}
+                      </div>
+                    ))}
                   </div>
-                ) : null}
+                ) : isStackedChart ? (
+                  <div className="chart-preview-grid">
+                    {renderSpec.categories.map((category, categoryIndex) => (
+                      <div className="chart-preview-group" key={`${renderSpec.chart_id}-${category}`}>
+                        <div className="chart-preview-bars">
+                          <div className="chart-preview-bar-wrap stacked-wrap">
+                            <div className="chart-preview-bar-value">
+                              {formatAxisValue(categoryTotal(visible, categoryIndex), renderSpec, visible)}
+                            </div>
+                            <div className="chart-preview-stack">
+                              {visible.map((series, seriesIndex) => {
+                                const value = series.values[categoryIndex] ?? 0;
+                                const heightPercent = Math.max(6, (value / stackedDomain.max) * 100);
+                                return (
+                                  <div
+                                    className="chart-preview-stack-segment"
+                                    key={`${series.name}-${category}`}
+                                    style={{ height: `${heightPercent}%`, background: seriesColor(seriesIndex) }}
+                                    title={`${series.name}: ${formatSeriesValue(value, series, renderSpec.value_format)}`}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="chart-preview-category" title={category}>
+                          {shortenCategoryLabel(category, categoryLabelMaxChars)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : isComboChart ? (
+                  <div className="chart-preview-line-stage">
+                    {comboLineSeries ? (
+                      <svg className="chart-preview-line-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                        <path
+                          d={buildLinePath(comboLineSeries.values, secondaryDomain)}
+                          className="chart-preview-line"
+                          style={{ stroke: seriesColor(visible.length - 1) }}
+                        />
+                      </svg>
+                    ) : null}
 
-                <div className="chart-preview-grid line-layout">
-                  {renderSpec.categories.map((category, categoryIndex) => (
-                    <div className="chart-preview-group" key={`${renderSpec.chart_id}-${category}`}>
-                      <div className="chart-preview-bars combo-bars">
-                        {comboBarSeries.map((series, seriesIndex) => {
-                          const value = series.values[categoryIndex] ?? 0;
-                          const heightPercent = positiveHeightPercent(value, comboBarDomain);
+                    {comboLineSeries ? (
+                      <div className="chart-preview-line-marker-layer">
+                        {comboLineSeries.values.map((value, categoryIndex) => {
+                          const x = pointXPercent(categoryIndex, comboLineSeries.values.length);
+                          const bottom = pointBottomPercent(value, secondaryDomain);
                           return (
-                            <div className="chart-preview-bar-wrap" key={`${series.name}-${category}`}>
-                              <div className="chart-preview-bar-value">{formatCompactValue(value, renderSpec.value_format)}</div>
-                              <div
-                                className="chart-preview-bar"
-                                style={{ height: `${heightPercent}%`, background: seriesColor(seriesIndex) }}
+                            <div
+                              className="chart-preview-line-marker"
+                              key={`${comboLineSeries.name}-${renderSpec.categories[categoryIndex] ?? categoryIndex}-marker`}
+                              style={{ left: `${x}%`, bottom: `${bottom}%` }}
+                              title={`${comboLineSeries.name}: ${formatSeriesValue(value, comboLineSeries, renderSpec.value_format)}`}
+                            >
+                              <span
+                                className="chart-preview-point"
+                                style={{ background: seriesColor(visible.length - 1) }}
                               />
+                              <span className="chart-preview-line-label">
+                                {formatSeriesValue(value, comboLineSeries, renderSpec.value_format)}
+                              </span>
                             </div>
                           );
                         })}
                       </div>
-                      <div className="chart-preview-category" title={category}>
-                        {shortenCategoryLabel(category, categoryLabelMaxChars)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="chart-preview-grid">
-                {renderSpec.categories.map((category, categoryIndex) => (
-                  <div className="chart-preview-group" key={`${renderSpec.chart_id}-${category}`}>
-                    <div className="chart-preview-bars">
-                      {visibleSeries.map((series, seriesIndex) => {
-                        const value = series.values[categoryIndex] ?? 0;
-                        const heightPercent = positiveHeightPercent(value, valueDomain);
-                        return (
-                          <div className="chart-preview-bar-wrap" key={`${series.name}-${category}`}>
-                            <div className="chart-preview-bar-value">{formatCompactValue(value, renderSpec.value_format)}</div>
-                            <div
-                              className="chart-preview-bar"
-                              style={{ height: `${heightPercent}%`, background: seriesColor(seriesIndex) }}
-                            />
+                    ) : null}
+
+                    <div className="chart-preview-grid line-layout">
+                      {renderSpec.categories.map((category, categoryIndex) => (
+                        <div className="chart-preview-group" key={`${renderSpec.chart_id}-${category}`}>
+                          <div className="chart-preview-bars combo-bars">
+                            {comboBarSeries.map((series, seriesIndex) => {
+                              const value = series.values[categoryIndex] ?? 0;
+                              const heightPercent = positiveHeightPercent(value, comboBarDomain);
+                              return (
+                                <div className="chart-preview-bar-wrap" key={`${series.name}-${category}`}>
+                                  <div className="chart-preview-bar-value">
+                                    {formatSeriesValue(value, series, renderSpec.value_format)}
+                                  </div>
+                                  <div
+                                    className="chart-preview-bar"
+                                    style={{ height: `${heightPercent}%`, background: seriesColor(seriesIndex) }}
+                                  />
+                                </div>
+                              );
+                            })}
                           </div>
-                        );
-                      })}
+                          <div className="chart-preview-category" title={category}>
+                            {shortenCategoryLabel(category, categoryLabelMaxChars)}
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <div className="chart-preview-category" title={category}>
-                      {shortenCategoryLabel(category, categoryLabelMaxChars)}
-                    </div>
+                  </div>
+                ) : (
+                  <div className="chart-preview-grid">
+                    {renderSpec.categories.map((category, categoryIndex) => (
+                      <div className="chart-preview-group" key={`${renderSpec.chart_id}-${category}`}>
+                        <div className="chart-preview-bars">
+                          {visible.map((series, seriesIndex) => {
+                            const value = series.values[categoryIndex] ?? 0;
+                            const heightPercent = positiveHeightPercent(
+                              value,
+                              series.axis === "secondary" && isSecondaryColumnChart ? secondaryDomain : primaryDomain,
+                            );
+                            return (
+                              <div className="chart-preview-bar-wrap" key={`${series.name}-${category}`}>
+                                <div className="chart-preview-bar-value">
+                                  {formatSeriesValue(value, series, renderSpec.value_format)}
+                                </div>
+                                <div
+                                  className="chart-preview-bar"
+                                  style={{ height: `${heightPercent}%`, background: seriesColor(seriesIndex) }}
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="chart-preview-category" title={category}>
+                          {shortenCategoryLabel(category, categoryLabelMaxChars)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {hasSecondaryAxis ? (
+              <div className="chart-preview-axis" style={{ textAlign: "left" }}>
+                {secondaryTickValues.map((value, index) => (
+                  <div className="chart-preview-axis-tick" key={`${renderSpec.chart_id}-tick-secondary-${index}`}>
+                    {formatAxisValue(value, renderSpec, secondarySeries)}
                   </div>
                 ))}
               </div>
-            )}
-          </div>
-        </div>
+            ) : null}
           </>
         )}
       </div>
