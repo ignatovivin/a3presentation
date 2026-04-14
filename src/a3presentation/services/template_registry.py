@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path, PurePosixPath
 
-from a3presentation.domain.template import TemplateManifest
+from a3presentation.domain.template import PlaceholderKind, TemplateManifest
 
 
 class TemplateRegistry:
@@ -55,7 +55,92 @@ class TemplateRegistry:
 
     def _load_manifest(self, manifest_path: Path) -> TemplateManifest:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        return TemplateManifest.model_validate(payload)
+        manifest = TemplateManifest.model_validate(payload)
+        return self._normalize_manifest(manifest)
+
+    def _normalize_manifest(self, manifest: TemplateManifest) -> TemplateManifest:
+        if not manifest.layouts:
+            return manifest
+
+        logical_keys = {
+            "cover": lambda layout: "тит" in layout.name.lower() or ("title" in layout.supported_slide_kinds and len(layout.placeholders) <= 3),
+            "text_full_width": lambda layout: (
+                "text" in layout.supported_slide_kinds
+                and any(placeholder.idx == 14 for placeholder in layout.placeholders)
+                and any(placeholder.idx == 17 for placeholder in layout.placeholders)
+                and not any(placeholder.idx == 16 for placeholder in layout.placeholders)
+                and "конт" not in layout.name.lower()
+                and "карточ" not in layout.name.lower()
+                and "переч" not in layout.name.lower()
+                and "фон" not in layout.name.lower()
+            ),
+            "list_full_width": lambda layout: (
+                ("переч" in layout.name.lower() or "list" in layout.name.lower() or "list_full_width" == layout.key)
+                and "bullets" in layout.supported_slide_kinds
+                and any(placeholder.idx == 14 for placeholder in layout.placeholders)
+                and any(placeholder.idx == 17 for placeholder in layout.placeholders)
+                and not any(placeholder.idx == 16 for placeholder in layout.placeholders)
+            ),
+            "table": lambda layout: ("табл" in layout.name.lower() or "table" == layout.key) and any(
+                placeholder.idx == 14 for placeholder in layout.placeholders
+            ),
+            "image_text": lambda layout: "image" in layout.supported_slide_kinds and any(
+                placeholder.idx == 16 or placeholder.kind == PlaceholderKind.IMAGE for placeholder in layout.placeholders
+            ),
+            "cards_3": lambda layout: (
+                ("карточ" in layout.name.lower() or "cards" in layout.name.lower())
+                or (
+                    sum(1 for placeholder in layout.placeholders if placeholder.idx in {11, 12, 13}) >= 3
+                    and not any(placeholder.idx == 14 for placeholder in layout.placeholders)
+                )
+            ),
+            "list_with_icons": lambda layout: any(placeholder.idx == 21 for placeholder in layout.placeholders),
+            "contacts": lambda layout: (
+                "конт" in layout.name.lower()
+                or any(placeholder.idx == 10 for placeholder in layout.placeholders)
+            ),
+        }
+        assigned = {layout.key for layout in manifest.layouts}
+        for logical_key, predicate in logical_keys.items():
+            if logical_key in assigned:
+                continue
+            candidate = next((layout for layout in manifest.layouts if predicate(layout)), None)
+            if candidate is not None:
+                manifest.layouts.append(candidate.model_copy(update={"key": logical_key}, deep=True))
+                assigned.add(logical_key)
+        if "text_full_width" not in assigned:
+            candidate = next((layout for layout in manifest.layouts if layout.key == "list_full_width"), None)
+            if candidate is not None:
+                manifest.layouts.append(candidate.model_copy(update={"key": "text_full_width"}, deep=True))
+                assigned.add("text_full_width")
+
+        for layout in manifest.layouts:
+            if layout.key == "table" or "табл" in layout.name.lower():
+                for placeholder in layout.placeholders:
+                    if placeholder.idx == 14 and placeholder.binding is None:
+                        placeholder.binding = "table"
+            elif layout.key == "contacts":
+                binding_map = {
+                    10: "contact_name_or_title",
+                    11: "contact_role",
+                    12: "contact_phone",
+                    13: "contact_email",
+                }
+                for placeholder in layout.placeholders:
+                    if placeholder.idx in binding_map and placeholder.binding is None:
+                        placeholder.binding = binding_map[placeholder.idx]
+            elif layout.key in {"text_full_width", "list_full_width"}:
+                for placeholder in layout.placeholders:
+                    if placeholder.idx == 17 and placeholder.kind == PlaceholderKind.UNKNOWN:
+                        placeholder.kind = PlaceholderKind.FOOTER
+
+        if manifest.default_layout_key and manifest.default_layout_key not in {layout.key for layout in manifest.layouts}:
+            default_layout = next(
+                (layout.key for layout in manifest.layouts if "text" in layout.supported_slide_kinds),
+                manifest.layouts[0].key,
+            )
+            manifest.default_layout_key = default_layout
+        return manifest
 
     def _template_dir(self, template_id: str) -> Path:
         return self._safe_child_path(self._templates_dir, template_id)

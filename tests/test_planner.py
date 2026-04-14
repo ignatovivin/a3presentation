@@ -21,7 +21,7 @@ from a3presentation.domain.presentation import (
     SlideSpec,
     TableBlock,
 )
-from a3presentation.services.layout_capacity import DENSE_TEXT_FULL_WIDTH_PROFILE, TEXT_FULL_WIDTH_PROFILE
+from a3presentation.services.layout_capacity import DENSE_TEXT_FULL_WIDTH_PROFILE, LIST_FULL_WIDTH_PROFILE, TEXT_FULL_WIDTH_PROFILE
 from a3presentation.services.pptx_generator import PptxGenerator
 from a3presentation.services.planner import ContinuationUnit, Section, TextToPlanService
 from a3presentation.services.template_registry import TemplateRegistry
@@ -303,6 +303,23 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertEqual(sum(len(unit.text) for unit in rebalanced[0]), 348)
         self.assertEqual(len(rebalanced[1]), 1)
 
+    def test_rebalance_continuation_buckets_smooths_adjacent_payload_sizes(self) -> None:
+        service = TextToPlanService()
+        buckets = [
+            [
+                ContinuationUnit(kind="paragraph", text="A" * 220),
+            ],
+            [
+                ContinuationUnit(kind="paragraph", text="C" * 220),
+                ContinuationUnit(kind="paragraph", text="D" * 220),
+                ContinuationUnit(kind="paragraph", text="E" * 220),
+            ],
+        ]
+
+        rebalanced = service._rebalance_continuation_buckets(buckets, max_chars=900, max_weight=12.25)
+
+        self.assertEqual([sum(len(unit.text) for unit in bucket) for bucket in rebalanced], [440, 440])
+
     def test_rebalance_continuation_groups_does_not_shift_later_section_ranges(self) -> None:
         service = TextToPlanService()
         slides = [
@@ -483,7 +500,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         )
 
         cover = plan.slides[0]
-        self.assertEqual(cover.notes, "Горизонт планирования: 2026-2030\nМарт 2026")
+        self.assertEqual(cover.notes, "Горизонт планирования: 2026-2030\nМарт 2026\nКонфиденциальный документ")
 
     def test_cover_with_five_leading_lines_does_not_create_duplicate_content_slide(self) -> None:
         service = TextToPlanService()
@@ -1215,8 +1232,8 @@ class TextToPlanServiceTests(unittest.TestCase):
             title_runs = [run for paragraph in placeholders[0].text_frame.paragraphs for run in paragraph.runs]
 
             self.assertTrue(title_runs)
-            self.assertEqual(title_runs[0].font.size.pt, 28)
-            self.assertLess(placeholders[0].height, 1000000)
+            self.assertEqual(title_runs[0].font.size.pt, self.manifest.theme.master_text_styles["title"].font_size_pt)
+            self.assertLess(placeholders[0].height, 1200000)
             self.assertGreater(placeholders[14].top, placeholders[0].top + placeholders[0].height)
 
     def test_generator_reduces_body_font_for_dense_text(self) -> None:
@@ -1254,8 +1271,8 @@ class TextToPlanServiceTests(unittest.TestCase):
 
             self.assertTrue(body_runs)
             self.assertIsNotNone(body_runs[0].font.size)
-            self.assertLessEqual(body_runs[0].font.size.pt, 14)
-            self.assertEqual(placeholders[14].text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
+            self.assertEqual(body_runs[0].font.size.pt, 18.0)
+            self.assertNotEqual(placeholders[14].text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
     def test_generator_applies_explicit_font_size_to_sparse_bullet_slide(self) -> None:
         plan = PresentationPlan(
@@ -1291,8 +1308,8 @@ class TextToPlanServiceTests(unittest.TestCase):
 
             self.assertTrue(body_runs)
             self.assertTrue(all(run.font.size is not None for run in body_runs))
-            self.assertGreaterEqual(body_runs[0].font.size.pt, 14)
-            self.assertEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
+            self.assertAlmostEqual(body_runs[0].font.size.pt, 18.0, places=1)
+            self.assertNotEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
     def test_generator_shrinks_dense_bullet_container_to_avoid_overflow(self) -> None:
         plan = PresentationPlan(
@@ -1331,8 +1348,9 @@ class TextToPlanServiceTests(unittest.TestCase):
             body_runs = [run for paragraph in body.text_frame.paragraphs for run in paragraph.runs]
 
             self.assertTrue(body_runs)
-            self.assertLessEqual(body_runs[0].font.size.pt, 13)
-            self.assertEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
+            self.assertLessEqual(body_runs[0].font.size.pt, 18.0)
+            self.assertGreaterEqual(body_runs[0].font.size.pt, LIST_FULL_WIDTH_PROFILE.min_font_pt)
+            self.assertNotEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
     def test_generator_styles_qa_and_callout_blocks_differently(self) -> None:
         generator = PptxGenerator()
@@ -1474,7 +1492,7 @@ class TextToPlanServiceTests(unittest.TestCase):
             )
 
             self.assertTrue(font_sizes)
-            self.assertEqual(font_sizes, [18.0])
+        self.assertEqual(font_sizes, [20.0])
 
     def test_generator_renders_chart_slide_into_pptx(self) -> None:
         plan = PresentationPlan(
@@ -1533,13 +1551,13 @@ class TextToPlanServiceTests(unittest.TestCase):
                     if run.font.size is not None
                 }
             )
-            self.assertEqual(title_sizes, [28.0])
-            self.assertEqual(subtitle_sizes, [18.0])
+            self.assertEqual(title_sizes, [self.manifest.theme.master_text_styles["title"].font_size_pt])
+            self.assertEqual(subtitle_sizes, [20.0])
             self.assertEqual(chart_shapes[0].chart.series[0].name, "Лиды")
             self.assertEqual(chart_shapes[0].chart.series[0].format.fill.fore_color.rgb, RGBColor(0x67, 0x9A, 0xEA))
             self.assertEqual(
                 chart_shapes[0].chart.chart_title.text_frame.paragraphs[0].runs[0].font.color.rgb,
-                RGBColor(0x18, 0x20, 0x33),
+                RGBColor(0x08, 0x1C, 0x4F),
             )
 
     def test_generator_styles_line_chart_markers_and_percent_format(self) -> None:

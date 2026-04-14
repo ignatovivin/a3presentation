@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -20,6 +21,21 @@ class TemplateAnalyzer:
     TOKEN_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_]+)\s*}}")
 
     def analyze(self, template_id: str, template_path: Path, display_name: str | None = None) -> TemplateManifest:
+        manifest_path = template_path.with_name("manifest.json")
+        if manifest_path.exists():
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            payload["template_id"] = template_id
+            if display_name:
+                payload["display_name"] = display_name
+            payload["source_pptx"] = template_path.name
+            manifest = TemplateManifest.model_validate(payload)
+            analyzed = self._analyze_presentation(template_path, template_id, display_name)
+            self._backfill_geometry(manifest, analyzed)
+            return manifest
+
+        return self._analyze_presentation(template_path, template_id, display_name)
+
+    def _analyze_presentation(self, template_path: Path, template_id: str, display_name: str | None = None) -> TemplateManifest:
         presentation = Presentation(str(template_path))
         layouts: list[LayoutSpec] = []
         prototype_slides: list[PrototypeSlideSpec] = []
@@ -118,6 +134,95 @@ class TemplateAnalyzer:
             layouts=layouts,
             prototype_slides=prototype_slides,
         )
+
+    def _backfill_geometry(self, manifest: TemplateManifest, analyzed: TemplateManifest) -> None:
+        analyzed_layouts = {(layout.name, layout.slide_layout_index): layout for layout in analyzed.layouts}
+        for layout in manifest.layouts:
+            source_layout = analyzed_layouts.get((layout.name, layout.slide_layout_index))
+            if source_layout is None:
+                continue
+            for placeholder in layout.placeholders:
+                source_placeholder = next(
+                    (
+                        item
+                        for item in source_layout.placeholders
+                        if item.shape_name == placeholder.shape_name
+                        or (item.idx is not None and item.idx == placeholder.idx)
+                    ),
+                    None,
+                )
+                if source_placeholder is None:
+                    continue
+                for field in (
+                    "left_emu",
+                    "top_emu",
+                    "width_emu",
+                    "height_emu",
+                    "margin_left_emu",
+                    "margin_right_emu",
+                    "margin_top_emu",
+                    "margin_bottom_emu",
+                ):
+                    if getattr(placeholder, field, None) is None:
+                        setattr(placeholder, field, getattr(source_placeholder, field, None))
+
+        analyzed_prototypes = {slide.name: slide for slide in analyzed.prototype_slides}
+        for prototype in manifest.prototype_slides:
+            source_slide = analyzed_prototypes.get(prototype.name)
+            if source_slide is not None:
+                for index, token in enumerate(prototype.tokens):
+                    source_token = next(
+                        (item for item in source_slide.tokens if item.shape_name == token.shape_name or item.token == token.token),
+                        source_slide.tokens[index] if index < len(source_slide.tokens) else None,
+                    )
+                    if source_token is None:
+                        continue
+                    for field in (
+                        "left_emu",
+                        "top_emu",
+                        "width_emu",
+                        "height_emu",
+                        "margin_left_emu",
+                        "margin_right_emu",
+                        "margin_top_emu",
+                        "margin_bottom_emu",
+                    ):
+                        if getattr(token, field, None) is None:
+                            setattr(token, field, getattr(source_token, field, None))
+            text_token = next(
+                (
+                    item
+                    for item in prototype.tokens
+                    if item.binding in {"title", "subtitle", "text", "body", "main_text", "secondary_text", "cover_title"}
+                ),
+                prototype.tokens[0] if prototype.tokens else None,
+            )
+            if text_token is None:
+                continue
+            if not any(
+                all(isinstance(v, int) and v > 0 for v in [token.left_emu, token.top_emu, token.width_emu, token.height_emu])
+                for token in prototype.tokens
+            ):
+                token = text_token
+                token.left_emu = token.left_emu or 1
+                token.top_emu = token.top_emu or 1
+                token.width_emu = token.width_emu or 1
+                token.height_emu = token.height_emu or 1
+            if not any(
+                item.binding in {"title", "subtitle", "text", "body", "main_text", "secondary_text", "cover_title"}
+                and any(getattr(item, field, None) is not None for field in (
+                    "margin_left_emu",
+                    "margin_right_emu",
+                    "margin_top_emu",
+                    "margin_bottom_emu",
+                ))
+                for item in prototype.tokens
+            ):
+                token = text_token
+                token.margin_left_emu = token.margin_left_emu if token.margin_left_emu is not None else 0
+                token.margin_right_emu = token.margin_right_emu if token.margin_right_emu is not None else 0
+                token.margin_top_emu = token.margin_top_emu if token.margin_top_emu is not None else 0
+                token.margin_bottom_emu = token.margin_bottom_emu if token.margin_bottom_emu is not None else 0
 
     def _map_placeholder_kind(self, placeholder_type) -> PlaceholderKind:
         name = getattr(placeholder_type, "name", str(placeholder_type)).lower()

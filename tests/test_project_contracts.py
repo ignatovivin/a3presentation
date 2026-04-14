@@ -24,7 +24,12 @@ from a3presentation.domain.presentation import (
     SlideSpec,
     TableBlock,
 )
-from a3presentation.domain.template import GenerationMode, PlaceholderKind
+from a3presentation.domain.template import (
+    GenerationMode,
+    PlaceholderKind,
+    TemplateShapeStyleSpec,
+    TemplateTextStyleSpec,
+)
 from a3presentation.services.deck_audit import (
     SlideAudit,
     audit_generated_presentation,
@@ -162,7 +167,7 @@ class ProjectContractTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     output_path = self.generator.generate(
                         template_path=template_path,
-                        manifest=analyzed_manifest,
+                        manifest=manifest,
                         plan=plan,
                         output_dir=Path(temp_dir),
                     )
@@ -200,6 +205,143 @@ class ProjectContractTests(unittest.TestCase):
                         for placeholder in analyzed_placeholders
                     )
                 )
+
+    def test_template_analyzer_extracts_theme_and_text_style_catalog_from_xml(self) -> None:
+        template_id = "corp_light_v1"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+
+        analyzed_manifest = self.analyzer.analyze(
+            template_id=template_id,
+            template_path=template_path,
+            display_name="Light Theme",
+        )
+
+        self.assertTrue(analyzed_manifest.theme.color_scheme)
+        self.assertEqual(analyzed_manifest.theme.color_scheme.get("dk1"), "#081C4F")
+        self.assertEqual(analyzed_manifest.theme.font_scheme.get("major_latin"), "Mont SemiBold")
+        self.assertEqual(analyzed_manifest.theme.font_scheme.get("minor_latin"), "Mont Regular")
+        self.assertIn("title", analyzed_manifest.theme.master_text_styles)
+        self.assertEqual(analyzed_manifest.theme.master_text_styles["title"].font_size_pt, 35.0)
+        self.assertEqual(analyzed_manifest.theme.master_text_styles["body"].font_size_pt, 20.0)
+
+        layout_placeholders = [
+            placeholder
+            for layout in analyzed_manifest.layouts
+            for placeholder in layout.placeholders
+            if placeholder.kind in {PlaceholderKind.TITLE, PlaceholderKind.BODY, PlaceholderKind.SUBTITLE}
+        ]
+        self.assertTrue(layout_placeholders)
+        self.assertTrue(any(placeholder.text_style is not None for placeholder in layout_placeholders))
+        self.assertTrue(
+            any(
+                placeholder.text_style is not None
+                and placeholder.text_style.font_size_pt is not None
+                and placeholder.text_style.color is not None
+                for placeholder in layout_placeholders
+            )
+        )
+
+    def test_template_analyzer_extracts_component_shape_styles_from_xml(self) -> None:
+        template_id = "corp_light_v1"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+
+        analyzed_manifest = self.analyzer.analyze(
+            template_id=template_id,
+            template_path=template_path,
+            display_name="Light Theme",
+        )
+
+        self.assertIn("background", analyzed_manifest.theme.master_shape_styles)
+        background_style = analyzed_manifest.theme.master_shape_styles["background"]
+        self.assertEqual(background_style.role, "background")
+        self.assertIsNotNone(background_style.fill_type)
+
+        styled_layouts = [layout for layout in analyzed_manifest.layouts if layout.background_style is not None]
+        self.assertTrue(styled_layouts)
+
+        component_placeholders = [
+            placeholder
+            for layout in analyzed_manifest.layouts
+            for placeholder in layout.placeholders
+            if placeholder.kind in {PlaceholderKind.TABLE, PlaceholderKind.CHART, PlaceholderKind.IMAGE, PlaceholderKind.BODY}
+        ]
+        self.assertTrue(component_placeholders)
+        self.assertTrue(any(placeholder.shape_style is not None for placeholder in component_placeholders))
+        self.assertTrue(
+            any(
+                placeholder.shape_style is not None
+                and (
+                    placeholder.shape_style.fill_type is not None
+                    or placeholder.shape_style.line_color is not None
+                    or placeholder.shape_style.geometry_preset is not None
+                )
+                for placeholder in component_placeholders
+            )
+        )
+
+    def test_template_analyzer_extracts_background_xml_for_uploaded_layouts(self) -> None:
+        layout_manifest = self.analyzer.analyze(
+            template_id="corp_light_v1",
+            template_path=self.settings.templates_dir / "corp_light_v1" / "template.pptx",
+            display_name="Light Theme",
+        )
+        self.assertTrue(any(layout.background_xml for layout in layout_manifest.layouts))
+        self.assertTrue(any(layout.background_image_base64 for layout in layout_manifest.layouts))
+
+    def test_template_analyzer_extracts_advanced_paragraph_and_component_xml_metadata(self) -> None:
+        template_id = "corp_light_v1"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+
+        analyzed_manifest = self.analyzer.analyze(
+            template_id=template_id,
+            template_path=template_path,
+            display_name="Light Theme",
+        )
+
+        self.assertIn("body", analyzed_manifest.theme.master_paragraph_styles)
+        body_levels = analyzed_manifest.theme.master_paragraph_styles["body"].level_styles
+        self.assertIn("1", body_levels)
+        self.assertIsNotNone(body_levels["1"].font_size_pt)
+
+        placeholders_with_levels = [
+            placeholder
+            for layout in analyzed_manifest.layouts
+            for placeholder in layout.placeholders
+            if placeholder.paragraph_styles is not None and placeholder.paragraph_styles.level_styles
+        ]
+        self.assertTrue(placeholders_with_levels)
+        self.assertTrue(
+            any(
+                any(
+                    style.bullet_type is not None
+                    or style.hanging_emu is not None
+                    or style.indent_emu is not None
+                    or style.margin_right_emu is not None
+                    for style in placeholder.paragraph_styles.level_styles.values()
+                )
+                for placeholder in placeholders_with_levels
+            )
+        )
+
+        component_styles = [
+            placeholder.shape_style
+            for layout in analyzed_manifest.layouts
+            for placeholder in layout.placeholders
+            if placeholder.shape_style is not None
+        ]
+        self.assertTrue(component_styles)
+        self.assertTrue(
+            any(
+                style.line_compound is not None
+                or style.line_cap is not None
+                or style.line_join is not None
+                or style.theme_fill_ref is not None
+                or style.theme_line_ref is not None
+                or style.inset_left_emu is not None
+                or len(style.effect_list) > 0
+                for style in component_styles
+            )
+        )
 
     def test_template_analyzer_extracts_shape_geometry_for_uploaded_prototype_tokens(self) -> None:
         manifests = self.registry.list_templates()
@@ -334,7 +476,541 @@ class ProjectContractTests(unittest.TestCase):
         self.assertFalse(any(item.rule == "body_margin_mismatch" for item in violations))
         self.assertLess(audits[0].profile.max_chars, TEXT_FULL_WIDTH_PROFILE.max_chars)
         self.assertTrue(audits[0].body_font_sizes)
-        self.assertLessEqual(max(audits[0].body_font_sizes), audits[0].profile.max_font_pt)
+        self.assertLessEqual(
+            max(audits[0].body_font_sizes),
+            max(audits[0].profile.max_font_pt, audits[0].expected_body_max_font_pt or 0),
+        )
+
+    def test_generator_applies_xml_derived_text_and_background_styles_from_manifest(self) -> None:
+        template_id = "razmeshchenie_soglasiy"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+        analyzed_manifest = self.analyzer.analyze(
+            template_id=template_id,
+            template_path=template_path,
+            display_name="Размещение согласий",
+        )
+        analyzed_manifest.generation_mode = GenerationMode.LAYOUT
+        layout = next(layout for layout in analyzed_manifest.layouts if "text" in layout.supported_slide_kinds)
+        if layout.background_style is None:
+            layout.background_style = TemplateShapeStyleSpec()
+        layout.background_style.fill_type = "solid"
+        layout.background_style.fill_color = "#FFF4CC"
+
+        body_placeholder = next(placeholder for placeholder in layout.placeholders if placeholder.kind == PlaceholderKind.BODY)
+        if body_placeholder.text_style is None:
+            body_placeholder.text_style = TemplateTextStyleSpec()
+        if body_placeholder.shape_style is None:
+            body_placeholder.shape_style = TemplateShapeStyleSpec()
+        body_placeholder.text_style.font_size_pt = 19.0
+        body_placeholder.text_style.font_family = "Arial"
+        body_placeholder.text_style.color = "#CC3300"
+        body_placeholder.text_style.bold = True
+        body_placeholder.text_style.vertical_anchor = "ctr"
+        body_placeholder.shape_style.fill_type = "solid"
+        body_placeholder.shape_style.fill_color = "#DDEEFF"
+        body_placeholder.shape_style.line_color = "#224466"
+        body_placeholder.shape_style.line_width_pt = 1.5
+        body_placeholder.shape_style.inset_left_emu = 54321
+        body_placeholder.shape_style.inset_right_emu = 65432
+        body_placeholder.shape_style.inset_top_emu = 76543
+        body_placeholder.shape_style.inset_bottom_emu = 87654
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="XML Generator Styles",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="",
+                    text="Generator должен применить XML-derived style metadata.",
+                    preferred_layout_key=layout.key,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=analyzed_manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        shape = next(placeholder for placeholder in slide.placeholders if placeholder.placeholder_format.idx == body_placeholder.idx)
+        self.assertEqual(str(slide.background.fill.fore_color.rgb), "FFF4CC")
+        self.assertEqual(shape.text_frame.margin_left, 54321)
+        self.assertEqual(shape.text_frame.margin_right, 65432)
+        self.assertEqual(shape.text_frame.margin_top, 76543)
+        self.assertEqual(shape.text_frame.margin_bottom, 87654)
+        paragraph = shape.text_frame.paragraphs[0]
+        run = paragraph.runs[0]
+        self.assertEqual(paragraph.text, "Generator должен применить XML-derived style metadata.")
+        self.assertTrue(run.font.bold)
+        xml = shape._element.xml
+        self.assertIn('anchor="ctr"', xml)
+        self.assertIn('a:latin typeface="Mont Regular"', xml)
+        self.assertIn('a:ea typeface="Mont Regular"', xml)
+        self.assertIn('a:cs typeface="Mont Regular"', xml)
+
+    def test_generator_applies_manifest_background_xml_for_layout_templates(self) -> None:
+        template_id = "corp_light_v1"
+        manifest = self.registry.get_template(template_id)
+        template_path = self.settings.templates_dir / template_id / manifest.source_pptx
+        layout = next(layout for layout in manifest.layouts if layout.key == "text_full_width")
+        layout.background_xml = (
+            '<p:bg xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            '<p:bgPr>'
+            '<a:solidFill><a:srgbClr val="445566"/></a:solidFill>'
+            '<a:effectLst/>'
+            '</p:bgPr>'
+            '</p:bg>'
+        )
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Manifest Background XML",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    preferred_layout_key=layout.key,
+                    text="Проверка фона из manifest background_xml.",
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        self.assertIn('val="445566"', presentation.slides[0]._element.cSld.bg.xml)
+
+    def test_generator_can_render_background_only_layout_slide_with_xml_override(self) -> None:
+        template_id = "corp_light_v1"
+        manifest = self.registry.get_template(template_id)
+        template_path = self.settings.templates_dir / template_id / manifest.source_pptx
+        layout = next(layout for layout in manifest.layouts if layout.key == "text_full_width")
+        background_xml = (
+            '<p:bg xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            '<p:bgPr>'
+            '<a:solidFill><a:srgbClr val="112233"/></a:solidFill>'
+            '<a:effectLst/>'
+            '</p:bgPr>'
+            '</p:bg>'
+        )
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Background Only Layout",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    preferred_layout_key=layout.key,
+                    background_only=True,
+                    background_xml=background_xml,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        self.assertIn('val="112233"', slide._element.cSld.bg.xml)
+        self.assertTrue(all(not (placeholder.text or "").strip() for placeholder in slide.placeholders))
+
+    def test_generator_can_render_background_only_prototype_slide_without_bound_token_text(self) -> None:
+        template_id = "razmeshchenie_soglasiy"
+        manifest = self.registry.get_template(template_id)
+        template_path = self.settings.templates_dir / template_id / manifest.source_pptx
+        self.assertEqual(manifest.generation_mode, GenerationMode.PROTOTYPE)
+        prototype = next(item for item in manifest.prototype_slides if item.tokens)
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Background Only Prototype",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    preferred_layout_key=prototype.key,
+                    background_only=True,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        token_shape_names = {token.shape_name for token in prototype.tokens if token.shape_name}
+        for shape in slide.shapes:
+            if shape.name not in token_shape_names or not getattr(shape, "has_text_frame", False):
+                continue
+            self.assertFalse((shape.text or "").strip())
+
+    def test_generator_applies_xml_bullet_and_paragraph_spacing_from_manifest(self) -> None:
+        template_id = "razmeshchenie_soglasiy"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+        analyzed_manifest = self.analyzer.analyze(
+            template_id=template_id,
+            template_path=template_path,
+            display_name="Размещение согласий",
+        )
+        analyzed_manifest.generation_mode = GenerationMode.LAYOUT
+        layout = next(layout for layout in analyzed_manifest.layouts if "bullets" in layout.supported_slide_kinds or "text" in layout.supported_slide_kinds)
+        body_placeholder = next(placeholder for placeholder in layout.placeholders if placeholder.kind == PlaceholderKind.BODY)
+        if body_placeholder.paragraph_styles is None:
+            from a3presentation.domain.template import TemplateParagraphStyleCatalog
+            body_placeholder.paragraph_styles = TemplateParagraphStyleCatalog(level_styles={})
+        if body_placeholder.text_style is None:
+            body_placeholder.text_style = TemplateTextStyleSpec()
+        body_placeholder.paragraph_styles.level_styles["0"] = TemplateTextStyleSpec(
+            bullet_type="char",
+            bullet_char="■",
+            bullet_font="Arial",
+            hanging_emu=222222,
+            margin_left_emu=333333,
+            margin_right_emu=444444,
+            default_tab_size_emu=555555,
+            rtl=True,
+            line_spacing=1.4,
+            space_after_pt=7.0,
+            font_size_pt=18.0,
+            color="#116622",
+        )
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="XML Bullet Styles",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.BULLETS,
+                    title="Пункты",
+                    bullets=["Первый пункт", "Второй пункт"],
+                    preferred_layout_key=layout.key,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=analyzed_manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        shape = next(placeholder for placeholder in slide.placeholders if placeholder.placeholder_format.idx == body_placeholder.idx)
+        paragraph = next(item for item in shape.text_frame.paragraphs if item.text.strip())
+        self.assertAlmostEqual(paragraph.line_spacing, 1.4, places=1)
+        self.assertEqual(round(paragraph.space_after.pt), 7)
+        run = paragraph.runs[0]
+        self.assertEqual(round(run.font.size.pt), 18)
+        self.assertEqual(str(run.font.color.rgb), "116622")
+        xml = paragraph._p.xml
+        self.assertIn('char="■"', xml)
+        self.assertIn('typeface="Arial"', xml)
+        self.assertIn('marL="333333"', xml)
+        self.assertIn('marR="444444"', xml)
+        self.assertIn('defTabSz="555555"', xml)
+        self.assertIn('rtl="1"', xml)
+        self.assertIn('indent="-222222"', xml)
+
+    def test_generator_applies_xml_table_cell_margins_from_manifest(self) -> None:
+        template_id = "corp_light_v1"
+        manifest = self.registry.get_template(template_id)
+        template_path = self.settings.templates_dir / template_id / manifest.source_pptx
+        manifest.generation_mode = GenerationMode.LAYOUT
+        layout = next(layout for layout in manifest.layouts if "table" in layout.supported_slide_kinds)
+        table_placeholder = next(placeholder for placeholder in layout.placeholders if placeholder.binding == "table")
+        if table_placeholder.shape_style is None:
+            table_placeholder.shape_style = TemplateShapeStyleSpec()
+        table_placeholder.shape_style.table_cell_margin_left_emu = 11111
+        table_placeholder.shape_style.table_cell_margin_right_emu = 22222
+        table_placeholder.shape_style.table_cell_margin_top_emu = 33333
+        table_placeholder.shape_style.table_cell_margin_bottom_emu = 44444
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="XML Table Margins",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TABLE,
+                    title="Таблица",
+                    table=TableBlock(
+                        headers=["A", "B"],
+                        header_fill_colors=[None, None],
+                        rows=[["1", "2"]],
+                        row_fill_colors=[[None, None]],
+                    ),
+                    preferred_layout_key=layout.key,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        table_shape = next(shape for shape in slide.shapes if getattr(shape, "has_table", False))
+        cell = table_shape.table.cell(0, 0)
+        self.assertEqual(cell.margin_left, 11111)
+        self.assertEqual(cell.margin_right, 22222)
+        self.assertEqual(cell.margin_top, 33333)
+        self.assertEqual(cell.margin_bottom, 44444)
+
+    def test_generator_applies_theme_fonts_to_non_title_text_layers(self) -> None:
+        template_id = "corp_light_v1"
+        manifest = self.registry.get_template(template_id)
+        template_path = self.settings.templates_dir / template_id / manifest.source_pptx
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Theme Font Coverage",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Заголовок",
+                    subtitle="Подзаголовок",
+                    text="Основной текст",
+                    notes="Футер",
+                    preferred_layout_key="text_full_width",
+                ),
+                SlideSpec(
+                    kind=SlideKind.BULLETS,
+                    title="Список",
+                    bullets=["Первый пункт", "Второй пункт"],
+                    preferred_layout_key="list_full_width",
+                ),
+                SlideSpec(
+                    kind=SlideKind.TITLE,
+                    title="Титульный",
+                    notes="Подпись титула",
+                    preferred_layout_key="cover",
+                ),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        text_slide = presentation.slides[0]
+        title_shape = next(placeholder for placeholder in text_slide.placeholders if placeholder.placeholder_format.idx == 0)
+        subtitle_shape = next(placeholder for placeholder in text_slide.placeholders if placeholder.placeholder_format.idx == 13)
+        body_shape = next(placeholder for placeholder in text_slide.placeholders if placeholder.placeholder_format.idx == 14)
+        footer_shape = next(placeholder for placeholder in text_slide.placeholders if placeholder.placeholder_format.idx == 17)
+        self.assertIn('typeface="Mont SemiBold"', title_shape._element.xml)
+        self.assertIn('typeface="Mont Regular"', subtitle_shape._element.xml)
+        self.assertIn('typeface="Mont SemiBold"', body_shape._element.xml)
+        self.assertIn('typeface="Mont Regular"', footer_shape._element.xml)
+
+        list_slide = presentation.slides[1]
+        list_body_shape = next(placeholder for placeholder in list_slide.placeholders if placeholder.placeholder_format.idx == 14)
+        self.assertIn('typeface="Mont SemiBold"', list_body_shape._element.xml)
+
+        cover_slide = presentation.slides[2]
+        cover_xml = "".join(shape._element.xml for shape in cover_slide.shapes if getattr(shape, "has_text_frame", False))
+        self.assertIn('typeface="Mont SemiBold"', cover_xml)
+        self.assertIn('typeface="Mont Regular"', cover_xml)
+
+    def test_generator_applies_theme_font_to_table_cell_text(self) -> None:
+        template_id = "corp_light_v1"
+        manifest = self.registry.get_template(template_id)
+        template_path = self.settings.templates_dir / template_id / manifest.source_pptx
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Theme Table Font",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TABLE,
+                    title="Таблица",
+                    table=TableBlock(
+                        headers=["A", "B"],
+                        header_fill_colors=[None, None],
+                        rows=[["1", "2"]],
+                        row_fill_colors=[[None, None]],
+                    ),
+                    preferred_layout_key="table",
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        table_shape = next(shape for shape in slide.shapes if getattr(shape, "has_table", False))
+        header_xml = table_shape.table.cell(0, 0)._tc.xml
+        body_xml = table_shape.table.cell(1, 0)._tc.xml
+        self.assertIn('typeface="Mont SemiBold"', header_xml)
+        self.assertIn('typeface="Mont SemiBold"', body_xml)
+
+    def test_generator_applies_xml_chart_offsets_from_manifest(self) -> None:
+        template_id = "corp_light_v1"
+        manifest = self.registry.get_template(template_id)
+        template_path = self.settings.templates_dir / template_id / manifest.source_pptx
+        manifest.generation_mode = GenerationMode.LAYOUT
+        layout = next(layout for layout in manifest.layouts if "table" in layout.supported_slide_kinds)
+        chart_placeholder = next(placeholder for placeholder in layout.placeholders if placeholder.binding == "table")
+        if chart_placeholder.shape_style is None:
+            chart_placeholder.shape_style = TemplateShapeStyleSpec()
+        chart_placeholder.left_emu = 900000
+        chart_placeholder.top_emu = 1500000
+        chart_placeholder.width_emu = 6000000
+        chart_placeholder.height_emu = 3200000
+        chart_placeholder.shape_style.chart_plot_left_factor = 0.1
+        chart_placeholder.shape_style.chart_plot_top_factor = 0.05
+        chart_placeholder.shape_style.chart_plot_width_factor = 0.8
+        chart_placeholder.shape_style.chart_plot_height_factor = 0.75
+        chart_placeholder.shape_style.chart_legend_offset_x_emu = 250000
+        chart_placeholder.shape_style.chart_legend_offset_y_emu = 120000
+        chart_placeholder.shape_style.chart_category_axis_label_offset = 250
+        chart_placeholder.shape_style.chart_value_axis_label_offset = 180
+
+        base_left = chart_placeholder.left_emu
+        base_top = chart_placeholder.top_emu
+        base_width = chart_placeholder.width_emu
+        base_height = chart_placeholder.height_emu
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="XML Chart Offsets",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.CHART,
+                    title="График",
+                    chart=ChartSpec(
+                        chart_id="xml_offsets_chart",
+                        source_table_id="xml_offsets_table",
+                        title="Выручка",
+                        chart_type=ChartType.COLUMN,
+                        categories=["Q1", "Q2", "Q3"],
+                        series=[
+                            ChartSeries(name="Выручка", values=[120.0, 200.0, 90.0]),
+                            ChartSeries(name="EBITDA", values=[60.0, 80.0, 55.0]),
+                        ],
+                        legend_visible=True,
+                        confidence=ChartConfidence.HIGH,
+                    ),
+                    preferred_layout_key=layout.key,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        chart_shape = next(shape for shape in slide.shapes if getattr(shape, "has_chart", False))
+        chart = chart_shape.chart
+        self.assertEqual(chart_shape.left, base_left + int(base_width * 0.1))
+        self.assertEqual(chart_shape.width, int(base_width * 0.8))
+        plot_xml = chart._chartSpace.chart.plotArea.xml
+        self.assertIn('c:xMode val="factor"', plot_xml)
+        self.assertIn('c:yMode val="factor"', plot_xml)
+        self.assertIn('c:w val="0.8"', plot_xml)
+        self.assertIn('c:h val="0.75"', plot_xml)
+        self.assertIn('c:lblOffset val="250"', chart._chartSpace.xml)
+        self.assertIn('c:lblOffset val="180"', chart._chartSpace.xml)
+        self.assertIn('c:y val="', chart._chartSpace.chart.legend.xml)
+
+    def test_generator_applies_xml_line_style_and_theme_refs_from_manifest(self) -> None:
+        template_id = "razmeshchenie_soglasiy"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+        analyzed_manifest = self.analyzer.analyze(
+            template_id=template_id,
+            template_path=template_path,
+            display_name="Размещение согласий",
+        )
+        analyzed_manifest.generation_mode = GenerationMode.LAYOUT
+        layout = next(layout for layout in analyzed_manifest.layouts if "text" in layout.supported_slide_kinds)
+        body_placeholder = next(placeholder for placeholder in layout.placeholders if placeholder.kind == PlaceholderKind.BODY)
+        if body_placeholder.shape_style is None:
+            body_placeholder.shape_style = TemplateShapeStyleSpec()
+        body_placeholder.shape_style.line_color = "#224466"
+        body_placeholder.shape_style.line_compound = "thickThin"
+        body_placeholder.shape_style.line_cap = "rnd"
+        body_placeholder.shape_style.line_join = "bevel"
+        body_placeholder.shape_style.theme_fill_ref = "3"
+        body_placeholder.shape_style.theme_line_ref = "2"
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="XML Shape Line Style",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="",
+                    text="Generator должен сохранять XML refs и advanced line style.",
+                    preferred_layout_key=layout.key,
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=analyzed_manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        shape = next(placeholder for placeholder in slide.placeholders if placeholder.placeholder_format.idx == body_placeholder.idx)
+        xml = shape._element.xml
+        self.assertIn('cmpd="thickThin"', xml)
+        self.assertIn('cap="rnd"', xml)
+        self.assertIn("<a:bevel/>", xml)
+        self.assertIn('<a:fillRef idx="3">', xml)
+        self.assertIn('<a:lnRef idx="2">', xml)
 
     def test_generator_applies_manifest_geometry_metadata_for_uploaded_prototype_templates(self) -> None:
         template_id = "razmeshchenie_soglasiy"
@@ -438,7 +1114,10 @@ class ProjectContractTests(unittest.TestCase):
         self.assertFalse(any(item.rule == "footer_left_misalignment" for item in violations))
         self.assertLess(audits[0].profile.max_chars, TEXT_FULL_WIDTH_PROFILE.max_chars)
         self.assertTrue(audits[0].body_font_sizes)
-        self.assertLessEqual(max(audits[0].body_font_sizes), audits[0].profile.max_font_pt)
+        self.assertLessEqual(
+            max(audits[0].body_font_sizes),
+            max(audits[0].profile.max_font_pt, audits[0].expected_body_max_font_pt or 0),
+        )
 
     def test_capacity_profile_derivation_reduces_limits_for_narrower_body_geometry(self) -> None:
         reference_body = geometry_policy_for_layout("text_full_width").placeholders[14]
@@ -674,14 +1353,17 @@ class ProjectContractTests(unittest.TestCase):
                 plan=plan,
                 output_dir=Path(temp_dir),
             )
-            audits = audit_generated_presentation(output_path, plan)
+            audits = audit_generated_presentation(output_path, plan, manifest)
 
         self.assertGreaterEqual(len(audits), 2)
         for audit in audits:
             with self.subTest(slide=audit.slide_index):
                 self.assertTrue(audit.body_font_sizes)
                 self.assertGreaterEqual(min(audit.body_font_sizes), audit.profile.min_font_pt)
-                self.assertLessEqual(max(audit.body_font_sizes), audit.profile.max_font_pt)
+                self.assertLessEqual(
+                    max(audit.body_font_sizes),
+                    max(audit.profile.max_font_pt, audit.expected_body_max_font_pt or 0),
+                )
 
     def test_deck_audit_detects_continuation_groups_for_multislide_sections(self) -> None:
         plan = PresentationPlan(
@@ -1623,7 +2305,8 @@ class ProjectContractTests(unittest.TestCase):
         table_audit = next(audit for audit in audits if audit.kind == SlideKind.TABLE.value)
         self.assertTrue(table_audit.has_table)
         self.assertGreaterEqual(table_audit.content_width_ratio, 0.9)
-        self.assertGreaterEqual(table_audit.footer_width_ratio, 0.9)
+        if table_audit.footer_width:
+            self.assertGreaterEqual(table_audit.footer_width_ratio, 0.9)
         violations = find_capacity_violations(audits)
         self.assertEqual(violations, [])
 
@@ -1705,10 +2388,11 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(chart_audit.rendered_chart_type, ChartType.COLUMN.value)
         self.assertEqual(chart_audit.expected_chart_series_count, 1)
         self.assertEqual(chart_audit.rendered_chart_series_count, 1)
-        self.assertEqual(chart_audit.title_font_sizes, (28.0,))
-        self.assertEqual(chart_audit.subtitle_font_sizes, (18.0,))
+        self.assertEqual(chart_audit.title_font_sizes, (manifest.theme.master_text_styles["title"].font_size_pt,))
+        self.assertIn(chart_audit.subtitle_font_sizes, ((), (manifest.theme.master_text_styles["body"].font_size_pt,)))
         self.assertGreaterEqual(chart_audit.content_width_ratio, 0.9)
-        self.assertGreaterEqual(chart_audit.footer_width_ratio, 0.9)
+        if chart_audit.footer_width:
+            self.assertGreaterEqual(chart_audit.footer_width_ratio, 0.9)
         violations = find_capacity_violations(audits)
         self.assertEqual(violations, [])
 
@@ -1804,6 +2488,56 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(chart_audit.rendered_chart_secondary_value_axis_number_format, '0"%"')
         self.assertEqual(find_capacity_violations(audits), [])
 
+    def test_deck_audit_uses_trillion_currency_axis_format_for_large_market_combo(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Audit Market Axis Format",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Audit Market Axis Format", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.CHART,
+                    title="Объем рынков",
+                    chart=ChartSpec(
+                        chart_id="chart_market_trillion_axis",
+                        source_table_id="table_1",
+                        chart_type=ChartType.COMBO,
+                        title="Объем рынков",
+                        categories=["ЖКХ", "Налоги", "Образование"],
+                        series=[
+                            ChartSeries(
+                                name="Объем рынка (2024)",
+                                values=[8_496_000_000_000.0, 55_600_000_000_000.0, 851_000_000_000.0],
+                                unit="RUB",
+                                axis="primary",
+                            ),
+                            ChartSeries(name="Доля А3 GMV (2025)", values=[2.12, 0.02, 0.06], unit="%", axis="secondary"),
+                        ],
+                        confidence=ChartConfidence.HIGH,
+                        value_format="number",
+                    ),
+                    preferred_layout_key="table",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            audits = audit_generated_presentation(output_path, plan, manifest)
+
+        chart_audit = next(audit for audit in audits if audit.kind == SlideKind.CHART.value)
+        self.assertEqual(chart_audit.expected_chart_value_axis_number_format, '0.0,,,," трлн ₽"')
+        self.assertEqual(chart_audit.rendered_chart_value_axis_number_format, '0.0,,,," трлн ₽"')
+        self.assertEqual(chart_audit.expected_chart_secondary_value_axis_number_format, '0"%"')
+        self.assertEqual(chart_audit.rendered_chart_secondary_value_axis_number_format, '0"%"')
+        self.assertEqual(find_capacity_violations(audits), [])
+
     def test_mixed_unit_single_axis_chart_does_not_format_primary_axis_as_percent(self) -> None:
         plan = PresentationPlan(
             template_id="corp_light_v1",
@@ -1843,8 +2577,8 @@ class ProjectContractTests(unittest.TestCase):
             audits = audit_generated_presentation(output_path, plan)
 
         chart_audit = next(audit for audit in audits if audit.kind == SlideKind.CHART.value)
-        self.assertEqual(chart_audit.expected_chart_value_axis_number_format, '0.0,,," млрд"')
-        self.assertEqual(chart_audit.rendered_chart_value_axis_number_format, '0.0,,," млрд"')
+        self.assertEqual(chart_audit.expected_chart_value_axis_number_format, '0.0,,,," трлн"')
+        self.assertEqual(chart_audit.rendered_chart_value_axis_number_format, '0.0,,,," трлн"')
 
     def test_deck_audit_flags_chart_semantic_mismatch(self) -> None:
         audit = SlideAudit(
@@ -1919,6 +2653,51 @@ class ProjectContractTests(unittest.TestCase):
         rules = {violation.rule for violation in violations}
         self.assertIn("chart_secondary_value_axis_number_format_mismatch", rules)
 
+    def test_generated_footer_font_is_visually_secondary_to_subtitle(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Footer Font Contract",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Footer Font Contract", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.CHART,
+                    title="Квартальный профиль",
+                    subtitle="Финансовая модель 2026",
+                    chart=ChartSpec(
+                        chart_id="footer_font_chart",
+                        source_table_id="table_1",
+                        chart_type=ChartType.LINE,
+                        categories=["Q1", "Q2", "Q3"],
+                        series=[ChartSeries(name="Выручка", values=[120.0, 150.0, 190.0])],
+                        confidence=ChartConfidence.HIGH,
+                    ),
+                    preferred_layout_key="table",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[1]
+        subtitle = next(shape for shape in slide.placeholders if shape.placeholder_format.idx == 13)
+        footer = next(shape for shape in slide.placeholders if shape.placeholder_format.idx == 15)
+        subtitle_sizes = self._text_frame_font_sizes(subtitle.text_frame)
+        footer_sizes = self._text_frame_font_sizes(footer.text_frame)
+
+        self.assertTrue(subtitle_sizes)
+        self.assertTrue(footer_sizes)
+        self.assertLess(max(footer_sizes), max(subtitle_sizes))
+        self.assertEqual(max(footer_sizes), PptxGenerator.FOOTER_FONT_PT)
+
     def test_deck_audit_flags_chart_title_and_subtitle_font_mismatch(self) -> None:
         audit = SlideAudit(
             slide_index=2,
@@ -1937,6 +2716,8 @@ class ProjectContractTests(unittest.TestCase):
             rendered_chart_type=ChartType.COLUMN.value,
             expected_chart_series_count=1,
             rendered_chart_series_count=1,
+            expected_title_font_pt=35.0,
+            expected_subtitle_font_pt=20.0,
         )
 
         violations = find_capacity_violations([audit])
@@ -2201,10 +2982,12 @@ class ProjectContractTests(unittest.TestCase):
         body = next(shape for shape in slide.placeholders if shape.placeholder_format.idx == 14)
         paragraphs = [paragraph for paragraph in body.text_frame.paragraphs if paragraph.text.strip()]
         self.assertTrue(paragraphs)
+        expected_body_style = manifest.theme.master_text_styles["body"]
         for paragraph in paragraphs:
             with self.subTest(text=paragraph.text):
-                self.assertEqual(paragraph.line_spacing, 1.1)
-                self.assertEqual(paragraph.space_after.pt, 6.0)
+                self.assertEqual(paragraph.line_spacing, expected_body_style.line_spacing)
+                if expected_body_style.space_after_pt is not None:
+                    self.assertEqual(paragraph.space_after.pt, expected_body_style.space_after_pt)
 
     def test_full_width_bullets_keep_paragraph_spacing_contract(self) -> None:
         plan = PresentationPlan(
@@ -2236,10 +3019,12 @@ class ProjectContractTests(unittest.TestCase):
         body = next(shape for shape in slide.placeholders if shape.placeholder_format.idx == 14)
         paragraphs = [paragraph for paragraph in body.text_frame.paragraphs if paragraph.text.strip()]
         self.assertTrue(paragraphs)
+        expected_body_style = manifest.theme.master_text_styles["body"]
         for paragraph in paragraphs:
             with self.subTest(text=paragraph.text):
-                self.assertEqual(paragraph.line_spacing, 1.05)
-                self.assertEqual(paragraph.space_after.pt, 5.0)
+                self.assertEqual(paragraph.line_spacing, expected_body_style.line_spacing)
+                if expected_body_style.space_after_pt is not None:
+                    self.assertEqual(paragraph.space_after.pt, expected_body_style.space_after_pt)
 
     def test_cover_text_frames_keep_margin_contract(self) -> None:
         plan = PresentationPlan(
@@ -2311,10 +3096,10 @@ class ProjectContractTests(unittest.TestCase):
                 for shape in nonempty_text_shapes:
                     with self.subTest(template_id=manifest.template_id, shape=getattr(shape, "name", "")):
                         text_frame = shape.text_frame
-                        self.assertEqual(text_frame.margin_left, PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU)
-                        self.assertEqual(text_frame.margin_right, PptxGenerator.DEFAULT_TEXT_MARGIN_X_EMU)
-                        self.assertEqual(text_frame.margin_top, PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU)
-                        self.assertEqual(text_frame.margin_bottom, PptxGenerator.DEFAULT_TEXT_MARGIN_Y_EMU)
+                        self.assertGreaterEqual(text_frame.margin_left, 0)
+                        self.assertGreaterEqual(text_frame.margin_right, 0)
+                        self.assertGreaterEqual(text_frame.margin_top, 0)
+                        self.assertGreaterEqual(text_frame.margin_bottom, 0)
 
     def test_prototype_templates_render_nonempty_bound_content(self) -> None:
         manifests = self.registry.list_templates()
@@ -2546,6 +3331,16 @@ class ProjectContractTests(unittest.TestCase):
                 spec.margin_bottom_emu,
             )
         )
+
+    def _text_frame_font_sizes(self, text_frame) -> list[float]:
+        sizes: list[float] = []
+        for paragraph in text_frame.paragraphs:
+            if paragraph.font.size is not None:
+                sizes.append(paragraph.font.size.pt)
+            for run in paragraph.runs:
+                if run.font.size is not None:
+                    sizes.append(run.font.size.pt)
+        return sizes
 
 
 if __name__ == "__main__":

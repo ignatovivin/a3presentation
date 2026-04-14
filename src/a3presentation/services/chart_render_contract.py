@@ -110,6 +110,8 @@ def chart_axis_number_format_for_axis(chart_spec: ChartSpec | None, axis: str = 
     max_value = max((abs(value) for series in axis_series for value in series.values), default=0.0)
     has_currency = any(series.unit == "RUB" for series in axis_series)
     if has_currency or render_spec.value_format == "currency":
+        if max_value >= 1_000_000_000_000:
+            return '0.0,,,," трлн ₽"'
         if max_value >= 1_000_000_000:
             return '0.0,,," млрд ₽"'
         if max_value >= 1_000_000:
@@ -118,6 +120,8 @@ def chart_axis_number_format_for_axis(chart_spec: ChartSpec | None, axis: str = 
             return '0," тыс ₽"'
         return '#,##0" ₽"'
 
+    if max_value >= 1_000_000_000_000:
+        return '0.0,,,," трлн"'
     if max_value >= 1_000_000_000:
         return '0.0,,," млрд"'
     if max_value >= 1_000_000:

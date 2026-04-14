@@ -56,6 +56,8 @@ class SlideSpec(BaseModel):
     source_table_id: str | None = None
     notes: str | None = None
     preferred_layout_key: str | None = None
+    background_only: bool = False
+    background_xml: str | None = None
     image_base64: str | None = None
     image_content_type: str | None = None
 

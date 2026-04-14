@@ -16,8 +16,8 @@ from a3presentation.domain.presentation import (
 from a3presentation.domain.semantic import DocumentKind, SemanticDocument, SemanticImage, SemanticSection
 from a3presentation.services.layout_capacity import (
     DENSE_TEXT_FULL_WIDTH_PROFILE,
-    LayoutCapacityProfile,
     LIST_FULL_WIDTH_PROFILE,
+    LayoutCapacityProfile,
     TEXT_FULL_WIDTH_PROFILE,
 )
 from a3presentation.services.semantic_normalizer import SemanticDocumentNormalizer
@@ -52,6 +52,7 @@ class SectionContentBlock:
 class TextToPlanService:
     EMU_PER_PT = 12700
     DEFAULT_TEXT_MARGIN_X_EMU = 91440
+    TOP_LEVEL_HEADING_PATTERN = re.compile(r"^\d+\.\s+\S")
     EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
     PHONE_PATTERN = re.compile(r"(\+?\d[\d\s().-]{7,}\d)")
     HEADING_PATTERN = re.compile(r"^(\d+(\.\d+)*[.)]?\s+.+|[А-ЯA-Z].{0,90})$")
@@ -71,7 +72,7 @@ class TextToPlanService:
     TEXT_SLIDE_MAX_CHARS = TEXT_FULL_WIDTH_PROFILE.max_chars
     TEXT_PRIMARY_MAX_CHARS = TEXT_FULL_WIDTH_PROFILE.max_primary_chars
     TEXT_TAIL_MERGE_THRESHOLD = 120
-    COVER_META_MAX_LINES = 2
+    COVER_META_MAX_LINES = 3
     COVER_META_MAX_LINE_CHARS = 72
     STRUCTURED_SUMMARY_MAX_ITEMS = 5
     RESUME_SUMMARY_MAX_ITEMS = 6
@@ -210,7 +211,86 @@ class TextToPlanService:
         )
         slides = [slides[0], *trailing_slides]
         slides = self._enforce_hard_safety_rules(slides, plan_title, semantic_document, blocks or [], tables or [], sections)
+        slides = self._backfill_structural_subtitles(slides)
+        slides = self._preserve_missing_subheadings(slides, blocks or [])
         return PresentationPlan(template_id=template_id, title=plan_title, slides=slides)
+
+    def _backfill_structural_subtitles(self, slides: list[SlideSpec]) -> list[SlideSpec]:
+        current_top_level_title = ""
+        for slide in slides:
+            title = (slide.title or "").strip()
+            if not title or slide.kind == SlideKind.TITLE:
+                continue
+            if self.TOP_LEVEL_HEADING_PATTERN.match(title):
+                current_top_level_title = title
+                continue
+            if (slide.subtitle or "").strip():
+                continue
+            if current_top_level_title and current_top_level_title != title:
+                slide.subtitle = current_top_level_title
+        return slides
+
+    def _preserve_missing_subheadings(self, slides: list[SlideSpec], blocks: list[DocumentBlock]) -> list[SlideSpec]:
+        if not slides or not blocks:
+            return slides
+
+        def slide_payload(slide: SlideSpec) -> str:
+            parts = [slide.title or "", slide.subtitle or "", slide.text or "", slide.notes or "", *slide.bullets]
+            if slide.table is not None:
+                parts.extend(slide.table.headers)
+                for row in slide.table.rows:
+                    parts.extend(row)
+            return self._normalize_line(" ".join(part for part in parts if part))
+
+        payloads = [slide_payload(slide) for slide in slides]
+        combined_payload = " ".join(payloads)
+
+        for block_index, block in enumerate(blocks):
+            if block.kind != "subheading" or not (block.text or "").strip():
+                continue
+            heading = self._normalize_line(block.text or "")
+            if len(heading) < 8 or heading in combined_payload:
+                continue
+
+            target_index = self._find_following_payload_slide_index(blocks, block_index + 1, payloads)
+            if target_index is None:
+                continue
+            target = slides[target_index]
+            if target.kind == SlideKind.BULLETS:
+                if heading not in [self._normalize_line(item) for item in target.bullets]:
+                    target.bullets = [heading, *target.bullets]
+                    target.content_blocks = [self._list_block(target.bullets)]
+            elif not (target.subtitle or "").strip() or self.TOP_LEVEL_HEADING_PATTERN.match(target.subtitle or ""):
+                target.subtitle = heading
+            elif heading not in self._normalize_line(target.subtitle or ""):
+                target.subtitle = f"{target.subtitle} · {heading}"[:120]
+            payloads[target_index] = slide_payload(target)
+            combined_payload = " ".join(payloads)
+        return slides
+
+    def _find_following_payload_slide_index(
+        self,
+        blocks: list[DocumentBlock],
+        start_index: int,
+        slide_payloads: list[str],
+    ) -> int | None:
+        for block in blocks[start_index:]:
+            probes: list[str] = []
+            if block.text:
+                probes.append(self._normalize_line(block.text))
+            if block.items:
+                probes.extend(self._normalize_line(item) for item in block.items if item)
+            if block.table is not None:
+                probes.extend(self._normalize_line(value) for value in block.table.headers if value)
+                for row in block.table.rows:
+                    probes.extend(self._normalize_line(value) for value in row if value)
+            probes = [probe for probe in probes if len(probe) >= 8]
+            if not probes:
+                continue
+            for slide_index, payload in enumerate(slide_payloads):
+                if any(probe in payload for probe in probes):
+                    return slide_index
+        return None
 
     def _apply_chart_override(
         self,
@@ -590,29 +670,15 @@ class TextToPlanService:
                 else:
                     flush_buffer()
                     table_subtitle = section.subtitle if use_subtitle else ""
-                table_notes: list[str] = []
-                note_index = index + 1
-                while note_index < len(section.content_blocks):
-                    note_block = section.content_blocks[note_index]
-                    if note_block.kind not in {"paragraph", "callout"}:
-                        break
-                    note_text = note_block.text.strip()
-                    if not note_text or len(note_text) > 220:
-                        break
-                    table_notes.append(note_text)
-                    note_index += 1
-                    if sum(len(note) for note in table_notes) >= 260:
-                        break
                 slides.extend(
                     self._build_table_slides_from_table(
                         title=section.title,
                         subtitle=table_subtitle,
                         table=block.table,
-                        supporting_text="\n".join(table_notes),
                     )
                 )
                 use_subtitle = False
-                index = note_index
+                index += 1
                 continue
             buffered_blocks.append(block)
             index += 1
@@ -2390,7 +2456,63 @@ class TextToPlanService:
                 current.append(next_bucket.pop(0))
                 current_chars += len(candidate.text)
 
+        for index in range(len(rebalanced) - 1):
+            current = rebalanced[index]
+            next_bucket = rebalanced[index + 1]
+            self._smooth_continuation_bucket_pair(current, next_bucket)
+
         return [bucket for bucket in rebalanced if bucket]
+
+    def _smooth_continuation_bucket_pair(
+        self,
+        current: list[ContinuationUnit],
+        next_bucket: list[ContinuationUnit],
+    ) -> None:
+        if not current or len(next_bucket) <= 1:
+            return
+
+        current_min_chars = self._continuation_bucket_min_payload_chars(current)
+        next_min_chars = self._continuation_bucket_min_payload_chars(next_bucket)
+        current_chars = sum(len(unit.text) for unit in current)
+        next_chars = sum(len(unit.text) for unit in next_bucket)
+
+        while len(next_bucket) > 1 and next_chars > current_chars + 80:
+            candidate = next_bucket[0]
+            candidate_chars = len(candidate.text)
+            projected_current = [*current, candidate]
+            projected_next = next_bucket[1:]
+            if not self._continuation_units_fit_single_slide(projected_current):
+                break
+            if projected_next and sum(len(unit.text) for unit in projected_next) < next_min_chars:
+                break
+            current_delta = abs(next_chars - current_chars)
+            projected_delta = abs((next_chars - candidate_chars) - (current_chars + candidate_chars))
+            if projected_delta > current_delta:
+                break
+            current.append(next_bucket.pop(0))
+            current_chars += candidate_chars
+            next_chars -= candidate_chars
+            current_min_chars = self._continuation_bucket_min_payload_chars(current)
+            next_min_chars = self._continuation_bucket_min_payload_chars(next_bucket) if next_bucket else 0
+
+        while len(current) > 1 and current_chars > next_chars + 80:
+            candidate = current[-1]
+            candidate_chars = len(candidate.text)
+            projected_current = current[:-1]
+            projected_next = [candidate, *next_bucket]
+            if not projected_current or not self._continuation_units_fit_single_slide(projected_next):
+                break
+            if sum(len(unit.text) for unit in projected_current) < current_min_chars:
+                break
+            current_delta = abs(next_chars - current_chars)
+            projected_delta = abs((next_chars + candidate_chars) - (current_chars - candidate_chars))
+            if projected_delta > current_delta:
+                break
+            next_bucket.insert(0, current.pop())
+            current_chars -= candidate_chars
+            next_chars += candidate_chars
+            current_min_chars = self._continuation_bucket_min_payload_chars(current)
+            next_min_chars = self._continuation_bucket_min_payload_chars(next_bucket)
 
     def _build_continuation_slide(
         self,

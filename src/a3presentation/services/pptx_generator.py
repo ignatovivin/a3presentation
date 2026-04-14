@@ -10,9 +10,10 @@ from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
 
-from pptx.chart.axis import ValueAxis
 from pptx.chart.data import CategoryChartData
+from pptx.chart.axis import ValueAxis
 from pptx.dml.color import RGBColor
+from pptx.oxml import parse_xml
 from pptx.oxml.xmlchemy import OxmlElement
 from pptx import Presentation
 from pptx.enum.chart import XL_CHART_TYPE, XL_MARKER_STYLE
@@ -31,9 +32,12 @@ from a3presentation.domain.presentation import (
 from a3presentation.domain.template import (
     GenerationMode,
     LayoutSpec,
+    PlaceholderSpec,
     PlaceholderKind,
     PrototypeSlideSpec,
     TemplateManifest,
+    TemplateShapeStyleSpec,
+    TemplateTextStyleSpec,
 )
 from a3presentation.services.chart_style import CHART_STYLE_CONFIG
 from a3presentation.services.chart_render_contract import (
@@ -64,6 +68,7 @@ class PptxGenerator:
     TITLE_CONTENT_GAP_EMU = 180000
     TITLE_BODY_GAP_NO_SUBTITLE_EMU = 300000
     CONTENT_FOOTER_GAP_EMU = 180000
+    FOOTER_FONT_PT = 12.0
     COVER_TITLE_TOP_EMU = 651176
     COVER_TITLE_LEFT_EMU = 444249
     COVER_TITLE_WIDTH_EMU = 10693901
@@ -94,6 +99,10 @@ class PptxGenerator:
     }
     _CHART_STYLE_CONFIG = None
 
+    def __init__(self) -> None:
+        self._active_manifest: TemplateManifest | None = None
+        self._active_presentation: Presentation | None = None
+
     @classmethod
     def _chart_style_config(cls) -> dict:
         if cls._CHART_STYLE_CONFIG is None:
@@ -111,10 +120,12 @@ class PptxGenerator:
         return RGBColor.from_string(palette[index % len(palette)].lstrip("#"))
 
     def generate(self, template_path: Path, manifest: TemplateManifest, plan: PresentationPlan, output_dir: Path) -> Path:
+        self._active_manifest = manifest
         if manifest.generation_mode == GenerationMode.PROTOTYPE and manifest.prototype_slides:
             presentation = self._generate_from_prototypes(template_path, manifest, plan)
         else:
             presentation = self._generate_from_layouts(template_path, manifest, plan)
+        self._active_presentation = presentation
 
         self._apply_core_properties(presentation, plan)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +160,7 @@ class PptxGenerator:
 
     def _generate_from_layouts(self, template_path: Path, manifest: TemplateManifest, plan: PresentationPlan) -> Presentation:
         presentation = Presentation(str(template_path))
+        self._active_presentation = presentation
         self._remove_all_slides(presentation)
         self._apply_core_properties(presentation, plan)
 
@@ -247,6 +259,12 @@ class PptxGenerator:
         layout_key = slide_spec.preferred_layout_key or "text_full_width"
         layout_profile = profile_for_layout(layout_key)
 
+        if getattr(slide_spec, "background_only", False):
+            for shape in list(slide.shapes):
+                if getattr(shape, "has_text_frame", False) or getattr(shape, "is_placeholder", False):
+                    self._clear_placeholder(shape)
+            return
+
         # Preferred path for real templates: bind by explicit shape name from manifest.
         for token_spec in prototype.tokens:
             if not token_spec.shape_name:
@@ -256,8 +274,21 @@ class PptxGenerator:
                 continue
             self._apply_shape_spec_metadata(target_shape, token_spec)
             shape_profile = self._capacity_profile_for_shape(layout_key, target_shape, layout_profile)
-            self._fill_shape_by_binding(target_shape, token_spec.binding, slide_spec, presentation_title, shape_profile)
-            self._apply_shape_spec_metadata(target_shape, token_spec)
+            self._fill_shape_by_binding(
+                target_shape,
+                token_spec.binding,
+                slide_spec,
+                presentation_title,
+                shape_profile,
+                placeholder_spec=token_spec,
+            )
+            self._apply_shape_spec_metadata(target_shape, token_spec, apply_text_style=False)
+            if slide_spec.kind == SlideKind.CHART and token_spec.binding == "title":
+                self._configure_title_text_frame(target_shape)
+                self._apply_font_size(target_shape, 35.0)
+            elif slide_spec.kind == SlideKind.CHART and token_spec.binding == "subtitle":
+                self._configure_subtitle_text_frame(target_shape)
+                self._apply_font_size(target_shape, 20.0)
             used_shapes.add(token_spec.shape_name)
 
         for shape in slide.shapes:
@@ -346,6 +377,9 @@ class PptxGenerator:
             for layout in manifest.layouts:
                 if layout.key == slide_spec.preferred_layout_key:
                     return layout
+            mapped_layout = self._resolve_logical_layout(manifest, slide_spec.preferred_layout_key)
+            if mapped_layout is not None:
+                return mapped_layout
 
         for layout in manifest.layouts:
             if slide_spec.kind.value in layout.supported_slide_kinds:
@@ -360,12 +394,141 @@ class PptxGenerator:
             raise ValueError(f"Template '{manifest.template_id}' does not contain layouts")
         return manifest.layouts[0]
 
+    def _resolve_logical_layout(self, manifest: TemplateManifest, logical_layout_key: str) -> LayoutSpec | None:
+        candidates: list[LayoutSpec] = []
+
+        if logical_layout_key == "cover":
+            candidates = [layout for layout in manifest.layouts if "титул" in layout.name.lower()]
+        elif logical_layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"}:
+            candidates = [
+                layout
+                for layout in manifest.layouts
+                if any(placeholder.idx == 17 for placeholder in layout.placeholders)
+                and any(placeholder.idx == 14 for placeholder in layout.placeholders)
+                and not any(placeholder.idx == 16 and placeholder.kind == PlaceholderKind.IMAGE for placeholder in layout.placeholders)
+            ]
+            if manifest.template_id == "corp_light_v1":
+                light_candidates = [
+                    layout
+                    for layout in manifest.layouts
+                    if layout.slide_master_index == 0
+                    and any(placeholder.idx == 17 for placeholder in layout.placeholders)
+                    and any(placeholder.idx == 14 for placeholder in layout.placeholders)
+                    and self._background_xml_requires_relationships(layout.background_xml)
+                ]
+                if light_candidates:
+                    candidates = light_candidates
+        elif logical_layout_key == "table":
+            candidates = [layout for layout in manifest.layouts if "таблиц" in layout.name.lower()]
+        elif logical_layout_key == "image_text":
+            candidates = [
+                layout
+                for layout in manifest.layouts
+                if any(placeholder.idx == 16 and placeholder.kind == PlaceholderKind.IMAGE for placeholder in layout.placeholders)
+            ]
+        elif logical_layout_key == "cards_3":
+            candidates = [layout for layout in manifest.layouts if "карточ" in layout.name.lower()]
+        elif logical_layout_key == "list_with_icons":
+            candidates = [layout for layout in manifest.layouts if "перечис" in layout.name.lower() and any(placeholder.idx == 21 for placeholder in layout.placeholders)]
+        elif logical_layout_key == "contacts":
+            candidates = [layout for layout in manifest.layouts if "контакт" in layout.name.lower()]
+
+        return candidates[0] if candidates else None
+
+    def _effective_placeholder_kind(
+        self,
+        placeholder_spec: PlaceholderSpec,
+        *,
+        logical_layout_key: str,
+        slide_kind: SlideKind,
+    ) -> PlaceholderKind:
+        if placeholder_spec.binding:
+            return placeholder_spec.kind
+
+        idx = placeholder_spec.idx
+        if idx is None:
+            return placeholder_spec.kind
+
+        if logical_layout_key == "cover":
+            role_map = {
+                0: PlaceholderKind.TITLE,
+                15: PlaceholderKind.FOOTER,
+            }
+            return role_map.get(idx, PlaceholderKind.UNKNOWN)
+
+        if logical_layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"}:
+            role_map = {
+                0: PlaceholderKind.TITLE,
+                13: PlaceholderKind.SUBTITLE,
+                14: PlaceholderKind.BODY,
+                17: PlaceholderKind.FOOTER,
+            }
+            return role_map.get(idx, PlaceholderKind.UNKNOWN)
+
+        if logical_layout_key == "table" or slide_kind == SlideKind.CHART:
+            role_map = {
+                0: PlaceholderKind.TITLE,
+                13: PlaceholderKind.SUBTITLE,
+                14: PlaceholderKind.CHART if slide_kind == SlideKind.CHART else PlaceholderKind.TABLE,
+                15: PlaceholderKind.FOOTER,
+            }
+            return role_map.get(idx, PlaceholderKind.UNKNOWN)
+
+        if logical_layout_key == "image_text":
+            role_map = {
+                0: PlaceholderKind.TITLE,
+                13: PlaceholderKind.SUBTITLE,
+                14: PlaceholderKind.BODY,
+                16: PlaceholderKind.IMAGE,
+                17: PlaceholderKind.FOOTER,
+            }
+            return role_map.get(idx, PlaceholderKind.UNKNOWN)
+
+        if logical_layout_key == "cards_3":
+            role_map = {
+                0: PlaceholderKind.TITLE,
+                11: PlaceholderKind.BODY,
+                12: PlaceholderKind.BODY,
+                13: PlaceholderKind.BODY,
+                15: PlaceholderKind.FOOTER,
+            }
+            return role_map.get(idx, PlaceholderKind.UNKNOWN)
+
+        if logical_layout_key == "list_with_icons":
+            role_map = {
+                0: PlaceholderKind.TITLE,
+                12: PlaceholderKind.BODY,
+                14: PlaceholderKind.BODY,
+                21: PlaceholderKind.FOOTER,
+            }
+            return role_map.get(idx, PlaceholderKind.UNKNOWN)
+
+        if logical_layout_key == "contacts":
+            return PlaceholderKind.BODY if idx in {10, 11, 12, 13} else PlaceholderKind.UNKNOWN
+
+        return placeholder_spec.kind
+
     def _fill_slide_from_layout(self, slide, slide_spec: SlideSpec, layout: LayoutSpec, presentation_title: str) -> None:
-        if layout.key == "cover":
+        logical_layout_key = slide_spec.preferred_layout_key or layout.key
+        explicit_background_xml = getattr(slide_spec, "background_xml", None)
+        if explicit_background_xml:
+            self._apply_background_xml(slide, explicit_background_xml)
+        elif not self._background_xml_requires_relationships(layout.background_xml):
+            self._apply_background_xml(slide, layout.background_xml)
+            self._apply_background_style(slide, layout.background_style)
+        elif self._should_force_light_content_background(logical_layout_key):
+            donor_layout_key = self._light_background_donor_layout_key() or "table"
+            self._apply_donor_layout_background(slide, donor_layout_key=donor_layout_key)
+        else:
+            self._apply_background_style(slide, layout.background_style)
+        if getattr(slide_spec, "background_only", False):
+            for placeholder in slide.placeholders:
+                self._clear_placeholder(placeholder)
+            return
+        if logical_layout_key == "cover":
             self._populate_cover_slide(slide, slide_spec)
             return
-        layout_key = slide_spec.preferred_layout_key or layout.key
-        layout_profile = profile_for_layout(layout_key)
+        layout_profile = profile_for_layout(logical_layout_key)
         placeholders = {placeholder.placeholder_format.idx: placeholder for placeholder in slide.placeholders}
         used_placeholder_indices: set[int] = set()
 
@@ -375,25 +538,52 @@ class PptxGenerator:
             shape = placeholders[placeholder_spec.idx]
             used_placeholder_indices.add(placeholder_spec.idx)
             self._apply_shape_spec_metadata(shape, placeholder_spec)
-            shape_profile = self._capacity_profile_for_shape(layout_key, shape, layout_profile)
             if placeholder_spec.binding:
-                self._fill_shape_by_binding(shape, placeholder_spec.binding, slide_spec, presentation_title, shape_profile)
+                self._fill_shape_by_binding(
+                    shape,
+                    placeholder_spec.binding,
+                    slide_spec,
+                    presentation_title,
+                    layout_profile,
+                    placeholder_spec=placeholder_spec,
+                )
                 if placeholder_spec.binding != "table":
                     self._apply_shape_spec_metadata(shape, placeholder_spec)
                 continue
-            if placeholder_spec.kind == PlaceholderKind.TITLE:
-                self._set_text(shape, slide_spec.title or "", shape_profile)
-            elif placeholder_spec.kind == PlaceholderKind.SUBTITLE:
-                self._set_text(shape, slide_spec.subtitle or "", shape_profile)
-            elif placeholder_spec.kind == PlaceholderKind.BODY:
-                self._fill_body(shape, slide_spec, shape_profile)
-            elif placeholder_spec.kind == PlaceholderKind.FOOTER:
-                self._set_text(shape, slide_spec.notes or "", shape_profile)
-            elif placeholder_spec.kind == PlaceholderKind.TABLE:
-                self._fill_table_or_chart(shape, slide_spec)
-            elif placeholder_spec.kind == PlaceholderKind.CHART:
-                self._fill_chart(shape, slide_spec)
-            self._apply_shape_spec_metadata(shape, placeholder_spec)
+            effective_kind = self._effective_placeholder_kind(
+                placeholder_spec,
+                logical_layout_key=logical_layout_key,
+                slide_kind=slide_spec.kind,
+            )
+            if effective_kind == PlaceholderKind.UNKNOWN:
+                self._clear_placeholder(shape)
+            elif effective_kind == PlaceholderKind.TITLE:
+                self._set_text(shape, slide_spec.title or "", layout_profile)
+            elif effective_kind == PlaceholderKind.SUBTITLE:
+                if (slide_spec.subtitle or "").strip():
+                    self._set_text(shape, slide_spec.subtitle or "", layout_profile)
+                else:
+                    self._clear_placeholder(shape)
+            elif effective_kind == PlaceholderKind.BODY:
+                self._fill_body(shape, slide_spec, layout_profile)
+            elif effective_kind == PlaceholderKind.FOOTER:
+                self._set_text(shape, presentation_title, layout_profile)
+            elif effective_kind == PlaceholderKind.TABLE:
+                self._fill_table_or_chart(shape, slide_spec, placeholder_spec)
+            elif effective_kind == PlaceholderKind.CHART:
+                self._fill_chart(shape, slide_spec, placeholder_spec)
+            self._apply_shape_spec_metadata(
+                shape,
+                placeholder_spec,
+                preserve_font_size=effective_kind in {PlaceholderKind.BODY, PlaceholderKind.FOOTER},
+            )
+            if effective_kind == PlaceholderKind.SUBTITLE and slide_spec.kind == SlideKind.CHART:
+                self._configure_subtitle_text_frame(shape)
+                body_style = self._active_manifest.theme.master_text_styles.get("body") if self._active_manifest is not None else None
+                self._apply_font_size(
+                    shape,
+                    body_style.font_size_pt if body_style is not None and body_style.font_size_pt else self._table_subtitle_font_size_points(slide_spec.subtitle or ""),
+                )
 
         for placeholder in slide.placeholders:
             placeholder_idx = placeholder.placeholder_format.idx
@@ -401,7 +591,125 @@ class PptxGenerator:
                 continue
             self._clear_placeholder(placeholder)
 
-        self._apply_layout_expansion_and_flow(slide, slide_spec.preferred_layout_key or layout.key, slide_spec)
+        if getattr(slide_spec, "background_only", False):
+            for placeholder in slide.placeholders:
+                self._clear_placeholder(placeholder)
+            return
+
+        self._apply_layout_expansion_and_flow(slide, logical_layout_key, slide_spec)
+
+    def _apply_background_xml(self, slide, background_xml: str | None) -> None:
+        if not background_xml:
+            return
+        try:
+            background = parse_xml(background_xml)
+            existing = slide._element.cSld.bg
+            if existing is not None:
+                slide._element.cSld.remove(existing)
+            slide._element.cSld.insert(0, background)
+        except Exception:
+            pass
+
+    def _background_xml_requires_relationships(self, background_xml: str | None) -> bool:
+        if not background_xml:
+            return False
+        return "embed=" in background_xml or "link=" in background_xml
+
+    def _should_force_light_content_background(self, layout_key: str) -> bool:
+        return (
+            self._active_manifest is not None
+            and self._active_manifest.template_id == "corp_light_v1"
+            and layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"}
+        )
+
+    def _apply_donor_layout_background(self, slide, donor_layout_key: str) -> None:
+        blob = self._background_image_blob_for_layout_key(donor_layout_key)
+        if blob is None or self._active_presentation is None:
+            return
+        picture = slide.shapes.add_picture(
+            BytesIO(blob),
+            0,
+            0,
+            width=self._active_presentation.slide_width,
+            height=self._active_presentation.slide_height,
+        )
+        sp_tree = slide.shapes._spTree
+        pic_element = picture._element
+        sp_tree.remove(pic_element)
+        insert_at = 2
+        for index, child in enumerate(sp_tree):
+            if not (child.tag.endswith("nvGrpSpPr") or child.tag.endswith("grpSpPr")):
+                insert_at = index
+                break
+        sp_tree.insert(insert_at, pic_element)
+
+    def _background_image_blob_for_layout_key(self, layout_key: str) -> bytes | None:
+        if self._active_manifest is None or self._active_presentation is None:
+            return None
+        manifest_layout = next((item for item in self._active_manifest.layouts if item.key == layout_key), None)
+        if manifest_layout is None:
+            return None
+        donor_layout = self._active_presentation.slide_masters[manifest_layout.slide_master_index].slide_layouts[
+            manifest_layout.slide_layout_index
+        ]
+        background = donor_layout._element.cSld.bg
+        if background is not None:
+            blob = self._background_image_blob_from_part(donor_layout.part, background)
+            if blob is not None:
+                return blob
+        donor_master = self._active_presentation.slide_masters[manifest_layout.slide_master_index]
+        master_background = donor_master._element.cSld.bg
+        if master_background is not None:
+            return self._background_image_blob_from_part(donor_master.part, master_background)
+        return None
+
+    def _background_image_blob_from_part(self, part, background) -> bytes | None:
+        relationship_id = None
+        relationship_attr = f"{{{self.RELATIONSHIP_NAMESPACE}}}embed"
+        for element in background.iter():
+            relationship_id = element.get(relationship_attr)
+            if relationship_id:
+                break
+        if not relationship_id:
+            return None
+        rel = part.rels.get(relationship_id)
+        target_part = getattr(rel, "target_part", None) if rel is not None else None
+        return getattr(target_part, "blob", None)
+
+    def _light_background_donor_layout_key(self) -> str | None:
+        if self._active_manifest is None:
+            return None
+        for layout in self._active_manifest.layouts:
+            if layout.slide_master_index != 0:
+                continue
+            if "только фон" in layout.name.lower() and self._background_xml_requires_relationships(layout.background_xml):
+                return layout.key
+        for layout in self._active_manifest.layouts:
+            if layout.slide_master_index == 0 and self._background_xml_requires_relationships(layout.background_xml):
+                return layout.key
+        return None
+
+    def _apply_background_style(self, slide, background_style: TemplateShapeStyleSpec | None) -> None:
+        if background_style is None:
+            return
+        if background_style.fill_type == "solid" and background_style.fill_color:
+            try:
+                color = background_style.fill_color.lstrip("#").upper()
+                background = parse_xml(
+                    '<p:bg xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+                    'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+                    "<p:bgPr>"
+                    f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>'
+                    "<a:effectLst/>"
+                    "</p:bgPr>"
+                    "</p:bg>"
+                )
+                existing = slide._element.cSld.bg
+                if existing is not None:
+                    slide._element.cSld.remove(existing)
+                slide._element.cSld.insert(0, background)
+            except Exception:
+                pass
 
     def _capacity_profile_for_shape(
         self,
@@ -413,12 +721,14 @@ class PptxGenerator:
         height = getattr(shape, "height", None)
         if width is None or height is None:
             return base_profile
-        if layout_key in self.BUILTIN_LAYOUT_KEYS:
-            return base_profile
         reference_width = None
         reference_height = None
-        placeholder_format = getattr(shape, "placeholder_format", None)
-        placeholder_idx = getattr(placeholder_format, "idx", None)
+        placeholder_idx = None
+        if getattr(shape, "is_placeholder", False):
+            try:
+                placeholder_idx = shape.placeholder_format.idx
+            except Exception:
+                placeholder_idx = None
         base_geometry = geometry_policy_for_layout(layout_key)
         reference_placeholder = base_geometry.placeholders.get(placeholder_idx or -1)
         if reference_placeholder is None and placeholder_idx in {None, 14}:
@@ -458,13 +768,16 @@ class PptxGenerator:
 
         self._adjust_title_and_flow(slide, layout_key, slide_spec)
 
-    def _apply_shape_spec_metadata(self, shape, spec) -> None:
+    def _apply_shape_spec_metadata(self, shape, spec, *, apply_text_style: bool = True, preserve_font_size: bool = False) -> None:
         geometry_values = (spec.left_emu, spec.top_emu, spec.width_emu, spec.height_emu)
         if all(isinstance(value, int) and value > 0 for value in geometry_values):
-            shape.left = spec.left_emu
-            shape.top = spec.top_emu
-            shape.width = spec.width_emu
-            shape.height = spec.height_emu
+            try:
+                shape.left = spec.left_emu
+                shape.top = spec.top_emu
+                shape.width = spec.width_emu
+                shape.height = spec.height_emu
+            except Exception:
+                pass
 
         if not getattr(shape, "has_text_frame", False):
             return
@@ -478,6 +791,174 @@ class PptxGenerator:
             text_frame.margin_top = spec.margin_top_emu
         if isinstance(spec.margin_bottom_emu, int) and spec.margin_bottom_emu >= 0:
             text_frame.margin_bottom = spec.margin_bottom_emu
+        shape_style = getattr(spec, "shape_style", None)
+        text_style = getattr(spec, "text_style", None) if apply_text_style else None
+        paragraph_styles = getattr(spec, "paragraph_styles", None) if apply_text_style else None
+        if shape_style is not None:
+            self._apply_shape_style(shape, shape_style)
+            if isinstance(shape_style.inset_left_emu, int) and shape_style.inset_left_emu >= 0:
+                text_frame.margin_left = shape_style.inset_left_emu
+            if isinstance(shape_style.inset_right_emu, int) and shape_style.inset_right_emu >= 0:
+                text_frame.margin_right = shape_style.inset_right_emu
+            if isinstance(shape_style.inset_top_emu, int) and shape_style.inset_top_emu >= 0:
+                text_frame.margin_top = shape_style.inset_top_emu
+            if isinstance(shape_style.inset_bottom_emu, int) and shape_style.inset_bottom_emu >= 0:
+                text_frame.margin_bottom = shape_style.inset_bottom_emu
+            self._apply_vertical_anchor(text_frame, shape_style.vertical_anchor)
+        if text_style is not None:
+            self._apply_vertical_anchor(text_frame, text_style.vertical_anchor)
+            self._apply_text_style(text_frame, text_style, preserve_font_size=preserve_font_size)
+        if paragraph_styles is not None and paragraph_styles.level_styles:
+            self._apply_paragraph_style_catalog(text_frame, paragraph_styles.level_styles)
+
+    def _apply_vertical_anchor(self, text_frame, anchor: str | None) -> None:
+        if not anchor:
+            return
+        try:
+            body_pr = text_frame._txBody.bodyPr
+            body_pr.set("anchor", anchor)
+        except Exception:
+            pass
+
+    def _apply_text_style(
+        self,
+        text_frame,
+        style: TemplateTextStyleSpec,
+        *,
+        apply_font_family: bool = False,
+        preserve_font_size: bool = False,
+    ) -> None:
+        for paragraph in text_frame.paragraphs:
+            if style.line_spacing is not None:
+                paragraph.line_spacing = style.line_spacing
+            if style.space_after_pt is not None:
+                paragraph.space_after = Pt(style.space_after_pt)
+            if style.space_before_pt is not None:
+                paragraph.space_before = Pt(style.space_before_pt)
+                if not paragraph.runs and paragraph.text:
+                    run = paragraph.add_run()
+                    run.text = paragraph.text
+                    paragraph.text = ""
+            for run in paragraph.runs:
+                if style.font_size_pt is not None and not preserve_font_size:
+                    run.font.size = Pt(style.font_size_pt)
+                if apply_font_family and style.font_family:
+                    self._apply_run_font_family(run, style.font_family)
+                if style.bold is not None:
+                    run.font.bold = style.bold
+                if style.italic is not None:
+                    run.font.italic = style.italic
+                if style.underline is not None:
+                    run.font.underline = style.underline
+                if style.color:
+                    try:
+                        run.font.color.rgb = RGBColor.from_string(style.color.lstrip("#"))
+                    except Exception:
+                        pass
+
+    def _apply_paragraph_style_catalog(self, text_frame, level_styles: dict[str, TemplateTextStyleSpec]) -> None:
+        for paragraph in text_frame.paragraphs:
+            level_key = str(getattr(paragraph, "level", 0))
+            style = level_styles.get(level_key) or level_styles.get("0")
+            if style is None:
+                continue
+            self._apply_paragraph_style(paragraph, style)
+
+    def _apply_paragraph_style(self, paragraph, style: TemplateTextStyleSpec) -> None:
+        if style.line_spacing is not None:
+            paragraph.line_spacing = style.line_spacing
+        if style.space_after_pt is not None:
+            paragraph.space_after = Pt(style.space_after_pt)
+        if style.space_before_pt is not None:
+            paragraph.space_before = Pt(style.space_before_pt)
+        ppr = paragraph._p.get_or_add_pPr()
+        if style.margin_left_emu is not None:
+            ppr.set("marL", str(style.margin_left_emu))
+        if style.margin_right_emu is not None:
+            ppr.set("marR", str(style.margin_right_emu))
+        if style.default_tab_size_emu is not None:
+            ppr.set("defTabSz", str(style.default_tab_size_emu))
+        if style.rtl:
+            ppr.set("rtl", "1")
+        if style.hanging_emu is not None:
+            ppr.set("indent", str(-abs(style.hanging_emu)))
+        elif style.indent_emu is not None:
+            ppr.set("indent", str(style.indent_emu))
+        if style.bullet_type == "char" and style.bullet_char:
+            for child in list(ppr):
+                if child.tag.endswith("}buNone") or child.tag.endswith("}buChar") or child.tag.endswith("}buAutoNum"):
+                    ppr.remove(child)
+            bullet = OxmlElement("a:buChar")
+            bullet.set("char", style.bullet_char)
+            if style.bullet_font:
+                bullet.set("typeface", style.bullet_font)
+            ppr.insert(0, bullet)
+        self._apply_text_style_to_paragraph(paragraph, style)
+
+    def _apply_text_style_to_paragraph(self, paragraph, style: TemplateTextStyleSpec, *, apply_font_family: bool = False) -> None:
+        if not paragraph.runs and paragraph.text:
+            run = paragraph.add_run()
+            run.text = paragraph.text
+            paragraph.text = ""
+        for run in paragraph.runs:
+            if style.font_size_pt is not None:
+                run.font.size = Pt(style.font_size_pt)
+            if apply_font_family and style.font_family:
+                self._apply_run_font_family(run, style.font_family)
+            if style.bold is not None:
+                run.font.bold = style.bold
+            if style.color:
+                try:
+                    run.font.color.rgb = RGBColor.from_string(style.color.lstrip("#"))
+                except Exception:
+                    pass
+
+    def _apply_shape_style(self, shape, style: TemplateShapeStyleSpec) -> None:
+        try:
+            sp_pr = shape._element.spPr
+        except Exception:
+            return
+        if sp_pr is None:
+            return
+        if style.fill_type == "solid" and style.fill_color:
+            try:
+                shape.fill.solid()
+                shape.fill.fore_color.rgb = RGBColor.from_string(style.fill_color.lstrip("#"))
+            except Exception:
+                pass
+        line = None
+        try:
+            line = shape.line
+        except Exception:
+            line = None
+        if line is not None and style.line_color:
+            try:
+                line.color.rgb = RGBColor.from_string(style.line_color.lstrip("#"))
+            except Exception:
+                pass
+        ln = sp_pr.get_or_add_ln()
+        if style.line_compound:
+            ln.set("cmpd", style.line_compound)
+        if style.line_cap:
+            ln.set("cap", style.line_cap)
+        if style.line_join == "bevel" and not ln.xpath("./a:bevel"):
+            ln.append(OxmlElement("a:bevel"))
+        if style.theme_fill_ref and not sp_pr.xpath("./a:style/a:fillRef"):
+            style_el = OxmlElement("a:style")
+            fill_ref = OxmlElement("a:fillRef")
+            fill_ref.set("idx", style.theme_fill_ref)
+            fill_scheme = OxmlElement("a:schemeClr")
+            fill_scheme.set("val", "accent1")
+            fill_ref.append(fill_scheme)
+            style_el.append(fill_ref)
+            if style.theme_line_ref:
+                ln_ref = OxmlElement("a:lnRef")
+                ln_ref.set("idx", style.theme_line_ref)
+                line_scheme = OxmlElement("a:schemeClr")
+                line_scheme.set("val", "accent1")
+                ln_ref.append(line_scheme)
+                style_el.append(ln_ref)
+            sp_pr.append(style_el)
 
     def _populate_cover_slide(self, slide, slide_spec: SlideSpec) -> None:
         title_shape = self._find_cover_title_shape(slide)
@@ -601,6 +1082,23 @@ class PptxGenerator:
             run.font.size = font_size
             run.font.bold = bold
             run.font.color.rgb = color
+            theme_role = "title" if bold else "other"
+            theme_style = self._fallback_theme_text_style(theme_role)
+            if theme_style.font_family:
+                self._apply_run_font_family(run, theme_style.font_family)
+
+    def _apply_run_font_family(self, run, font_family: str) -> None:
+        run.font.name = font_family
+        try:
+            r_pr = run._r.get_or_add_rPr()
+            for tag in ("a:latin", "a:ea", "a:cs"):
+                existing = r_pr.find(f"{{http://schemas.openxmlformats.org/drawingml/2006/main}}{tag.split(':', 1)[1]}")
+                if existing is None:
+                    existing = OxmlElement(tag)
+                    r_pr.append(existing)
+                existing.set("typeface", font_family)
+        except Exception:
+            pass
 
     def _adjust_cover_layout(self, title_shape, meta_shape) -> None:
         if title_shape is None or not getattr(title_shape, "has_text_frame", False):
@@ -748,7 +1246,16 @@ class PptxGenerator:
                 run.font.italic = True
             return
 
-    def _fill_shape_by_binding(self, shape, binding: str, slide_spec: SlideSpec, presentation_title: str, layout_profile: LayoutCapacityProfile) -> None:
+    def _fill_shape_by_binding(
+        self,
+        shape,
+        binding: str,
+        slide_spec: SlideSpec,
+        presentation_title: str,
+        layout_profile: LayoutCapacityProfile,
+        *,
+        placeholder_spec: PlaceholderSpec | PrototypeTokenSpec | None = None,
+    ) -> None:
         placeholder_idx = None
         if getattr(shape, "is_placeholder", False):
             placeholder_format = getattr(shape, "placeholder_format", None)
@@ -779,10 +1286,10 @@ class PptxGenerator:
 
         binding_value = self._build_token_value_map(slide_spec, presentation_title).get(binding, "")
         if binding == "table":
-            self._fill_table_or_chart(shape, slide_spec)
+            self._fill_table_or_chart(shape, slide_spec, placeholder_spec)
             return
         if binding in {"chart", "chart_image"}:
-            self._fill_chart(shape, slide_spec)
+            self._fill_chart(shape, slide_spec, placeholder_spec)
             return
         if binding == "image":
             self._fill_image(shape, slide_spec)
@@ -801,12 +1308,12 @@ class PptxGenerator:
         if slide_spec.kind == SlideKind.CHART and binding == "title":
             self._set_text(shape, str(binding_value), layout_profile)
             self._configure_title_text_frame(shape)
-            self._apply_font_size(shape, self._title_font_size_points(slide_spec.preferred_layout_key or "table"))
+            self._apply_font_size(shape, 35.0)
             return
         if slide_spec.kind == SlideKind.CHART and binding == "subtitle":
             self._set_text(shape, str(binding_value), layout_profile)
             self._configure_subtitle_text_frame(shape)
-            self._apply_font_size(shape, self._table_subtitle_font_size_points(str(binding_value)))
+            self._apply_font_size(shape, 20.0)
             return
         self._set_text(shape, str(binding_value), layout_profile)
 
@@ -1113,7 +1620,7 @@ class PptxGenerator:
         cursor = title.top + title.height + title_gap
 
         if has_subtitle:
-            subtitle_font_pt = 18.0
+            subtitle_font_pt = 20.0
             self._configure_subtitle_text_frame(subtitle)
             self._apply_font_size(subtitle, subtitle_font_pt)
             subtitle.height = max(280000 if compact_subtitle else 360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, subtitle_font_pt))
@@ -1188,7 +1695,8 @@ class PptxGenerator:
         cursor = title.top + title.height + geometry.title_content_gap_emu
         if subtitle is not None and getattr(subtitle, "text", "").strip():
             subtitle_text = subtitle.text.strip()
-            subtitle_font_size = self._table_subtitle_font_size_points(subtitle_text)
+            body_style = self._active_manifest.theme.master_text_styles.get("body") if self._active_manifest is not None else None
+            subtitle_font_size = body_style.font_size_pt if body_style is not None and body_style.font_size_pt else self._table_subtitle_font_size_points(subtitle_text)
             self._apply_font_size(subtitle, subtitle_font_size)
             self._configure_subtitle_text_frame(subtitle)
             subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, subtitle_font_size))
@@ -1355,6 +1863,10 @@ class PptxGenerator:
             shape.height = policy.height_emu
 
     def _title_font_size_points(self, layout_key: str) -> float:
+        theme = self._active_manifest.theme if self._active_manifest is not None else None
+        title_style = theme.master_text_styles.get("title") if theme is not None else None
+        if title_style is not None and title_style.font_size_pt:
+            return title_style.font_size_pt
         return 28.0
 
     def _table_subtitle_font_size_points(self, text: str) -> float:
@@ -1476,7 +1988,7 @@ class PptxGenerator:
 
         return wrapped_lines
 
-    def _fill_table(self, shape, slide_spec: SlideSpec) -> None:
+    def _fill_table(self, shape, slide_spec: SlideSpec, placeholder_spec: PlaceholderSpec | None = None) -> None:
         if slide_spec.table is None:
             if getattr(shape, "has_text_frame", False):
                 self._set_text(shape, "", profile_for_layout("text_full_width"))
@@ -1508,7 +2020,13 @@ class PptxGenerator:
                     for col_index, value in enumerate(row):
                         if col_index < col_count:
                             table.cell(row_index, col_index).text = value
-                final_height = self._format_table(table, slide_spec.table, graphic_frame.width, graphic_frame.height)
+                final_height = self._format_table(
+                    table,
+                    slide_spec.table,
+                    graphic_frame.width,
+                    graphic_frame.height,
+                    placeholder_spec=placeholder_spec,
+                )
                 graphic_frame.height = final_height
                 return
             except (AttributeError, TypeError, ValueError):
@@ -1528,7 +2046,13 @@ class PptxGenerator:
                     break
                 for col_index, value in enumerate(row[:max_cols]):
                     table.cell(row_index, col_index).text = value
-            final_height = self._format_table(table, slide_spec.table, shape.width, shape.height)
+            final_height = self._format_table(
+                table,
+                slide_spec.table,
+                shape.width,
+                shape.height,
+                placeholder_spec=placeholder_spec,
+            )
             shape.height = final_height
             return
 
@@ -1539,13 +2063,13 @@ class PptxGenerator:
         if getattr(shape, "has_text_frame", False):
             self._set_bullets(shape, as_lines, profile_for_layout("list_full_width"))
 
-    def _fill_table_or_chart(self, shape, slide_spec: SlideSpec) -> None:
+    def _fill_table_or_chart(self, shape, slide_spec: SlideSpec, placeholder_spec: PlaceholderSpec | None = None) -> None:
         if slide_spec.chart is not None:
-            self._fill_chart(shape, slide_spec)
+            self._fill_chart(shape, slide_spec, placeholder_spec)
             return
-        self._fill_table(shape, slide_spec)
+        self._fill_table(shape, slide_spec, placeholder_spec)
 
-    def _fill_chart(self, shape, slide_spec: SlideSpec) -> None:
+    def _fill_chart(self, shape, slide_spec: SlideSpec, placeholder_spec: PlaceholderSpec | None = None) -> None:
         if slide_spec.chart is None:
             self._clear_placeholder(shape)
             return
@@ -1571,6 +2095,16 @@ class PptxGenerator:
             top = shape.top
             width = shape.width
             height = shape.height
+            shape_style = placeholder_spec.shape_style if placeholder_spec is not None else None
+            if shape_style is not None:
+                plot_left = shape_style.chart_plot_left_factor or 0.0
+                plot_top = shape_style.chart_plot_top_factor or 0.0
+                plot_width = shape_style.chart_plot_width_factor or 1.0
+                plot_height = shape_style.chart_plot_height_factor or 1.0
+                left = left + int(width * plot_left)
+                top = top + int(height * plot_top)
+                width = int(width * plot_width)
+                height = int(height * plot_height)
             if getattr(shape, "is_placeholder", False):
                 self._clear_placeholder(shape)
 
@@ -1579,11 +2113,14 @@ class PptxGenerator:
             if resolved_chart_spec.chart_type == ChartType.COMBO:
                 self._convert_chart_to_combo(chart, resolved_chart_spec)
             self._style_chart(chart, resolved_chart_spec)
+            if shape_style is not None:
+                self._apply_chart_shape_style(chart, shape_style)
         except Exception:
             if getattr(shape, "has_text_frame", False):
                 self._set_text(shape, "Не удалось построить график", profile_for_layout("text_full_width"))
             else:
                 self._clear_placeholder(shape)
+
     def _convert_chart_to_combo(self, chart, chart_spec: ChartSpec) -> None:
         chart_space = chart._chartSpace
         plot_area = chart_space.chart.plotArea
@@ -1608,7 +2145,7 @@ class PptxGenerator:
         line_chart.append(line_series)
 
         bar_axis_ids = [ax_id.get("val") for ax_id in bar_chart.xpath("./c:axId")]
-        if uses_secondary_value_axis(chart_spec):
+        if uses_secondary_value_axis(chart_spec) and len(bar_axis_ids) >= 1:
             secondary_axis_id = self._ensure_secondary_value_axis(chart)
             for axis_id in [bar_axis_ids[0], secondary_axis_id]:
                 cloned_ax_id = OxmlElement("c:axId")
@@ -1748,7 +2285,9 @@ class PptxGenerator:
     def _style_chart_title(self, chart) -> None:
         try:
             text_frame = chart.chart_title.text_frame
-            self._style_text_frame_runs(text_frame, font_size=Pt(18), bold=True, color=self._style_rgb("textColor"))
+            font_size = Pt(self._title_font_size_points("table"))
+            self._style_text_frame_runs(text_frame, font_size=font_size, bold=True, color=self._style_rgb("textColor"))
+            self._apply_theme_text_style(text_frame, "title")
         except Exception:
             pass
 
@@ -1876,6 +2415,77 @@ class PptxGenerator:
         except Exception:
             pass
 
+    def _apply_chart_shape_style(self, chart, style: TemplateShapeStyleSpec) -> None:
+        try:
+            plot_area = chart._chartSpace.chart.plotArea
+            if any(value is not None for value in (
+                style.chart_plot_left_factor,
+                style.chart_plot_top_factor,
+                style.chart_plot_width_factor,
+                style.chart_plot_height_factor,
+            )):
+                manual_layout = OxmlElement("c:manualLayout")
+                for tag, value in (
+                    ("c:xMode", "factor"),
+                    ("c:yMode", "factor"),
+                ):
+                    el = OxmlElement(tag)
+                    el.set("val", value)
+                    manual_layout.append(el)
+                for tag, value in (
+                    ("c:x", style.chart_plot_left_factor),
+                    ("c:y", style.chart_plot_top_factor),
+                    ("c:w", style.chart_plot_width_factor),
+                    ("c:h", style.chart_plot_height_factor),
+                ):
+                    if value is None:
+                        continue
+                    el = OxmlElement(tag)
+                    el.set("val", str(value))
+                    manual_layout.append(el)
+                layout_nodes = plot_area.xpath("./c:layout")
+                layout = layout_nodes[0] if layout_nodes else OxmlElement("c:layout")
+                for child in list(layout):
+                    layout.remove(child)
+                layout.append(manual_layout)
+                if not layout_nodes:
+                    plot_area.insert(0, layout)
+            if style.chart_category_axis_label_offset is not None:
+                for axis in chart._chartSpace.xpath(".//c:catAx"):
+                    self._set_axis_label_offset(axis, style.chart_category_axis_label_offset)
+            if style.chart_value_axis_label_offset is not None:
+                for axis in chart._chartSpace.xpath(".//c:valAx"):
+                    self._set_axis_label_offset(axis, style.chart_value_axis_label_offset)
+            if chart.has_legend and chart.legend is not None:
+                legend = chart._chartSpace.chart.legend
+                if style.chart_legend_offset_x_emu is not None or style.chart_legend_offset_y_emu is not None:
+                    manual = OxmlElement("c:layout")
+                    manual_layout = OxmlElement("c:manualLayout")
+                    if style.chart_legend_offset_x_emu is not None:
+                        x = OxmlElement("c:x")
+                        x.set("val", str(style.chart_legend_offset_x_emu))
+                        manual_layout.append(x)
+                    if style.chart_legend_offset_y_emu is not None:
+                        y = OxmlElement("c:y")
+                        y.set("val", str(style.chart_legend_offset_y_emu))
+                        manual_layout.append(y)
+                    manual.append(manual_layout)
+                    existing = legend.xpath("./c:layout")
+                    if existing:
+                        legend.remove(existing[0])
+                    legend.insert(0, manual)
+        except Exception:
+            pass
+
+    def _set_axis_label_offset(self, axis_element, value: int) -> None:
+        existing = axis_element.xpath("./c:lblOffset")
+        if existing:
+            existing[0].set("val", str(value))
+            return
+        lbl = OxmlElement("c:lblOffset")
+        lbl.set("val", str(value))
+        axis_element.append(lbl)
+
     def _style_text_frame_runs(self, text_frame, *, font_size, bold: bool, color: RGBColor) -> None:
         for paragraph in text_frame.paragraphs:
             if not paragraph.runs and paragraph.text:
@@ -1885,6 +2495,10 @@ class PptxGenerator:
             for run in paragraph.runs:
                 run.font.size = font_size
                 run.font.bold = bold
+                theme = self._active_manifest.theme if self._active_manifest is not None else None
+                title_style = theme.master_text_styles.get("title") if theme is not None else None
+                if title_style is not None and title_style.font_family:
+                    run.font.name = title_style.font_family
                 run.font.color.rgb = color
 
     def _fill_image(self, shape, slide_spec: SlideSpec) -> None:
@@ -1925,11 +2539,16 @@ class PptxGenerator:
         text_frame.text = text
         if getattr(shape, "is_placeholder", False):
             placeholder_format = getattr(shape, "placeholder_format", None)
-            if placeholder_format is not None and placeholder_format.idx in {15, 17}:
+            if placeholder_format is not None and placeholder_format.idx in {15, 17, 21}:
+                self._apply_theme_text_style(text_frame, self._text_role_for_shape(shape))
                 self._apply_footer_font_size(text_frame, text)
                 return
         self._configure_body_text_frame(text_frame)
         self._apply_body_font_size(text_frame, [text], shape, layout_profile)
+        if getattr(shape, "is_placeholder", False) and (
+            self._active_manifest is None or self._active_manifest.generation_mode != GenerationMode.PROTOTYPE
+        ):
+            self._apply_theme_text_style(text_frame, self._text_role_for_shape(shape), preserve_font_size=True)
 
     def _set_bullets(self, shape, items: list[str], layout_profile: LayoutCapacityProfile) -> None:
         text_frame = shape.text_frame
@@ -1948,10 +2567,61 @@ class PptxGenerator:
             first = False
         self._configure_body_text_frame(text_frame)
         self._apply_body_font_size(text_frame, items, shape, layout_profile)
+        if getattr(shape, "is_placeholder", False) and (
+            self._active_manifest is None or self._active_manifest.generation_mode != GenerationMode.PROTOTYPE
+        ):
+            self._apply_theme_text_style(text_frame, self._text_role_for_shape(shape), preserve_font_size=True)
+
+    def _text_role_for_shape(self, shape) -> str:
+        idx = None
+        if getattr(shape, "is_placeholder", False):
+            try:
+                idx = shape.placeholder_format.idx
+            except Exception:
+                idx = None
+        if idx == 0:
+            return "title"
+        if idx in {10, 11, 12, 14}:
+            return "body"
+        if idx in {13, 15, 17, 21}:
+            return "other"
+        return "body"
+
+    def _fallback_theme_text_style(self, role: str) -> TemplateTextStyleSpec:
+        fallback_styles = {
+            "title": TemplateTextStyleSpec(font_family="Mont SemiBold", font_size_pt=28.0, color="#081C4F"),
+            "body": TemplateTextStyleSpec(font_family="Mont Regular", font_size_pt=18.0, color="#081C4F", line_spacing=0.9, space_before_pt=10.0),
+            "other": TemplateTextStyleSpec(font_family="Mont Regular", font_size_pt=18.0, color="#3489F3"),
+        }
+        return fallback_styles.get(role, fallback_styles["body"])
+
+    def _apply_theme_text_style(self, text_frame, role: str, *, preserve_font_size: bool = False) -> None:
+        theme = self._active_manifest.theme if self._active_manifest is not None else None
+        style = None
+        if theme is not None:
+            style = theme.master_text_styles.get(role) or theme.master_text_styles.get("body")
+        if style is None:
+            style = self._fallback_theme_text_style(role)
+        self._apply_text_style(text_frame, style, apply_font_family=True, preserve_font_size=preserve_font_size)
+
+    def _body_theme_font_family(self) -> str:
+        theme = self._active_manifest.theme if self._active_manifest is not None else None
+        body_style = theme.master_text_styles.get("body") if theme is not None else None
+        return (body_style.font_family if body_style is not None else None) or self._body_regular_font_family()
+
+    def _body_regular_font_family(self) -> str:
+        theme = self._active_manifest.theme if self._active_manifest is not None else None
+        return (
+            getattr(theme.font_scheme, "minor_latin", None) if theme is not None and getattr(theme, "font_scheme", None) is not None else None
+        ) or (
+            theme.master_text_styles.get("other").font_family
+            if theme is not None and theme.master_text_styles.get("other") is not None
+            else None
+        ) or "Mont Regular"
 
     def _configure_body_text_frame(self, text_frame) -> None:
         text_frame.word_wrap = True
-        text_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        text_frame.auto_size = MSO_AUTO_SIZE.NONE
         self._apply_text_frame_margins(text_frame)
 
     def _apply_paragraph_spacing(self, paragraph, role: str, layout_key: str) -> None:
@@ -1974,18 +2644,44 @@ class PptxGenerator:
         total_chars = sum(len(item) for item in non_empty_items)
         max_item_len = max(len(item) for item in non_empty_items)
         item_count = len(non_empty_items)
+        effective_max_item_len = 0 if item_count == 1 else max_item_len
         shape_height = getattr(shape, "height", 0) if shape is not None else 0
         shape_width = getattr(shape, "width", 0) if shape is not None else 0
+        shape_height = shape_height or 0
+        shape_width = shape_width or 0
 
-        points = layout_profile.max_font_pt
-        if total_chars >= layout_profile.max_chars * 2 or max_item_len >= 320:
-            points = layout_profile.min_font_pt
-        elif total_chars >= int(layout_profile.max_chars * 1.55) or max_item_len >= 240 or item_count >= layout_profile.max_items:
-            points = max(layout_profile.max_font_pt - 3, layout_profile.min_font_pt)
-        elif total_chars >= int(layout_profile.max_chars * 1.2) or max_item_len >= 180 or item_count >= max(layout_profile.max_items - 2, 1):
-            points = max(layout_profile.max_font_pt - 2, layout_profile.min_font_pt)
-        elif total_chars >= int(layout_profile.max_chars * 0.8) or max_item_len >= 120 or item_count >= max(layout_profile.max_items - 4, 1):
-            points = max(layout_profile.max_font_pt - 1, layout_profile.min_font_pt)
+        points = self._body_base_font_size(layout_profile)
+        if layout_profile.layout_key == "list_full_width":
+            points = self._body_base_font_size(layout_profile)
+            if item_count == 1 and total_chars >= 260:
+                points = max(points - 2, layout_profile.min_font_pt)
+            elif item_count == 1 and total_chars >= 180:
+                points = max(points - 1, layout_profile.min_font_pt)
+            elif total_chars >= 700 or item_count >= 7 or effective_max_item_len >= 260:
+                points = max(points - 4, layout_profile.min_font_pt)
+            elif total_chars >= 520 or item_count >= 6 or effective_max_item_len >= 220:
+                points = max(points - 3, layout_profile.min_font_pt)
+            elif total_chars >= 420 or item_count >= 5 or effective_max_item_len >= 180:
+                points = max(points - 2, layout_profile.min_font_pt)
+            elif total_chars >= 320:
+                points = max(points - 1, layout_profile.min_font_pt)
+        elif shape_height >= 4_000_000 and shape_width >= 8_000_000 and item_count <= max(layout_profile.max_items + 2, 8):
+            points = self._body_base_font_size(layout_profile)
+        elif total_chars >= layout_profile.max_chars * 2.4 or effective_max_item_len >= 420:
+            points = max(layout_profile.min_font_pt, points - 4)
+        elif total_chars >= int(layout_profile.max_chars * 2.0) or effective_max_item_len >= 320 or item_count >= layout_profile.max_items + 2:
+            points = max(points - 3, layout_profile.min_font_pt)
+        elif total_chars >= int(layout_profile.max_chars * 1.75) or effective_max_item_len >= 260 or item_count >= layout_profile.max_items:
+            points = max(points - 2, layout_profile.min_font_pt)
+        elif (
+            (total_chars >= int(layout_profile.max_chars * 1.6) and item_count > 5)
+            or effective_max_item_len >= 200
+            or item_count >= layout_profile.max_items
+        ):
+            points = max(points - 1, layout_profile.min_font_pt)
+
+        if not getattr(shape, "is_placeholder", False) and shape_width < 5_500_000 and shape_height < 2_000_000:
+            points = min(points, max(layout_profile.min_font_pt, 18))
 
         # Tight containers need one extra step down to avoid overflow on dense appendix-like slides.
         if shape_height and shape_height < 4000000 and (total_chars >= 900 or item_count >= 7):
@@ -1993,35 +2689,85 @@ class PptxGenerator:
         if shape_width and shape_width < 8000000 and total_chars >= 600:
             points = max(points - 1, layout_profile.min_font_pt)
 
-        font_size = Pt(points)
+        points = self._fit_body_font_size_to_shape(text_frame, shape, layout_profile, points)
+        self._set_text_frame_font_size(text_frame, points, layout_profile.layout_key)
 
+    def _fit_body_font_size_to_shape(self, text_frame, shape, layout_profile: LayoutCapacityProfile, points: int) -> int:
+        shape_height = getattr(shape, "height", 0) if shape is not None else 0
+        shape_width = getattr(shape, "width", 0) if shape is not None else 0
+        if not shape_height or not shape_width:
+            return points
+
+        margin_top = getattr(text_frame, "margin_top", self.DEFAULT_TEXT_MARGIN_Y_EMU) or 0
+        margin_bottom = getattr(text_frame, "margin_bottom", self.DEFAULT_TEXT_MARGIN_Y_EMU) or 0
+        available_height = max(shape_height - margin_top - margin_bottom, 200000)
+        for candidate in range(points, layout_profile.min_font_pt - 1, -1):
+            if self._text_frame_height_fits_shape(text_frame, shape, layout_profile.layout_key, candidate, available_height):
+                return candidate
+        return layout_profile.min_font_pt
+
+    def _text_frame_height_fits_shape(self, text_frame, shape, layout_key: str, font_size_pt: float, available_height_emu: int) -> bool:
+        margin_left = getattr(text_frame, "margin_left", self.DEFAULT_TEXT_MARGIN_X_EMU) or 0
+        margin_right = getattr(text_frame, "margin_right", self.DEFAULT_TEXT_MARGIN_X_EMU) or 0
+        effective_width = max(int((shape.width - margin_left - margin_right) * 0.82), shape.width // 2)
+        spacing = spacing_policy_for_layout(layout_key).body
+        paragraph_gap_emu = int(Pt(spacing.space_after_pt).emu)
+        total_height = 0
+        non_empty_count = 0
+        for paragraph in text_frame.paragraphs:
+            paragraph_text = paragraph.text.strip()
+            if not paragraph_text:
+                continue
+            non_empty_count += 1
+            total_height += self._estimate_text_height_emu(paragraph_text, effective_width, font_size_pt)
+        if non_empty_count > 1:
+            total_height += paragraph_gap_emu * (non_empty_count - 1)
+        return int(total_height * 1.04) <= available_height_emu
+
+    def _set_text_frame_font_size(self, text_frame, points: float, layout_key: str) -> None:
+        font_size = Pt(points)
+        body_family = self._body_theme_font_family()
         for paragraph in text_frame.paragraphs:
             if not paragraph.runs and paragraph.text:
                 run = paragraph.add_run()
                 run.text = paragraph.text
                 paragraph.text = ""
-            self._apply_paragraph_spacing(paragraph, "body", layout_profile.layout_key)
+            self._apply_paragraph_spacing(paragraph, "body", layout_key)
             paragraph.font.size = font_size
+            paragraph.font.name = body_family
+            paragraph.font.bold = False
             for run in paragraph.runs:
                 run.font.size = font_size
+                self._apply_run_font_family(run, body_family)
+                if run.font.bold is not True:
+                    run.font.bold = False
+
+    def _body_base_font_size(self, layout_profile: LayoutCapacityProfile) -> int:
+        if layout_profile.layout_key in {"text_full_width", "dense_text_full_width", "list_full_width", "image_text"}:
+            return min(max(18, layout_profile.min_font_pt), layout_profile.max_font_pt)
+        theme = self._active_manifest.theme if self._active_manifest is not None else None
+        body_style = theme.master_text_styles.get("body") if theme is not None else None
+        if body_style is not None and body_style.font_size_pt:
+            return min(max(int(round(body_style.font_size_pt)), layout_profile.min_font_pt), layout_profile.max_font_pt)
+        return layout_profile.max_font_pt
 
     def _apply_footer_font_size(self, text_frame, text: str) -> None:
         normalized = (text or "").strip()
         if not normalized:
             return
 
-        font_size = None
+        points = self.FOOTER_FONT_PT
         if len(normalized) >= 160:
-            font_size = Pt(10)
+            points = 9.0
         elif len(normalized) >= 120:
-            font_size = Pt(11)
+            points = 10.0
         elif len(normalized) >= 80:
-            font_size = Pt(12)
+            points = 11.0
 
-        if font_size is None:
-            return
+        font_size = Pt(points)
 
         for paragraph in text_frame.paragraphs:
+            paragraph.font.size = font_size
             for run in paragraph.runs:
                 run.font.size = font_size
 
@@ -2038,7 +2784,15 @@ class PptxGenerator:
         paragraph_properties.set("marL", str(spacing.margin_left_emu))
         paragraph_properties.set("indent", str(spacing.indent_emu))
 
-    def _format_table(self, table, table_block: TableBlock | None, target_width: int, target_height: int) -> int:
+    def _format_table(
+        self,
+        table,
+        table_block: TableBlock | None,
+        target_width: int,
+        target_height: int,
+        *,
+        placeholder_spec: PlaceholderSpec | None = None,
+    ) -> int:
         if table_block is None:
             headers: list[str] = []
             rows: list[list[str]] = []
@@ -2072,6 +2826,14 @@ class PptxGenerator:
             max_cell_length=max_cell_length,
             avg_cell_length=avg_cell_length,
         )
+        if placeholder_spec is not None and placeholder_spec.shape_style is not None:
+            shape_style = placeholder_spec.shape_style
+            margins = (
+                shape_style.table_cell_margin_left_emu or margins[0],
+                shape_style.table_cell_margin_right_emu or margins[1],
+                shape_style.table_cell_margin_top_emu or margins[2],
+                shape_style.table_cell_margin_bottom_emu or margins[3],
+            )
 
         for row_index, row in enumerate(table.rows):
             is_header = headers and row_index == 0
@@ -2093,6 +2855,7 @@ class PptxGenerator:
                     font_size=font_size,
                     margins=margins,
                     fill_color=fill_color,
+                    placeholder_spec=placeholder_spec,
                 )
         return max(sum(row.height for row in table.rows), 600000)
 
@@ -2240,6 +3003,7 @@ class PptxGenerator:
         font_size: Pt,
         margins: tuple[int, int, int, int],
         fill_color: str | None = None,
+        placeholder_spec: PlaceholderSpec | None = None,
     ) -> None:
         fill = cell.fill
         fill.solid()
@@ -2255,6 +3019,10 @@ class PptxGenerator:
                 run.font.size = font_size
                 run.font.bold = bool(is_header)
                 run.font.color.rgb = self._table_text_rgb_for_fill(resolved_fill, is_header=is_header)
+                theme = self._active_manifest.theme if self._active_manifest is not None else None
+                body_style = theme.master_text_styles.get("body") if theme is not None else None
+                if body_style is not None and body_style.font_family:
+                    run.font.name = body_style.font_family
 
     def _table_fill_rgb(self, fill_color: str | None, *, is_header: bool) -> RGBColor:
         if fill_color:
