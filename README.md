@@ -102,34 +102,6 @@ yarn verify
 - Node.js 20.19+ or 22.12+
 - Yarn 1.x
 
-## Railway deployment
-
-Railway remains a valid deployment target for split frontend/backend hosting.
-
-Deploy the project as two services inside one Railway project:
-
-- backend service from repo root `/`
-- frontend service from `/frontend`
-
-Deployment guide:
-
-- [docs/railway-deploy.md](docs/railway-deploy.md)
-
-Important production variables:
-
-```bash
-TEMPLATES_DIR=/data/templates
-OUTPUTS_DIR=/data/outputs
-CORS_ORIGINS=https://your-frontend-domain.up.railway.app
-VITE_API_BASE_URL=https://your-backend-domain.up.railway.app
-```
-
-Railway-specific notes:
-
-- attach a persistent volume to the backend at `/data`
-- keep frontend and backend as separate Railway services
-- this is the cleanest way to keep the whole product in one Railway project with persistent file storage
-
 ## Timeweb Cloud Server
 
 The current production setup runs on a single Timeweb VPS.
