@@ -330,9 +330,14 @@ export function App() {
   const cardSlideChoices = reviewPlan ? eligibleCardSlides(reviewPlan) : [];
 
   function handleSaveStructureChoices() {
+    const shouldRebuildReviewPlan = hasUnsavedStructureChanges;
     setSavedChartSelectionByTableId(chartSelectionByTableId);
     setSavedChartModeByTableId(chartModeByTableId);
     setSavedHiddenSeriesByTableId(hiddenSeriesByTableId);
+    if (shouldRebuildReviewPlan) {
+      resetReviewPlan();
+      setGenerationResult(null);
+    }
     setIsStructureDrawerOpen(false);
   }
 

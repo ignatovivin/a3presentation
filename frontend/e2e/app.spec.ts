@@ -774,6 +774,65 @@ test("@smoke user can upload document inspect structure and generate presentatio
   }).toContain("/api/presentations/files/A3_Presentation.pptx");
 });
 
+test("saved chart changes rebuild existing review plan before generation", async ({ page }) => {
+  await page.unroute("**/api/plans/from-text");
+
+  let planRequestCount = 0;
+  const tablePlanResponse = {
+    ...planResponse,
+    slides: [
+      planResponse.slides[0],
+      planResponse.slides[1],
+      {
+        kind: "table",
+        title: "Рост по каналам",
+        bullets: [],
+        content_blocks: [],
+        left_bullets: [],
+        right_bullets: [],
+        preferred_layout_key: "table",
+        table: extractResponse.tables[0],
+        source_table_id: "table_1",
+      },
+    ],
+  };
+
+  await page.route("**/api/plans/from-text", async (route) => {
+    planRequestCount += 1;
+    lastPlanPayload = await route.request().postDataJSON();
+    const override = lastPlanPayload.chart_overrides.find((item: any) => item.table_id === "table_1");
+    await route.fulfill({ json: override?.mode === "chart" ? planResponse : tablePlanResponse });
+  });
+
+  await page.goto("/");
+  await page.getByTestId("upload-document-input").setInputFiles({
+    name: "sample.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from("mock-docx"),
+  });
+
+  await page.getByTestId("open-structure-drawer").click();
+  await page.getByTestId("drawer-tab-text").click();
+  await expect(page.getByTestId("slide-review-panel")).toBeVisible();
+  expect(planRequestCount).toBe(1);
+  expect(lastPlanPayload.chart_overrides.find((item: any) => item.table_id === "table_1").mode).toBe("table");
+
+  await page.getByTestId("drawer-tab-charts").click();
+  await page.getByTestId("mode-chart-table_1").click();
+  await page.getByTestId("save-structure-choices").click();
+  await page.getByTestId("generate-presentation").click();
+
+  await expect(page.getByTestId("generation-success")).toBeVisible();
+  expect(planRequestCount).toBe(2);
+  expect(lastPlanPayload.chart_overrides.find((item: any) => item.table_id === "table_1").mode).toBe("chart");
+  expect(lastGeneratePayload.slides[2]).toEqual(
+    expect.objectContaining({
+      kind: "chart",
+      source_table_id: "table_1",
+    }),
+  );
+});
+
 test("attached document can be removed before replacement", async ({ page }) => {
   await page.goto("/");
 
