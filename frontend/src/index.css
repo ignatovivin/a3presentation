@@ -81,6 +81,54 @@ button {
   @apply cursor-pointer;
 }
 
+.app-checkbox {
+  appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0;
+  border: 1px solid #dbe3f1;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(28, 45, 84, 0.08);
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.app-checkbox::before {
+  content: "";
+  width: 8px;
+  height: 5px;
+  margin-top: -1px;
+  border-left: 2px solid #ffffff;
+  border-bottom: 2px solid #ffffff;
+  transform: rotate(-45deg) scale(0);
+  transition: transform 160ms ease;
+}
+
+.app-checkbox:checked {
+  border-color: #679aea;
+  background: #679aea;
+  box-shadow: 0 4px 10px rgba(103, 154, 234, 0.28);
+}
+
+.app-checkbox:checked::before {
+  transform: rotate(-45deg) scale(1);
+}
+
+.app-checkbox:focus-visible {
+  outline: 2px solid rgba(103, 154, 234, 0.55);
+  outline-offset: 3px;
+}
+
+.app-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 #root {
   @apply min-h-screen;
 }
@@ -103,14 +151,14 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 24px;
   text-align: center;
 }
 
 .hero-title {
   margin: 0;
   font-family: "Mont", "Geist", sans-serif;
-  font-size: 52px;
+  font-size: 40px;
   line-height: 40px;
   font-weight: 600;
   color: #222222;
@@ -119,26 +167,34 @@ button {
 .hero-description {
   margin: 0;
   max-width: 920px;
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 16px;
+  line-height: 24px;
   font-weight: 400;
   color: #8a8589;
 }
 
 .composer-card {
-  width: min(600px, 100%);
+  width: min(730px, 100%);
   height: 204px;
   background: #ffffff;
+  border: 1px solid #f5f5f5;
   border-radius: 16px;
   padding: 16px 16px 12px;
+  box-shadow: 0 4px 24px 0 rgba(0, 0, 0, 0.04);
+  transition: box-shadow 180ms ease, border-color 180ms ease;
   overflow: hidden;
 }
 
+.composer-card.is-active,
+.composer-card:focus-within {
+  box-shadow: 0 16px 32px 0 rgba(0, 0, 0, 0.08);
+}
+
 .composer-stack {
-  width: min(600px, calc(100% - 32px));
+  width: min(730px, calc(100% - 32px));
   position: absolute;
   top: auto;
-  bottom: 0;
+  bottom: 120px;
   left: calc(50% - 4px);
   transform: translateX(-50%);
   display: flex;
@@ -408,7 +464,8 @@ button {
 
 .chart-preview-stack {
   width: min(42px, 100%);
-  min-height: 140px;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column-reverse;
   justify-content: flex-start;
@@ -419,7 +476,7 @@ button {
 
 .chart-preview-stack-segment {
   width: 100%;
-  min-height: 8px;
+  min-height: 0;
 }
 
 .chart-series-0 {
@@ -763,6 +820,102 @@ button {
   background: #ffffff;
 }
 
+.slide-review-panel {
+  width: 100%;
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #e5e5e5;
+}
+
+.slide-review-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.slide-review-title {
+  color: #171717;
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.slide-review-text {
+  margin-top: 4px;
+  color: #6e7582;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.slide-choice-list {
+  display: grid;
+  gap: 10px;
+}
+
+.slide-choice {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f7f8fb;
+  border: 1px solid #e5e5e5;
+  cursor: pointer;
+}
+
+.slide-choice-input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin-top: 2px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.slide-choice-body {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.slide-choice-title {
+  color: #171717;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+.slide-choice-fit {
+  width: fit-content;
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+}
+
+.slide-choice-fit.is-high {
+  background: #e8f4ef;
+  color: #28724f;
+}
+
+.slide-choice-fit.is-medium {
+  background: #eef2f8;
+  color: #4c5565;
+}
+
+.slide-choice-preview {
+  color: #6e7582;
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
 .composer-inner {
   display: flex;
   flex-direction: column;
@@ -788,13 +941,15 @@ button {
   outline: none;
   background: transparent;
   color: #171717;
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 16px;
+  line-height: 24px;
   font-weight: 400;
 }
 
 .main-textarea::placeholder {
   color: #8a8589;
+  font-size: 16px;
+  line-height: 24px;
 }
 
 .actions-row {
@@ -821,6 +976,7 @@ button {
   font-size: 14px;
   line-height: 20px;
   font-weight: 500;
+  white-space: nowrap;
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
@@ -839,9 +995,71 @@ button {
   flex: 0 0 16px;
 }
 
+.attached-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(320px, 45vw);
+  height: 36px;
+  min-height: 36px;
+  border-radius: 8px;
+  background: #f5f5f5;
+  color: #171717;
+  padding: 0 8px 0 14px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.attached-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attached-file-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border: 0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #4c5565;
+  font-size: 18px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.attached-file-remove:hover {
+  color: #171717;
+}
+
 .primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   background: #679aea;
   color: #fafafa;
+}
+
+.button-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.42);
+  border-top-color: #ffffff;
+  animation: button-spin 0.8s linear infinite;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .secondary-button:hover,
@@ -1047,6 +1265,33 @@ button {
   color: #6e7582;
   font-size: 14px;
   line-height: 20px;
+}
+
+.drawer-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #eef2f8;
+}
+
+.drawer-tab {
+  flex: 1 1 0;
+  min-height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #6e7582;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.drawer-tab.is-active {
+  background: #ffffff;
+  color: #171717;
+  box-shadow: 0 1px 4px rgba(28, 45, 84, 0.08);
 }
 
 .drawer-switch {

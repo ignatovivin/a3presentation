@@ -578,7 +578,16 @@ const planResponse = {
   title: "A3 Presentation",
   slides: [
     { kind: "title", title: "A3 Presentation", bullets: [], left_bullets: [], right_bullets: [], preferred_layout_key: "cover" },
-    { kind: "text", title: "1. Рост", text: "Компания растет за счет новых сегментов.", bullets: [], left_bullets: [], right_bullets: [], preferred_layout_key: "text_full_width" },
+    {
+      kind: "text",
+      title: "1. Рост",
+      text: "Компания растет за счет новых сегментов. Партнерская сеть ускоряет подключение клиентов. Автоматизация снижает стоимость сопровождения.",
+      bullets: [],
+      content_blocks: [],
+      left_bullets: [],
+      right_bullets: [],
+      preferred_layout_key: "text_full_width",
+    },
     {
       kind: "chart",
       title: "Рост по каналам",
@@ -599,9 +608,11 @@ const generationResponse = {
 };
 
 let lastPlanPayload: any = null;
+let lastGeneratePayload: any = null;
 
 test.beforeEach(async ({ page }) => {
   lastPlanPayload = null;
+  lastGeneratePayload = null;
 
   await page.addInitScript(() => {
     (window as Window & { __lastOpenedUrl?: string }).__lastOpenedUrl = "";
@@ -625,6 +636,7 @@ test.beforeEach(async ({ page }) => {
   });
 
   await page.route("**/api/presentations/generate", async (route) => {
+    lastGeneratePayload = await route.request().postDataJSON();
     await route.fulfill({ json: generationResponse });
   });
 
@@ -648,7 +660,8 @@ test("@smoke user can upload document inspect structure and generate presentatio
     buffer: Buffer.from("mock-docx"),
   });
 
-  await expect(page.getByTestId("raw-text-input")).toHaveValue(/Бизнес-стратегия 2026/);
+  await expect(page.getByTestId("raw-text-input")).toHaveValue("");
+  await expect(page.getByTestId("attached-document")).toContainText("sample.docx");
   await expect(page.getByTestId("open-structure-drawer")).toBeVisible();
 
   await page.getByTestId("open-structure-drawer").click();
@@ -709,7 +722,20 @@ test("@smoke user can upload document inspect structure and generate presentatio
   await expect(page.getByTestId("chart-variant-table_4")).toContainText("Единичный: Доля А3 GMV (2025)");
   await page.getByTestId("save-structure-choices").click();
 
-  await page.getByTestId("generate-presentation").click();
+  await page.getByTestId("open-structure-drawer").click();
+  await page.getByTestId("drawer-tab-text").click();
+  await expect(page.getByTestId("slide-review-panel")).toBeVisible();
+  await expect(page.getByTestId("drawer-tab-text")).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("card-slide-choice-1")).toContainText("1. Рост");
+  await page.getByTestId("card-slide-choice-1").click();
+  await page.getByRole("button", { name: "Сбросить выбор" }).click();
+  await expect(page.getByTestId("card-slide-choice-1")).toBeVisible();
+  await page.getByTestId("card-slide-choice-1").click();
+  await expect(page.getByTestId("save-structure-choices")).toHaveText("Сохранить");
+  await page.getByTestId("save-structure-choices").click();
+  await expect(page.getByTestId("structure-drawer")).toHaveCount(0);
+  await expect(page.getByTestId("generate-presentation")).toHaveText("Сгенерировать");
+  await page.getByTestId("generate-presentation").click({ force: true });
 
   await expect(page.getByTestId("generation-success")).toBeVisible();
   const chartOverride = lastPlanPayload.chart_overrides.find((override: any) => override.table_id === "table_1");
@@ -729,12 +755,54 @@ test("@smoke user can upload document inspect structure and generate presentatio
     expect.objectContaining({ name: "SMB", hidden: false }),
     expect.objectContaining({ name: "Enterprise", hidden: true }),
   ]);
+  expect(lastGeneratePayload.slides[1]).toEqual(
+    expect.objectContaining({
+      kind: "bullets",
+      preferred_layout_key: "cards_3",
+      bullets: [
+        "Компания растет за счет новых сегментов.",
+        "Партнерская сеть ускоряет подключение клиентов.",
+        "Автоматизация снижает стоимость сопровождения.",
+      ],
+    }),
+  );
   await expect(page.getByTestId("generated-file-name")).toHaveText("A3_Presentation.pptx");
 
   await page.getByTestId("download-presentation").click();
   await expect.poll(async () => {
     return page.evaluate(() => (window as Window & { __lastOpenedUrl?: string }).__lastOpenedUrl ?? "");
   }).toContain("/api/presentations/files/A3_Presentation.pptx");
+});
+
+test("attached document can be removed before replacement", async ({ page }) => {
+  await page.goto("/");
+
+  const emptyMetrics = await page.locator(".composer-card").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const action = element.querySelector('[data-testid="upload-document-trigger"]')?.getBoundingClientRect();
+    return { composerHeight: rect.height, composerTop: rect.top, actionHeight: action?.height ?? 0 };
+  });
+
+  await page.getByTestId("upload-document-input").setInputFiles({
+    name: "sample.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from("mock-docx"),
+  });
+
+  await expect(page.getByTestId("raw-text-input")).toHaveValue("");
+  await expect(page.getByTestId("attached-document")).toContainText("sample.docx");
+  const attachedMetrics = await page.locator(".composer-card").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const action = element.querySelector('[data-testid="attached-document"]')?.getBoundingClientRect();
+    return { composerHeight: rect.height, composerTop: rect.top, actionHeight: action?.height ?? 0 };
+  });
+  expect(attachedMetrics).toEqual(emptyMetrics);
+
+  await page.getByTestId("remove-attached-document").click();
+
+  await expect(page.getByTestId("attached-document")).toHaveCount(0);
+  await expect(page.getByTestId("upload-document-trigger")).toBeVisible();
+  await expect(page.getByTestId("open-structure-drawer")).toHaveCount(0);
 });
 
 test("@visual main screen stays visually stable", async ({ page }) => {

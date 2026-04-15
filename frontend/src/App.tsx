@@ -13,6 +13,7 @@ import type {
   DocumentBlock,
   GeneratePresentationResponse,
   PresentationPlan,
+  SlideSpec,
   TableBlock,
   TemplateSummary,
 } from "@/types";
@@ -74,6 +75,8 @@ export function App() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState(PRIMARY_TEMPLATE_ID);
   const [rawText, setRawText] = useState("");
+  const [attachedDocumentName, setAttachedDocumentName] = useState("");
+  const [attachedDocumentText, setAttachedDocumentText] = useState("");
   const [documentTables, setDocumentTables] = useState<TableBlock[]>([]);
   const [documentBlocks, setDocumentBlocks] = useState<DocumentBlock[]>([]);
   const [chartAssessments, setChartAssessments] = useState<ChartabilityAssessment[]>([]);
@@ -83,12 +86,26 @@ export function App() {
   const [savedChartSelectionByTableId, setSavedChartSelectionByTableId] = useState<Record<string, string>>({});
   const [savedChartModeByTableId, setSavedChartModeByTableId] = useState<Record<string, "table" | "chart">>({});
   const [savedHiddenSeriesByTableId, setSavedHiddenSeriesByTableId] = useState<Record<string, string[]>>({});
+  const [reviewPlan, setReviewPlan] = useState<PresentationPlan | null>(null);
+  const [cardSlideIndexes, setCardSlideIndexes] = useState<number[]>([]);
+  const [isPreparingReviewPlan, setIsPreparingReviewPlan] = useState(false);
+  const [isGeneratingPresentation, setIsGeneratingPresentation] = useState(false);
   const [generationResult, setGenerationResult] = useState<GeneratePresentationResponse | null>(null);
   const [error, setError] = useState("");
   const [showLoadingNotice, setShowLoadingNotice] = useState(true);
   const [isStructureDrawerOpen, setIsStructureDrawerOpen] = useState(false);
   const [showAllTablesInDrawer, setShowAllTablesInDrawer] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<"charts" | "text">("charts");
   const [isPending, startTransition] = useTransition();
+
+  type CardSlideFit = "high" | "medium";
+  type CardSlideChoice = {
+    index: number;
+    slide: SlideSpec;
+    items: string[];
+    fit: CardSlideFit;
+    reason: string;
+  };
 
   useEffect(() => {
     startTransition(() => {
@@ -133,7 +150,11 @@ export function App() {
               .map((assessment) => [assessment.table_id, "table" satisfies "table" | "chart"]),
           );
 
-          setRawText(result.text);
+          setRawText("");
+          setAttachedDocumentName(result.file_name || file.name);
+          setAttachedDocumentText(result.text);
+          setReviewPlan(null);
+          setCardSlideIndexes([]);
           setDocumentTables(result.tables);
           setDocumentBlocks(result.blocks);
           setChartAssessments(result.chart_assessments);
@@ -147,6 +168,8 @@ export function App() {
           setSavedHiddenSeriesByTableId({});
         })
         .catch((err: Error) => {
+          setAttachedDocumentName("");
+          setAttachedDocumentText("");
           setError(err.message);
         });
     });
@@ -155,7 +178,33 @@ export function App() {
   }
 
   function handleGenerate() {
-    const normalizedText = rawText.trim();
+    if (isGeneratingPresentation || isPreparingReviewPlan) {
+      return;
+    }
+    if (reviewPlan) {
+      setError("");
+      setGenerationResult(null);
+      setIsGeneratingPresentation(true);
+      startTransition(() => {
+        generatePresentation(applyCardSlideChoices(reviewPlan, cardSlideIndexes))
+          .then((result) => setGenerationResult(result))
+          .catch((err: Error) => setError(err.message))
+          .finally(() => setIsGeneratingPresentation(false));
+      });
+      return;
+    }
+
+    prepareReviewPlan({ generateAfter: true });
+  }
+
+  function prepareReviewPlan({
+    openTextTab = false,
+    generateAfter = false,
+  }: { openTextTab?: boolean; generateAfter?: boolean } = {}) {
+    if (isPreparingReviewPlan) {
+      return;
+    }
+    const normalizedText = (attachedDocumentText || rawText).trim();
     if (!normalizedText) {
       setError("Введите текст или загрузите документ.");
       return;
@@ -163,6 +212,7 @@ export function App() {
 
     setError("");
     setGenerationResult(null);
+    setIsPreparingReviewPlan(true);
     startTransition(() => {
       const effectiveChartSelectionByTableId = savedChartSelectionByTableId;
       const effectiveChartModeByTableId = savedChartModeByTableId;
@@ -193,10 +243,45 @@ export function App() {
         blocks: documentBlocks,
         chart_overrides: chartOverrides,
       })
-        .then((plan: PresentationPlan) => generatePresentation(plan))
-        .then((result) => setGenerationResult(result))
-        .catch((err: Error) => setError(err.message));
+        .then((plan: PresentationPlan) => {
+          setReviewPlan(plan);
+          setCardSlideIndexes([]);
+          if (generateAfter) {
+            setIsGeneratingPresentation(true);
+            return generatePresentation(plan).then((result) => {
+              setGenerationResult(result);
+            }).finally(() => setIsGeneratingPresentation(false));
+          }
+          if (openTextTab) {
+            setDrawerTab("text");
+            setIsStructureDrawerOpen(true);
+          }
+        })
+        .catch((err: Error) => setError(err.message))
+        .finally(() => setIsPreparingReviewPlan(false));
     });
+  }
+
+  function resetReviewPlan() {
+    setReviewPlan(null);
+    setCardSlideIndexes([]);
+  }
+
+  function clearAttachedDocument() {
+    setAttachedDocumentName("");
+    setAttachedDocumentText("");
+    setDocumentTables([]);
+    setDocumentBlocks([]);
+    setChartAssessments([]);
+    setChartSelectionByTableId({});
+    setChartModeByTableId({});
+    setHiddenSeriesByTableId({});
+    setSavedChartSelectionByTableId({});
+    setSavedChartModeByTableId({});
+    setSavedHiddenSeriesByTableId({});
+    setIsStructureDrawerOpen(false);
+    setShowAllTablesInDrawer(false);
+    resetReviewPlan();
   }
 
   function selectedChartSpec(
@@ -242,12 +327,180 @@ export function App() {
     JSON.stringify(hiddenSeriesByTableId) !== JSON.stringify(savedHiddenSeriesByTableId);
   const chartableAssessments = chartAssessments.filter((assessment) => assessment.chartable);
   const visibleAssessments = showAllTablesInDrawer ? chartAssessments : chartableAssessments;
+  const cardSlideChoices = reviewPlan ? eligibleCardSlides(reviewPlan) : [];
 
   function handleSaveStructureChoices() {
     setSavedChartSelectionByTableId(chartSelectionByTableId);
     setSavedChartModeByTableId(chartModeByTableId);
     setSavedHiddenSeriesByTableId(hiddenSeriesByTableId);
     setIsStructureDrawerOpen(false);
+  }
+
+  function editableCardItems(slide: SlideSpec): string[] {
+    const explicitBullets = (slide.bullets ?? []).map((item) => item.trim()).filter(Boolean);
+    if (explicitBullets.length >= 2) {
+      return explicitBullets.slice(0, 3);
+    }
+
+    const blockItems = (slide.content_blocks ?? []).flatMap((block) => {
+      if (block.kind === "bullet_list") {
+        return block.items;
+      }
+      return block.text ? [block.text] : [];
+    }).map((item) => item.trim()).filter(Boolean);
+    if (blockItems.length >= 2) {
+      return blockItems.slice(0, 3);
+    }
+
+    const text = (slide.text ?? "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      return [];
+    }
+
+    const sentences = text.match(/[^.!?。！？]+[.!?。！？]?/g)?.map((item) => item.trim()).filter(Boolean) ?? [text];
+    if (sentences.length >= 2) {
+      return compactCardItems(sentences, 3);
+    }
+    if (text.length >= 90) {
+      return compactCardItems(text.split(/[,;:]\s+|\s+-\s+/).map((item) => item.trim()).filter(Boolean), 3);
+    }
+    return [];
+  }
+
+  function compactCardItems(items: string[], maxItems: number): string[] {
+    const cleaned = items.map((item) => item.trim()).filter(Boolean);
+    if (cleaned.length <= maxItems) {
+      return cleaned;
+    }
+
+    const buckets = Array.from({ length: maxItems }, () => "");
+    cleaned.forEach((item, index) => {
+      const bucketIndex = Math.min(maxItems - 1, Math.floor((index * maxItems) / cleaned.length));
+      buckets[bucketIndex] = `${buckets[bucketIndex]} ${item}`.trim();
+    });
+    return buckets.filter(Boolean);
+  }
+
+  function splitCardItem(item: string): { title: string; description: string } {
+    const normalized = item.replace(/\s+/g, " ").trim();
+    const colonMatch = normalized.match(/^(.{4,54}?):\s+(.{12,})$/);
+    if (colonMatch) {
+      return { title: colonMatch[1].trim(), description: colonMatch[2].trim() };
+    }
+
+    const dashMatch = normalized.match(/^(.{4,54}?)\s+[—-]\s+(.{12,})$/);
+    if (dashMatch) {
+      return { title: dashMatch[1].trim(), description: dashMatch[2].trim() };
+    }
+
+    return { title: normalized, description: "" };
+  }
+
+  function encodeCardItem(item: string): string {
+    const { title, description } = splitCardItem(item);
+    return description ? `${title}\n${description}` : title;
+  }
+
+  function scoreCardSlide(slide: SlideSpec, items: string[]): { fit: CardSlideFit | null; reason: string } {
+    if (items.length < 2 || items.length > 4) {
+      return { fit: null, reason: "" };
+    }
+
+    const title = (slide.title ?? "").toLowerCase();
+    const text = (slide.text ?? "").replace(/\s+/g, " ").trim();
+    const lengths = items.map((item) => item.length);
+    const longest = Math.max(...lengths);
+    const shortest = Math.min(...lengths);
+    const average = lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
+    const spread = longest / Math.max(shortest, 1);
+    const hasListBlocks = (slide.content_blocks ?? []).some((block) => block.kind === "bullet_list");
+    const hasExplicitBullets = (slide.bullets ?? []).filter((item) => item.trim()).length >= 2;
+    const hasCardTitleCue = /фактор|преимуществ|этап|шаг|риск|направлен|принцип|драйвер|причин|задач|решени|сценари|вариант|метрик|эффект/.test(title);
+    const hasDenseNarrative = text.length > 420 && !hasListBlocks && !hasExplicitBullets;
+    const hasLongItems = longest > 150 || average > 115;
+    const hasUnevenItems = spread > 3.2 && longest > 110;
+    const numericSignals = items.filter((item) => /\d/.test(item)).length;
+
+    let score = 0;
+    if (items.length === 3) score += 3;
+    if (items.length === 2 || items.length === 4) score += 2;
+    if (hasExplicitBullets || hasListBlocks) score += 3;
+    if (hasCardTitleCue) score += 2;
+    if (average >= 18 && average <= 95) score += 2;
+    if (spread <= 2.4) score += 1;
+    if (hasDenseNarrative) score -= 4;
+    if (hasLongItems) score -= 3;
+    if (hasUnevenItems) score -= 2;
+    if (numericSignals >= 2 && !hasExplicitBullets && !hasListBlocks) score -= 2;
+
+    if (score >= 7) {
+      return { fit: "high", reason: "Рекомендовано: короткие равноправные тезисы." };
+    }
+    if (score >= 4) {
+      return { fit: "medium", reason: "Можно разложить на карточки." };
+    }
+    return { fit: null, reason: "" };
+  }
+
+  function eligibleCardSlides(plan: PresentationPlan): CardSlideChoice[] {
+    return plan.slides
+      .map((slide, index) => ({ index, slide, items: editableCardItems(slide) }))
+      .filter(({ slide, items }) => {
+        const layoutKey = slide.preferred_layout_key ?? "";
+        const isDataSlide =
+          slide.kind === "table" ||
+          slide.kind === "chart" ||
+          Boolean(slide.table) ||
+          Boolean(slide.chart) ||
+          Boolean(slide.source_table_id) ||
+          layoutKey.includes("table") ||
+          layoutKey.includes("chart");
+        return slide.kind !== "title" && !isDataSlide && layoutKey !== "cards_3" && items.length >= 2;
+      })
+      .map(({ index, slide, items }) => ({
+        index,
+        slide,
+        items,
+        ...scoreCardSlide(slide, items),
+      }))
+      .filter((choice): choice is CardSlideChoice => {
+        return choice.fit !== null;
+      });
+  }
+
+  function toggleCardSlide(index: number) {
+    setCardSlideIndexes((current) => {
+      if (current.includes(index)) {
+        return current.filter((item) => item !== index);
+      }
+      return [...current, index].sort((left, right) => left - right);
+    });
+  }
+
+  function applyCardSlideChoices(plan: PresentationPlan, selectedIndexes: number[]): PresentationPlan {
+    const selected = new Set(selectedIndexes);
+    return {
+      ...plan,
+      slides: plan.slides.map((slide, index) => {
+        if (!selected.has(index)) {
+          return slide;
+        }
+        const cardItems = editableCardItems(slide).map(encodeCardItem);
+        if (cardItems.length < 2) {
+          return slide;
+        }
+        return {
+          ...slide,
+          kind: "bullets",
+          text: null,
+          bullets: cardItems,
+          content_blocks: [],
+          left_bullets: [],
+          right_bullets: [],
+          preferred_layout_key: "cards_3",
+        };
+      }),
+    };
   }
 
   function renderTablePreview(assessment: ChartabilityAssessment) {
@@ -412,12 +665,15 @@ export function App() {
           </div>
         ) : null}
 
-        <section className="composer-card" data-node-id="633:1701">
+        <section className={`composer-card${rawText.trim() || attachedDocumentName ? " is-active" : ""}`} data-node-id="633:1701">
           <div className="composer-inner" data-node-id="634:1782">
             <div className="textarea-wrap" data-node-id="633:3164">
               <textarea
                 value={rawText}
-                onChange={(event) => setRawText(event.target.value)}
+                onChange={(event) => {
+                  setRawText(event.target.value);
+                  resetReviewPlan();
+                }}
                 placeholder={initialText}
                 className="main-textarea"
                 data-testid="raw-text-input"
@@ -426,23 +682,40 @@ export function App() {
             </div>
 
             <div className="actions-row" data-node-id="634:1772">
-              <label className="secondary-button file-button" data-node-id="644:3605" data-testid="upload-document-trigger">
-                <input
-                  type="file"
-                  accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  className="sr-only"
-                  data-testid="upload-document-input"
-                  aria-label="Загрузить документ"
-                  onChange={handleTextFileUpload}
-                />
-                <svg className="file-button-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                  <path
-                    d="M8 2.25a.75.75 0 0 1 .75.75v5.19l1.72-1.72a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 1.06-1.06l1.72 1.72V3A.75.75 0 0 1 8 2.25ZM3.25 12a.75.75 0 0 1 .75.75h8a.75.75 0 0 1 1.5 0V13a1.25 1.25 0 0 1-1.25 1.25h-8.5A1.25 1.25 0 0 1 2.5 13v-.25A.75.75 0 0 1 3.25 12Z"
-                    fill="currentColor"
+              {attachedDocumentName ? (
+                <div className="attached-file" data-testid="attached-document">
+                  <span className="attached-file-name" title={attachedDocumentName}>
+                    {attachedDocumentName}
+                  </span>
+                  <button
+                    type="button"
+                    className="attached-file-remove"
+                    data-testid="remove-attached-document"
+                    aria-label="Удалить файл"
+                    onClick={clearAttachedDocument}
+                  >
+                    ×
+                  </button>
+                </div>
+              ) : (
+                <label className="secondary-button file-button" data-node-id="644:3605" data-testid="upload-document-trigger">
+                  <input
+                    type="file"
+                    accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    className="sr-only"
+                    data-testid="upload-document-input"
+                    aria-label="Загрузить документ"
+                    onChange={handleTextFileUpload}
                   />
-                </svg>
-                <span>Файл</span>
-              </label>
+                  <svg className="file-button-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path
+                      d="M8 2.25a.75.75 0 0 1 .75.75v5.19l1.72-1.72a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 1.06-1.06l1.72 1.72V3A.75.75 0 0 1 8 2.25ZM3.25 12a.75.75 0 0 1 .75.75h8a.75.75 0 0 1 1.5 0V13a1.25 1.25 0 0 1-1.25 1.25h-8.5A1.25 1.25 0 0 1 2.5 13v-.25A.75.75 0 0 1 3.25 12Z"
+                      fill="currentColor"
+                    />
+                  </svg>
+                  <span>Файл</span>
+                </label>
+              )}
 
               <div className="actions-group">
                 {chartAssessments.length > 0 ? (
@@ -450,9 +723,12 @@ export function App() {
                     type="button"
                     className="secondary-button"
                     data-testid="open-structure-drawer"
-                    onClick={() => setIsStructureDrawerOpen(true)}
+                    onClick={() => {
+                      setDrawerTab("charts");
+                      setIsStructureDrawerOpen(true);
+                    }}
                   >
-                    Посмотреть структуру ({chartAssessments.length})
+                    Подготовить ({chartAssessments.length})
                   </button>
                 ) : null}
 
@@ -462,61 +738,91 @@ export function App() {
                   data-node-id="634:1743"
                   data-testid="generate-presentation"
                   onClick={handleGenerate}
-                  disabled={isPending}
+                  disabled={isPending || isPreparingReviewPlan || isGeneratingPresentation}
                 >
-                  {isPending ? "Генерация..." : "Сгенерировать"}
+                  {isPreparingReviewPlan || isGeneratingPresentation ? <span className="button-spinner" aria-hidden="true" /> : null}
+                  Сгенерировать
                 </button>
               </div>
             </div>
           </div>
         </section>
 
-        {chartAssessments.length > 0 ? (
+        {chartAssessments.length > 0 || reviewPlan ? (
           <StructureDrawer
             open={isStructureDrawerOpen}
             onOpenChange={setIsStructureDrawerOpen}
-            title="Таблицы документа"
-            description={`Найдено таблиц: ${chartAssessments.length}. Для визуализации подходят: ${chartableAssessments.length}.`}
+            title="Структура слайдов"
+            description={`Таблиц: ${chartAssessments.length}. Текстовых вариантов: ${cardSlideChoices.length}.`}
             footer={
               <div className="drawer-footer-actions">
                 <div className="drawer-footer-note">
-                  {hasUnsavedStructureChanges ? "Есть несохранённые изменения. Сохрани выбор, чтобы применить его при генерации." : "Выбор сохранён и будет использован при генерации."}
+                  {hasUnsavedStructureChanges ? "Есть несохранённые изменения по таблицам." : "Выбор будет использован при генерации."}
                 </div>
                 <button
                   type="button"
                   className="primary-button"
                   data-testid="save-structure-choices"
                   onClick={handleSaveStructureChoices}
-                  disabled={!hasUnsavedStructureChanges}
                 >
-                  Сохранить выбор
+                  Сохранить
                 </button>
               </div>
             }
           >
-            <div className="drawer-toolbar">
-              <div className="drawer-toolbar-copy">
-                {chartableAssessments.length > 0
-                  ? "Сначала показаны только таблицы, которые можно превратить в графики."
-                  : "В документе не найдено таблиц, которые система может уверенно превратить в графики."}
-              </div>
-              {chartAssessments.length > chartableAssessments.length ? (
-                <label className="drawer-switch">
-                  <span>Показать все таблицы</span>
-                  <input
-                    type="checkbox"
-                    className="drawer-switch-input"
-                    checked={showAllTablesInDrawer}
-                    onChange={(event) => setShowAllTablesInDrawer(event.target.checked)}
-                  />
-                  <span className="drawer-switch-track" aria-hidden="true">
-                    <span className="drawer-switch-thumb" />
-                  </span>
-                </label>
-              ) : null}
+            <div className="drawer-tabs" role="tablist" aria-label="Настройки структуры">
+              <button
+                type="button"
+                className={`drawer-tab${drawerTab === "charts" ? " is-active" : ""}`}
+                data-testid="drawer-tab-charts"
+                role="tab"
+                aria-selected={drawerTab === "charts"}
+                onClick={() => setDrawerTab("charts")}
+              >
+                Таблица / График
+              </button>
+              <button
+                type="button"
+                className={`drawer-tab${drawerTab === "text" ? " is-active" : ""}`}
+                data-testid="drawer-tab-text"
+                role="tab"
+                aria-selected={drawerTab === "text"}
+                onClick={() => {
+                  setDrawerTab("text");
+                  if (!reviewPlan && (attachedDocumentText.trim() || rawText.trim())) {
+                    prepareReviewPlan();
+                  }
+                }}
+              >
+                Вид текста
+              </button>
             </div>
-            <section className="preview-gallery">
-              {visibleAssessments.map((assessment) => {
+
+            {drawerTab === "charts" ? (
+              <>
+                <div className="drawer-toolbar">
+                  <div className="drawer-toolbar-copy">
+                    {chartableAssessments.length > 0
+                      ? "Сначала показаны только таблицы, которые можно превратить в графики."
+                      : "В документе не найдено таблиц, которые система может уверенно превратить в графики."}
+                  </div>
+                  {chartAssessments.length > chartableAssessments.length ? (
+                    <label className="drawer-switch">
+                      <span>Показать все таблицы</span>
+                      <input
+                        type="checkbox"
+                        className="drawer-switch-input"
+                        checked={showAllTablesInDrawer}
+                        onChange={(event) => setShowAllTablesInDrawer(event.target.checked)}
+                      />
+                      <span className="drawer-switch-track" aria-hidden="true">
+                        <span className="drawer-switch-thumb" />
+                      </span>
+                    </label>
+                  ) : null}
+                </div>
+                <section className="preview-gallery">
+                  {visibleAssessments.map((assessment) => {
                 const selectedSpec = selectedChartSpec(assessment);
                 const mode = chartModeByTableId[assessment.table_id] ?? "table";
                 const selectedChartId =
@@ -637,7 +943,58 @@ export function App() {
                   </Card>
                 );
               })}
-            </section>
+                </section>
+              </>
+            ) : (
+              <section className="slide-review-panel" data-testid="slide-review-panel">
+                <div className="slide-review-head">
+                  <div>
+                    <div className="slide-review-title">Вид текста</div>
+                    <div className="slide-review-text">
+                      Отметь слайды, где текст нужно заменить на карточки.
+                    </div>
+                  </div>
+                  <button type="button" className="secondary-button" onClick={() => setCardSlideIndexes([])}>
+                    Сбросить выбор
+                  </button>
+                </div>
+
+                {cardSlideChoices.length > 0 ? (
+                  <div className="slide-choice-list">
+                    {cardSlideChoices.map(({ index, slide, items, fit, reason }) => {
+                      const previewItems = items.map(splitCardItem);
+                      return (
+                        <label className="slide-choice" data-testid={`card-slide-choice-${index}`} key={`slide-choice-${index}`}>
+                          <Input
+                            type="checkbox"
+                            className="slide-choice-input"
+                            checked={cardSlideIndexes.includes(index)}
+                            onChange={() => toggleCardSlide(index)}
+                          />
+                          <span className="slide-choice-body">
+                            <span className="slide-choice-title">
+                              {index + 1}. {slide.title || "Слайд без заголовка"}
+                            </span>
+                            <span className={`slide-choice-fit is-${fit}`}>{reason}</span>
+                            <span className="slide-choice-preview">
+                              {previewItems.map(({ title, description }) => description ? `${title}: ${description}` : title).join(" · ")}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : isPreparingReviewPlan ? (
+                  <div className="slide-review-text" data-testid="preparing-card-slide-choices">
+                    Подготавливаю текстовые слайды...
+                  </div>
+                ) : (
+                  <div className="slide-review-text" data-testid="no-card-slide-choices">
+                    В плане нет текстовых слайдов, которые можно безопасно разложить на карточки.
+                  </div>
+                )}
+              </section>
+            )}
           </StructureDrawer>
         ) : null}
       </div>

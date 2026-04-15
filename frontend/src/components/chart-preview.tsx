@@ -487,7 +487,7 @@ export function ChartPreview({ spec }: ChartPreviewProps) {
                             <div className="chart-preview-stack">
                               {visible.map((series, seriesIndex) => {
                                 const value = series.values[categoryIndex] ?? 0;
-                                const heightPercent = Math.max(6, (value / stackedDomain.max) * 100);
+                                const heightPercent = Math.max(0, (Math.max(0, value) / stackedDomain.max) * 100);
                                 return (
                                   <div
                                     className="chart-preview-stack-segment"

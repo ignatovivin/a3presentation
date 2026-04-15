@@ -56,7 +56,14 @@ const chartAssessments = [
   },
   {
     table_id: "table_stacked_column",
-    candidate_specs: [chartSpec("table_stacked_column", "stacked_column", "Stacked column preview")],
+    candidate_specs: [
+      chartSpec("table_stacked_column", "stacked_column", "Stacked column preview", {
+        series: [
+          { name: "SMB", values: [120, 140, 160, 190], unit: null, axis: "primary", hidden: false },
+          { name: "Enterprise", values: [220, 260, 210, 320], unit: null, axis: "primary", hidden: false },
+        ],
+      }),
+    ],
   },
   {
     table_id: "table_stacked_bar",
@@ -169,6 +176,20 @@ test("@smoke chart preview renders every supported chart layout", async ({ page 
   const stackedColumnCard = page.getByTestId("assessment-card-table_stacked_column");
   await page.getByTestId("mode-chart-table_stacked_column").click();
   await expect(stackedColumnCard.locator(".chart-preview-stack-segment")).toHaveCount(8);
+  const stackHeights = await stackedColumnCard.locator(".chart-preview-stack").evaluateAll((items) =>
+    items.map((item) => Math.round((item as HTMLElement).getBoundingClientRect().height)),
+  );
+  const segmentHeights = await stackedColumnCard.locator(".chart-preview-stack").evaluateAll((items) =>
+    items.map((item) =>
+      Array.from(item.querySelectorAll(".chart-preview-stack-segment")).reduce(
+        (sum, segment) => sum + (segment as HTMLElement).getBoundingClientRect().height,
+        0,
+      ),
+    ),
+  );
+  expect(stackHeights.every((height) => height > 180)).toBeTruthy();
+  expect(new Set(segmentHeights.map((height) => Math.round(height))).size).toBeGreaterThan(1);
+  expect(segmentHeights[3]).toBeGreaterThan(segmentHeights[0]);
 
   const stackedBarCard = page.getByTestId("assessment-card-table_stacked_bar");
   await page.getByTestId("mode-chart-table_stacked_bar").click();

@@ -2794,6 +2794,183 @@ class ProjectContractTests(unittest.TestCase):
         self.assertTrue(card_audit.auxiliary_widths)
         self.assertEqual([v.rule for v in violations if v.slide_index == card_audit.slide_index], [])
 
+    def test_cards_layout_renders_one_item_per_card_with_fitted_text(self) -> None:
+        card_texts = [
+            "Первое направление: усилить платформенное ядро и убрать ручные операции в ключевых интеграциях.",
+            "Второе направление: расширить партнерскую сеть и ускорить подключение новых каналов продаж.",
+            "Третье направление: повысить удержание клиентов за счет аналитики, персонализации и регулярных продуктовых улучшений.",
+        ]
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Cards Text Fit",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Cards Text Fit", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.BULLETS,
+                    title="Три направления роста",
+                    bullets=card_texts,
+                    preferred_layout_key="cards_3",
+                ),
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            generated = Presentation(output_path)
+            card_slide = generated.slides[1]
+            full_slide_pictures = [
+                shape
+                for shape in card_slide.shapes
+                if shape.left == 0
+                and shape.top == 0
+                and shape.width == generated.slide_width
+                and shape.height == generated.slide_height
+                and str(shape.shape_type) == "PICTURE (13)"
+            ]
+            self.assertEqual(full_slide_pictures, [])
+            cards = {
+                shape.placeholder_format.idx: shape
+                for shape in card_slide.placeholders
+                if shape.placeholder_format.idx in {11, 12, 13}
+            }
+
+            self.assertEqual(
+                [cards[idx].text.strip() for idx in (11, 12, 13)],
+                [
+                    "Первое направление\nусилить платформенное ядро и убрать ручные операции в ключевых интеграциях.",
+                    "Второе направление\nрасширить партнерскую сеть и ускорить подключение новых каналов продаж.",
+                    "Третье направление\nповысить удержание клиентов за счет аналитики, персонализации и регулярных продуктовых улучшений.",
+                ],
+            )
+            expected_geometry = {
+                11: (739775, 1723633, 3259138, 4164013),
+                12: (4412456, 1723633, 3259138, 4164013),
+                13: (8193087, 1723633, 3259138, 4164013),
+            }
+            card_font_sizes = []
+            for shape in cards.values():
+                self.assertEqual(
+                    (shape.left, shape.top, shape.width, shape.height),
+                    expected_geometry[shape.placeholder_format.idx],
+                )
+                self.assertEqual(shape.text_frame.margin_left, self.generator.DEFAULT_TEXT_MARGIN_X_EMU)
+                self.assertEqual(shape.text_frame.margin_right, self.generator.DEFAULT_TEXT_MARGIN_X_EMU)
+                self.assertEqual(shape.text_frame.margin_top, self.generator.DEFAULT_TEXT_MARGIN_Y_EMU)
+                self.assertEqual(shape.text_frame.margin_bottom, self.generator.DEFAULT_TEXT_MARGIN_Y_EMU)
+                sizes = [
+                    run.font.size.pt
+                    for paragraph in shape.text_frame.paragraphs
+                    for run in paragraph.runs
+                    if run.font.size is not None
+                ]
+                colors = [
+                    str(run.font.color.rgb)
+                    for paragraph in shape.text_frame.paragraphs
+                    for run in paragraph.runs
+                    if run.font.color.rgb is not None
+                ]
+                bold_values = [
+                    run.font.bold
+                    for paragraph in shape.text_frame.paragraphs
+                    for run in paragraph.runs
+                ]
+                self.assertTrue(sizes)
+                self.assertEqual(set(round(size, 1) for size in sizes), {20.0})
+                self.assertEqual(set(colors), {"FFFFFF"})
+                self.assertIn(True, set(bold_values))
+                self.assertIn(False, set(bold_values))
+                card_font_sizes.append(tuple(sorted(set(round(size, 1) for size in sizes))))
+            self.assertEqual(len(set(card_font_sizes)), 1)
+
+    def test_text_slide_on_non_card_physical_layout_keeps_light_background(self) -> None:
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Text Background Guard",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Контекст",
+                    text="Текстовый слайд не должен наследовать синюю заливку text layout.",
+                    preferred_layout_key="text_full_width",
+                ),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Контекст 2",
+                    text="Текстовый слайд не должен наследовать синюю заливку физического layout.",
+                    preferred_layout_key=next(layout.key for layout in manifest.layouts if "таблиц" in layout.name.lower()),
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            generated = Presentation(output_path)
+            slides = list(generated.slides)
+
+        for slide in slides:
+            background = slide.shapes[0]
+            self.assertEqual(str(background.shape_type), "PICTURE (13)")
+            self.assertEqual(background.left, 0)
+            self.assertEqual(background.top, 0)
+            self.assertEqual(background.width, generated.slide_width)
+            self.assertEqual(background.height, generated.slide_height)
+
+    def test_cards_layout_keeps_clearance_under_wrapped_title(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="Cards Wrapped Title",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.BULLETS,
+                    title="Очень длинный заголовок карточного слайда для проверки переноса на две строки",
+                    bullets=[
+                        "Первое направление: усилить платформенное ядро и убрать ручные операции в ключевых интеграциях.",
+                        "Второе направление: расширить партнерскую сеть и ускорить подключение новых каналов продаж.",
+                        "Третье направление: повысить удержание клиентов за счет аналитики и персонализации.",
+                    ],
+                    preferred_layout_key="cards_3",
+                )
+            ],
+        )
+
+        manifest = self.registry.get_template("corp_light_v1")
+        template_path = self.registry.get_template_pptx_path("corp_light_v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            generated = Presentation(output_path)
+            slide = generated.slides[0]
+            placeholders = {shape.placeholder_format.idx: shape for shape in slide.placeholders}
+            title = placeholders[0]
+            first_card_top = min(placeholders[idx].top for idx in (11, 12, 13))
+            expected_card_bottom = 1723633 + 4164013
+            audits = audit_generated_presentation(output_path, plan, manifest)
+
+        self.assertGreaterEqual(first_card_top - (title.top + title.height), 320000)
+        for idx in (11, 12, 13):
+            self.assertEqual(placeholders[idx].top, 1723633)
+            self.assertEqual(placeholders[idx].height, 4164013)
+            self.assertEqual(placeholders[idx].top + placeholders[idx].height, expected_card_bottom)
+        self.assertEqual(find_capacity_violations(audits), [])
+
     def test_deck_audit_validates_two_column_layout_geometry(self) -> None:
         plan = PresentationPlan(
             template_id="corp_light_v1",
