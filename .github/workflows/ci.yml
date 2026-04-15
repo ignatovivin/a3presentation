@@ -64,6 +64,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ..
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -106,6 +116,18 @@ jobs:
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
+
+      - name: Start backend API
+        run: |
+          python -m uvicorn a3presentation.main:app --host 127.0.0.1 --port 8000 > ../backend-smoke.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat ../backend-smoke.log
+          exit 1
 
       - name: Run frontend smoke tests
         run: yarn test:smoke
