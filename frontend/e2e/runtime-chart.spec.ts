@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { expect, test } from "@playwright/test";
@@ -176,7 +177,8 @@ const runtimeMarketShareExtractResponse = {
 
 function auditGeneratedMarketShareDeck(outputPath: string, plan: unknown) {
   const repoRoot = path.resolve(process.cwd(), "..");
-  const pythonExecutable = path.join(repoRoot, ".venv", process.platform === "win32" ? "Scripts\\python.exe" : "bin/python");
+  const localPythonExecutable = path.join(repoRoot, ".venv", process.platform === "win32" ? "Scripts\\python.exe" : "bin/python");
+  const pythonExecutable = process.env.PYTHON || (existsSync(localPythonExecutable) ? localPythonExecutable : "python");
   const auditScript = `
 import json
 import os
