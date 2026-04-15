@@ -234,25 +234,30 @@ def audit_generated_presentation(
             width_emu=expected_body_geometry.width_emu if expected_body_geometry is not None else None,
             height_emu=expected_body_geometry.height_emu if expected_body_geometry is not None else None,
         )
+        excluded_auxiliary_indices = {
+            value for value in {title_idx, subtitle_idx, body_idx, footer_idx, 17} if value is not None
+        }
+        if layout_key == "cards_3":
+            excluded_auxiliary_indices -= {11, 12, 13}
         auxiliary_widths = {
             idx: getattr(shape, "width", None)
             for idx, shape in placeholders.items()
-            if idx not in {value for value in {title_idx, subtitle_idx, body_idx, footer_idx, 17} if value is not None}
+            if idx not in excluded_auxiliary_indices
         }
         auxiliary_lefts = {
             idx: getattr(shape, "left", None)
             for idx, shape in placeholders.items()
-            if idx not in {value for value in {title_idx, subtitle_idx, body_idx, footer_idx, 17} if value is not None}
+            if idx not in excluded_auxiliary_indices
         }
         auxiliary_tops = {
             idx: getattr(shape, "top", None)
             for idx, shape in placeholders.items()
-            if idx not in {value for value in {title_idx, subtitle_idx, body_idx, footer_idx, 17} if value is not None}
+            if idx not in excluded_auxiliary_indices
         }
         auxiliary_char_counts = {
             idx: _shape_text_char_count(shape)
             for idx, shape in placeholders.items()
-            if idx not in {value for value in {title_idx, subtitle_idx, body_idx, footer_idx, 17} if value is not None}
+            if idx not in excluded_auxiliary_indices
         }
         expected_auxiliary_char_counts = _expected_auxiliary_char_counts_for_slide(slide_spec, layout_key)
         content_width = getattr(body, "width", None) if body is not None else None
@@ -268,7 +273,39 @@ def audit_generated_presentation(
         body_char_count = 0
         body_font_sizes: tuple[float, ...] = ()
         rendered_items: tuple[str, ...] = ()
-        if body is not None and getattr(body, "has_text_frame", False):
+        if layout_key == "cards_3":
+            card_shapes = [placeholders[idx] for idx in (11, 12, 13) if idx in placeholders]
+            card_texts = [
+                " ".join(
+                    paragraph.text.strip()
+                    for paragraph in shape.text_frame.paragraphs
+                    if paragraph.text.strip()
+                )
+                for shape in card_shapes
+                if getattr(shape, "has_text_frame", False)
+            ]
+            body_paragraphs = [
+                paragraph.text.strip()
+                for shape in card_shapes
+                if getattr(shape, "has_text_frame", False)
+                for paragraph in shape.text_frame.paragraphs
+                if paragraph.text.strip()
+            ]
+            body_char_count = sum(len(paragraph) for paragraph in body_paragraphs)
+            rendered_items = tuple(text for text in card_texts if text)
+            body_font_sizes = tuple(
+                sorted(
+                    {
+                        run.font.size.pt
+                        for shape in card_shapes
+                        if getattr(shape, "has_text_frame", False)
+                        for paragraph in shape.text_frame.paragraphs
+                        for run in paragraph.runs
+                        if run.font.size is not None
+                    }
+                )
+            )
+        elif body is not None and getattr(body, "has_text_frame", False):
             body_paragraphs = [paragraph.text.strip() for paragraph in body.text_frame.paragraphs if paragraph.text.strip()]
             body_char_count = sum(len(paragraph) for paragraph in body_paragraphs)
             rendered_items = tuple(body_paragraphs)
@@ -1058,7 +1095,10 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
             audit.kind == SlideKind.TEXT.value and audit.expected_items and any(audit.expected_items)
         )
         if should_check_body_order and audit.expected_items:
-            expected = [_normalize_audit_text(item) for item in audit.expected_items if _normalize_audit_text(item)]
+            expected_source = audit.expected_items
+            if audit.layout_key == "cards_3":
+                expected_source = tuple(_normalize_card_audit_item(item) for item in audit.expected_items)
+            expected = [_normalize_audit_text(item) for item in expected_source if _normalize_audit_text(item)]
             rendered = [_normalize_audit_text(item) for item in audit.rendered_items if _normalize_audit_text(item)]
             if rendered and expected != rendered:
                 violations.append(
@@ -1284,6 +1324,8 @@ def _preferred_placeholder_indices_for_role(slide_spec: SlideSpec, kind: Placeho
     if kind == PlaceholderKind.SUBTITLE:
         return (13,)
     if kind == PlaceholderKind.BODY:
+        if layout_key == "cards_3":
+            return (11, 12, 13)
         if layout_key in {"text_full_width", "dense_text_full_width", "list_full_width", "image_text"}:
             return (14,)
         if layout_key == "table" or slide_spec.kind == SlideKind.CHART:
@@ -1488,3 +1530,19 @@ def _expected_items_for_slide(slide_spec: SlideSpec) -> tuple[str, ...]:
 
 def _normalize_audit_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _normalize_card_audit_item(text: str) -> str:
+    normalized = "\n".join(line.strip() for line in (text or "").splitlines() if line.strip())
+    if not normalized:
+        return ""
+    if "\n" in normalized:
+        title, description = normalized.split("\n", 1)
+        return f"{title.strip()} {' '.join(description.split())}".strip()
+    colon_match = re.match(r"^(.{4,54}?):\s+(.{12,})$", normalized)
+    if colon_match:
+        return f"{colon_match.group(1).strip()} {colon_match.group(2).strip()}"
+    dash_match = re.match(r"^(.{4,54}?)\s+[—-]\s+(.{12,})$", normalized)
+    if dash_match:
+        return f"{dash_match.group(1).strip()} {dash_match.group(2).strip()}"
+    return normalized
