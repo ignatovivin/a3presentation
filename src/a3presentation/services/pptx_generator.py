@@ -18,6 +18,7 @@ from pptx.oxml import parse_xml
 from pptx.oxml.xmlchemy import OxmlElement
 from pptx import Presentation
 from pptx.enum.chart import XL_CHART_TYPE, XL_MARKER_STYLE
+from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE, MSO_CONNECTOR
 from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Pt
 
@@ -54,6 +55,7 @@ from a3presentation.services.layout_capacity import (
     derive_capacity_profile_for_geometry,
     geometry_policy_for_layout,
     profile_for_layout,
+    runtime_profile_key_for_target,
     spacing_policy_for_layout,
 )
 
@@ -80,6 +82,20 @@ class PptxGenerator:
     COVER_META_MIN_HEIGHT_EMU = 700000
     COVER_META_GAP_EMU = 220000
     COVER_BOTTOM_LIMIT_EMU = 6200000
+    KPI_TITLE_TOP_EMU = 651176
+    KPI_TITLE_LEFT_EMU = 444249
+    KPI_TITLE_WIDTH_EMU = 10693901
+    KPI_TITLE_HEIGHT_EMU = 720000
+    KPI_DESCRIPTION_TOP_EMU = 1460000
+    KPI_DESCRIPTION_LEFT_EMU = 444249
+    KPI_DESCRIPTION_WIDTH_EMU = 8200000
+    KPI_DESCRIPTION_HEIGHT_EMU = 900000
+    KPI_METRIC_START_TOP_EMU = 3350000
+    KPI_METRIC_LEFT_EMU = 444249
+    KPI_METRIC_RIGHT_EMU = 6900000
+    KPI_METRIC_WIDTH_EMU = 4100000
+    KPI_METRIC_HEIGHT_EMU = 1200000
+    KPI_METRIC_ROW_GAP_EMU = 650000
     FULL_CONTENT_LEFT_EMU = 442913
     FULL_CONTENT_WIDTH_EMU = 11198224
     FOOTER_TOP_EMU = 6384626
@@ -87,6 +103,10 @@ class PptxGenerator:
     DEFAULT_TEXT_MARGIN_X_EMU = 91440
     DEFAULT_TEXT_MARGIN_Y_EMU = 45720
     GEOMETRY_PROFILE_TOLERANCE_EMU = 120000
+    KPI_FOURTH_CARD_LEFT_EMU = 6980000
+    KPI_FOURTH_CARD_TOP_EMU = 4950000
+    KPI_FOURTH_CARD_WIDTH_EMU = 3600000
+    KPI_FOURTH_CARD_HEIGHT_EMU = 1350000
     BUILTIN_LAYOUT_KEYS = {
         "text_full_width",
         "dense_text_full_width",
@@ -94,6 +114,7 @@ class PptxGenerator:
         "table",
         "image_text",
         "cards_3",
+        "cards_kpi",
         "list_with_icons",
         "contacts",
         "cover",
@@ -155,9 +176,19 @@ class PptxGenerator:
             source_slide = source_slides[prototype.source_slide_index]
             target_slide = self._clone_slide(output_presentation, source_slide)
             self._replace_tokens_in_slide(target_slide, prototype, slide_spec, plan.title)
-            self._apply_layout_expansion_and_flow(target_slide, slide_spec.preferred_layout_key or prototype.key, slide_spec)
+            if self._should_apply_prototype_layout_flow(prototype):
+                self._apply_layout_expansion_and_flow(
+                    target_slide,
+                    self._runtime_profile_key_for_slide(slide_spec, prototype=prototype),
+                    slide_spec,
+                )
 
         return output_presentation
+
+    def _should_apply_prototype_layout_flow(self, prototype: PrototypeSlideSpec) -> bool:
+        if prototype.key not in self.BUILTIN_LAYOUT_KEYS:
+            return False
+        return not any(token.shape_name for token in prototype.tokens)
 
     def _generate_from_layouts(self, template_path: Path, manifest: TemplateManifest, plan: PresentationPlan) -> Presentation:
         presentation = Presentation(str(template_path))
@@ -238,9 +269,11 @@ class PptxGenerator:
                 if self._prototype_supports_chart(prototype_slide):
                     return prototype_slide
 
-        if slide_spec.preferred_layout_key:
+        target_key = self._target_key_for_slide(slide_spec)
+        target_type = self._target_type_for_slide(slide_spec)
+        if target_key and target_type in {None, "prototype"}:
             for prototype_slide in manifest.prototype_slides:
-                if prototype_slide.key == slide_spec.preferred_layout_key:
+                if prototype_slide.key == target_key:
                     return prototype_slide
 
         for prototype_slide in manifest.prototype_slides:
@@ -254,11 +287,48 @@ class PptxGenerator:
             return True
         return any(token.binding in {"chart", "chart_image"} for token in prototype.tokens)
 
+    def _runtime_profile_key_for_slide(
+        self,
+        slide_spec: SlideSpec,
+        *,
+        layout: LayoutSpec | None = None,
+        prototype: PrototypeSlideSpec | None = None,
+    ) -> str:
+        target = layout or prototype
+        target_key = self._target_key_for_slide(slide_spec)
+        target_type = self._target_type_for_slide(slide_spec)
+        if target is None and self._active_manifest is not None and target_key:
+            if target_type in {None, "layout", "auto_layout", "direct_shape_binding"}:
+                target = next(
+                    (item for item in self._active_manifest.layouts if item.key == target_key),
+                    None,
+                )
+            if target is None and target_type in {None, "prototype"}:
+                target = next(
+                    (item for item in self._active_manifest.prototype_slides if item.key == target_key),
+                    None,
+                )
+        return runtime_profile_key_for_target(
+            target,
+            fallback_layout_key=slide_spec.runtime_profile_key or target_key,
+            slide_kind=slide_spec.kind.value,
+        )
+
+    def _target_key_for_slide(self, slide_spec: SlideSpec) -> str | None:
+        if slide_spec.render_target is not None and slide_spec.render_target.key:
+            return slide_spec.render_target.key
+        return slide_spec.preferred_layout_key
+
+    def _target_type_for_slide(self, slide_spec: SlideSpec) -> str | None:
+        if slide_spec.render_target is None:
+            return None
+        return slide_spec.render_target.type.value
+
     def _replace_tokens_in_slide(self, slide, prototype: PrototypeSlideSpec, slide_spec: SlideSpec, presentation_title: str) -> None:
         token_values = self._build_token_value_map(slide_spec, presentation_title)
         used_shapes: set[str] = set()
-        layout_key = slide_spec.preferred_layout_key or "text_full_width"
-        layout_profile = profile_for_layout(layout_key)
+        runtime_profile_key = self._runtime_profile_key_for_slide(slide_spec, prototype=prototype)
+        layout_profile = profile_for_layout(runtime_profile_key)
 
         if getattr(slide_spec, "background_only", False):
             for shape in list(slide.shapes):
@@ -274,7 +344,7 @@ class PptxGenerator:
             if target_shape is None:
                 continue
             self._apply_shape_spec_metadata(target_shape, token_spec)
-            shape_profile = self._capacity_profile_for_shape(layout_key, target_shape, layout_profile)
+            shape_profile = self._capacity_profile_for_shape(runtime_profile_key, target_shape, layout_profile)
             self._fill_shape_by_binding(
                 target_shape,
                 token_spec.binding,
@@ -286,10 +356,16 @@ class PptxGenerator:
             self._apply_shape_spec_metadata(target_shape, token_spec, apply_text_style=False)
             if slide_spec.kind == SlideKind.CHART and token_spec.binding == "title":
                 self._configure_title_text_frame(target_shape)
-                self._apply_font_size(target_shape, 35.0)
+                self._apply_font_size(
+                    target_shape,
+                    self._component_font_size("chart", "title", fallback=35.0),
+                )
             elif slide_spec.kind == SlideKind.CHART and token_spec.binding == "subtitle":
                 self._configure_subtitle_text_frame(target_shape)
-                self._apply_font_size(target_shape, 20.0)
+                self._apply_font_size(
+                    target_shape,
+                    self._component_font_size("chart", "subtitle", fallback=20.0),
+                )
             used_shapes.add(token_spec.shape_name)
 
         for shape in slide.shapes:
@@ -308,7 +384,7 @@ class PptxGenerator:
             if single_token_match:
                 token_name = single_token_match.group(1)
                 token_value = token_values.get(token_name, "")
-                shape_profile = self._capacity_profile_for_shape(layout_key, shape, layout_profile)
+                shape_profile = self._capacity_profile_for_shape(runtime_profile_key, shape, layout_profile)
                 if isinstance(token_value, list):
                     self._set_bullets(shape, token_value, shape_profile)
                 else:
@@ -321,7 +397,7 @@ class PptxGenerator:
                 if isinstance(token_value, list):
                     token_value = "\n".join(token_value)
                 replaced_text = re.sub(r"{{\s*" + re.escape(token_name) + r"\s*}}", str(token_value), replaced_text)
-            shape_profile = self._capacity_profile_for_shape(layout_key, shape, layout_profile)
+            shape_profile = self._capacity_profile_for_shape(runtime_profile_key, shape, layout_profile)
             self._set_text(shape, replaced_text, shape_profile)
 
     def _build_token_value_map(self, slide_spec: SlideSpec, presentation_title: str) -> dict[str, str | list[str]]:
@@ -374,13 +450,12 @@ class PptxGenerator:
         return token_map
 
     def _resolve_layout(self, manifest: TemplateManifest, slide_spec: SlideSpec) -> LayoutSpec:
-        if slide_spec.preferred_layout_key:
+        target_key = self._target_key_for_slide(slide_spec)
+        target_type = self._target_type_for_slide(slide_spec)
+        if target_key and target_type in {None, "layout", "auto_layout", "direct_shape_binding"}:
             for layout in manifest.layouts:
-                if layout.key == slide_spec.preferred_layout_key:
+                if layout.key == target_key:
                     return layout
-            mapped_layout = self._resolve_logical_layout(manifest, slide_spec.preferred_layout_key)
-            if mapped_layout is not None:
-                return mapped_layout
 
         for layout in manifest.layouts:
             if slide_spec.kind.value in layout.supported_slide_kinds:
@@ -394,47 +469,6 @@ class PptxGenerator:
         if not manifest.layouts:
             raise ValueError(f"Template '{manifest.template_id}' does not contain layouts")
         return manifest.layouts[0]
-
-    def _resolve_logical_layout(self, manifest: TemplateManifest, logical_layout_key: str) -> LayoutSpec | None:
-        candidates: list[LayoutSpec] = []
-
-        if logical_layout_key == "cover":
-            candidates = [layout for layout in manifest.layouts if "титул" in layout.name.lower()]
-        elif logical_layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"}:
-            candidates = [
-                layout
-                for layout in manifest.layouts
-                if any(placeholder.idx == 17 for placeholder in layout.placeholders)
-                and any(placeholder.idx == 14 for placeholder in layout.placeholders)
-                and not any(placeholder.idx == 16 and placeholder.kind == PlaceholderKind.IMAGE for placeholder in layout.placeholders)
-            ]
-            if manifest.template_id == "corp_light_v1":
-                light_candidates = [
-                    layout
-                    for layout in manifest.layouts
-                    if layout.slide_master_index == 0
-                    and any(placeholder.idx == 17 for placeholder in layout.placeholders)
-                    and any(placeholder.idx == 14 for placeholder in layout.placeholders)
-                    and self._background_xml_requires_relationships(layout.background_xml)
-                ]
-                if light_candidates:
-                    candidates = light_candidates
-        elif logical_layout_key == "table":
-            candidates = [layout for layout in manifest.layouts if "таблиц" in layout.name.lower()]
-        elif logical_layout_key == "image_text":
-            candidates = [
-                layout
-                for layout in manifest.layouts
-                if any(placeholder.idx == 16 and placeholder.kind == PlaceholderKind.IMAGE for placeholder in layout.placeholders)
-            ]
-        elif logical_layout_key == "cards_3":
-            candidates = [layout for layout in manifest.layouts if "карточ" in layout.name.lower()]
-        elif logical_layout_key == "list_with_icons":
-            candidates = [layout for layout in manifest.layouts if "перечис" in layout.name.lower() and any(placeholder.idx == 21 for placeholder in layout.placeholders)]
-        elif logical_layout_key == "contacts":
-            candidates = [layout for layout in manifest.layouts if "контакт" in layout.name.lower()]
-
-        return candidates[0] if candidates else None
 
     def _effective_placeholder_kind(
         self,
@@ -485,14 +519,15 @@ class PptxGenerator:
             }
             return role_map.get(idx, PlaceholderKind.UNKNOWN)
 
-        if logical_layout_key == "cards_3":
+        if logical_layout_key in {"cards_3", "cards_kpi"}:
             role_map = {
                 0: PlaceholderKind.TITLE,
                 11: PlaceholderKind.BODY,
                 12: PlaceholderKind.BODY,
                 13: PlaceholderKind.BODY,
-                15: PlaceholderKind.FOOTER,
             }
+            if logical_layout_key == "cards_3":
+                role_map[15] = PlaceholderKind.FOOTER
             return role_map.get(idx, PlaceholderKind.UNKNOWN)
 
         if logical_layout_key == "list_with_icons":
@@ -510,34 +545,55 @@ class PptxGenerator:
         return placeholder_spec.kind
 
     def _fill_slide_from_layout(self, slide, slide_spec: SlideSpec, layout: LayoutSpec, presentation_title: str) -> None:
-        logical_layout_key = slide_spec.preferred_layout_key or layout.key
+        target_layout_key = self._target_key_for_slide(slide_spec) or layout.key
+        runtime_profile_key = self._runtime_profile_key_for_slide(slide_spec, layout=layout)
+        use_builtin_flow = target_layout_key in self.BUILTIN_LAYOUT_KEYS
         explicit_background_xml = getattr(slide_spec, "background_xml", None)
         if explicit_background_xml:
             self._apply_background_xml(slide, explicit_background_xml)
-        elif self._should_force_light_content_background(logical_layout_key, slide_spec.kind, layout):
-            donor_layout_key = self._light_background_donor_layout_key() or "table"
-            self._apply_donor_layout_background(slide, donor_layout_key=donor_layout_key)
-        elif not self._background_xml_requires_relationships(layout.background_xml):
+        elif layout.background_xml and not self._background_xml_requires_relationships(layout.background_xml):
             self._apply_background_xml(slide, layout.background_xml)
             self._apply_background_style(slide, layout.background_style)
+        elif self._background_xml_requires_relationships(layout.background_xml) or layout.background_image_base64:
+            if self._active_manifest is not None and self._active_manifest.generation_mode == GenerationMode.LAYOUT:
+                self._apply_background_style(slide, layout.background_style)
+            else:
+                self._apply_layout_background_image(slide, layout)
         else:
             self._apply_background_style(slide, layout.background_style)
         if getattr(slide_spec, "background_only", False):
             for placeholder in slide.placeholders:
                 self._clear_placeholder(placeholder)
             return
-        if logical_layout_key == "cover":
+        if use_builtin_flow and target_layout_key == "cover":
             self._populate_cover_slide(slide, slide_spec)
             return
-        layout_profile = profile_for_layout(logical_layout_key)
+        if use_builtin_flow and runtime_profile_key == "cards_kpi":
+            for placeholder in slide.placeholders:
+                self._clear_placeholder(placeholder)
+            self._populate_kpi_cards_slide(slide, slide_spec, presentation_title)
+            return
+        layout_profile = profile_for_layout(runtime_profile_key)
         placeholders = {placeholder.placeholder_format.idx: placeholder for placeholder in slide.placeholders}
         used_placeholder_indices: set[int] = set()
+        materialized_roles: set[str] = set()
 
         for placeholder_spec in layout.placeholders:
-            if placeholder_spec.idx is None or placeholder_spec.idx not in placeholders:
+            shape = None
+            if placeholder_spec.idx is not None and placeholder_spec.idx in placeholders:
+                shape = placeholders[placeholder_spec.idx]
+                used_placeholder_indices.add(placeholder_spec.idx)
+            elif not use_builtin_flow:
+                shape = self._materialize_shape_from_layout_spec(
+                    slide,
+                    placeholder_spec,
+                    slide_spec,
+                    layout_profile,
+                    runtime_profile_key,
+                    materialized_roles,
+                )
+            if shape is None:
                 continue
-            shape = placeholders[placeholder_spec.idx]
-            used_placeholder_indices.add(placeholder_spec.idx)
             self._apply_shape_spec_metadata(shape, placeholder_spec)
             if placeholder_spec.binding:
                 self._fill_shape_by_binding(
@@ -553,7 +609,7 @@ class PptxGenerator:
                 continue
             effective_kind = self._effective_placeholder_kind(
                 placeholder_spec,
-                logical_layout_key=logical_layout_key,
+                logical_layout_key=runtime_profile_key,
                 slide_kind=slide_spec.kind,
             )
             if effective_kind == PlaceholderKind.UNKNOWN:
@@ -566,8 +622,8 @@ class PptxGenerator:
                 else:
                     self._clear_placeholder(shape)
             elif effective_kind == PlaceholderKind.BODY:
-                if logical_layout_key == "cards_3":
-                    self._fill_card_body(shape, slide_spec, layout_profile)
+                if runtime_profile_key in {"cards_3", "cards_kpi"}:
+                    self._fill_card_body(slide, shape, slide_spec, layout_profile)
                 else:
                     self._fill_body(shape, slide_spec, layout_profile)
             elif effective_kind == PlaceholderKind.FOOTER:
@@ -579,7 +635,7 @@ class PptxGenerator:
             self._apply_shape_spec_metadata(
                 shape,
                 placeholder_spec,
-                apply_text_style=not (logical_layout_key == "cards_3" and effective_kind == PlaceholderKind.BODY),
+                apply_text_style=not (runtime_profile_key in {"cards_3", "cards_kpi"} and effective_kind == PlaceholderKind.BODY),
                 preserve_font_size=effective_kind in {PlaceholderKind.BODY, PlaceholderKind.FOOTER},
             )
             if effective_kind == PlaceholderKind.BODY:
@@ -603,7 +659,88 @@ class PptxGenerator:
                 self._clear_placeholder(placeholder)
             return
 
-        self._apply_layout_expansion_and_flow(slide, logical_layout_key, slide_spec)
+        if use_builtin_flow:
+            self._apply_layout_expansion_and_flow(slide, runtime_profile_key, slide_spec)
+        if runtime_profile_key == "cards_kpi":
+            self._add_kpi_fourth_card(slide, slide_spec, layout_profile)
+
+    def _materialize_shape_from_layout_spec(
+        self,
+        slide,
+        placeholder_spec: PlaceholderSpec,
+        slide_spec: SlideSpec,
+        layout_profile: LayoutCapacityProfile,
+        runtime_profile_key: str,
+        materialized_roles: set[str],
+    ):
+        role = self._materialized_role_key(placeholder_spec, slide_spec, runtime_profile_key)
+        if role is None or role in materialized_roles:
+            return None
+        geometry_values = (
+            placeholder_spec.left_emu,
+            placeholder_spec.top_emu,
+            placeholder_spec.width_emu,
+            placeholder_spec.height_emu,
+        )
+        if not all(isinstance(value, int) and value > 0 for value in geometry_values):
+            return None
+        if role not in {"title", "subtitle", "body", "footer"}:
+            return None
+
+        shape = slide.shapes.add_textbox(
+            placeholder_spec.left_emu,
+            placeholder_spec.top_emu,
+            placeholder_spec.width_emu,
+            placeholder_spec.height_emu,
+        )
+        if placeholder_spec.shape_name:
+            shape.name = placeholder_spec.shape_name
+        self._apply_shape_spec_metadata(shape, placeholder_spec)
+        materialized_roles.add(role)
+        return shape
+
+    def _materialized_role_key(
+        self,
+        placeholder_spec: PlaceholderSpec,
+        slide_spec: SlideSpec,
+        runtime_profile_key: str,
+    ) -> str | None:
+        binding = (placeholder_spec.binding or "").strip().lower()
+        if binding in {"title", "cover_title"}:
+            return "title"
+        if binding in {"subtitle", "cover_meta", "presentation_name"}:
+            return "subtitle"
+        if binding in {
+            "body",
+            "text",
+            "main_text",
+            "secondary_text",
+            "summary",
+            "notes",
+            "bullets",
+            "left_bullets",
+            "right_bullets",
+        }:
+            return "body"
+        if binding == "footer":
+            return "footer"
+        if binding:
+            return None
+
+        effective_kind = self._effective_placeholder_kind(
+            placeholder_spec,
+            logical_layout_key=runtime_profile_key,
+            slide_kind=slide_spec.kind,
+        )
+        if effective_kind == PlaceholderKind.TITLE:
+            return "title"
+        if effective_kind == PlaceholderKind.SUBTITLE:
+            return "subtitle"
+        if effective_kind == PlaceholderKind.BODY:
+            return "body"
+        if effective_kind == PlaceholderKind.FOOTER:
+            return "footer"
+        return None
 
     def _apply_background_xml(self, slide, background_xml: str | None) -> None:
         if not background_xml:
@@ -622,28 +759,17 @@ class PptxGenerator:
             return False
         return "embed=" in background_xml or "link=" in background_xml
 
-    def _should_force_light_content_background(
-        self,
-        layout_key: str,
-        slide_kind: SlideKind,
-        layout: LayoutSpec,
-    ) -> bool:
-        if self._active_manifest is None or self._active_manifest.template_id != "corp_light_v1":
-            return False
-        if layout_key == "cards_3" or "карточ" in layout.name.lower():
-            return False
-        if layout.background_style is not None:
-            return False
-        background_xml = layout.background_xml or ""
-        if "<ns1:solidFill" in background_xml or "<a:solidFill" in background_xml:
-            return False
-        if layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"}:
-            return True
-        return slide_kind in {SlideKind.TEXT, SlideKind.BULLETS}
-
-    def _apply_donor_layout_background(self, slide, donor_layout_key: str) -> None:
-        blob = self._background_image_blob_for_layout_key(donor_layout_key)
+    def _apply_layout_background_image(self, slide, layout: LayoutSpec) -> None:
+        blob = None
+        if layout.background_image_base64:
+            try:
+                blob = base64.b64decode(layout.background_image_base64)
+            except Exception:
+                blob = None
+        if blob is None:
+            blob = self._background_image_blob_for_layout(layout)
         if blob is None or self._active_presentation is None:
+            self._apply_background_style(slide, layout.background_style)
             return
         picture = slide.shapes.add_picture(
             BytesIO(blob),
@@ -662,21 +788,18 @@ class PptxGenerator:
                 break
         sp_tree.insert(insert_at, pic_element)
 
-    def _background_image_blob_for_layout_key(self, layout_key: str) -> bytes | None:
+    def _background_image_blob_for_layout(self, layout: LayoutSpec) -> bytes | None:
         if self._active_manifest is None or self._active_presentation is None:
             return None
-        manifest_layout = next((item for item in self._active_manifest.layouts if item.key == layout_key), None)
-        if manifest_layout is None:
-            return None
-        donor_layout = self._active_presentation.slide_masters[manifest_layout.slide_master_index].slide_layouts[
-            manifest_layout.slide_layout_index
+        donor_layout = self._active_presentation.slide_masters[layout.slide_master_index].slide_layouts[
+            layout.slide_layout_index
         ]
         background = donor_layout._element.cSld.bg
         if background is not None:
             blob = self._background_image_blob_from_part(donor_layout.part, background)
             if blob is not None:
                 return blob
-        donor_master = self._active_presentation.slide_masters[manifest_layout.slide_master_index]
+        donor_master = self._active_presentation.slide_masters[layout.slide_master_index]
         master_background = donor_master._element.cSld.bg
         if master_background is not None:
             return self._background_image_blob_from_part(donor_master.part, master_background)
@@ -694,19 +817,6 @@ class PptxGenerator:
         rel = part.rels.get(relationship_id)
         target_part = getattr(rel, "target_part", None) if rel is not None else None
         return getattr(target_part, "blob", None)
-
-    def _light_background_donor_layout_key(self) -> str | None:
-        if self._active_manifest is None:
-            return None
-        for layout in self._active_manifest.layouts:
-            if layout.slide_master_index != 0:
-                continue
-            if "только фон" in layout.name.lower() and self._background_xml_requires_relationships(layout.background_xml):
-                return layout.key
-        for layout in self._active_manifest.layouts:
-            if layout.slide_master_index == 0 and self._background_xml_requires_relationships(layout.background_xml):
-                return layout.key
-        return None
 
     def _apply_background_style(self, slide, background_style: TemplateShapeStyleSpec | None) -> None:
         if background_style is None:
@@ -776,8 +886,8 @@ class PptxGenerator:
             self._expand_image_text_layout(slide)
         elif geometry_layout_key == "table":
             self._expand_table_layout(slide)
-        elif geometry_layout_key == "cards_3":
-            self._expand_cards_layout(slide)
+        elif geometry_layout_key in {"cards_3", "cards_kpi"}:
+            self._expand_cards_layout(slide, geometry_layout_key)
         elif geometry_layout_key == "list_with_icons":
             self._expand_list_with_icons_layout(slide)
         elif geometry_layout_key == "contacts":
@@ -998,6 +1108,17 @@ class PptxGenerator:
             sp_pr.append(style_el)
 
     def _populate_cover_slide(self, slide, slide_spec: SlideSpec) -> None:
+        cover_title_left = self._component_spacing_emu("cover", "title_left_emu", self.COVER_TITLE_LEFT_EMU)
+        cover_title_top = self._component_spacing_emu("cover", "title_top_emu", self.COVER_TITLE_TOP_EMU)
+        cover_title_width = self._component_spacing_emu("cover", "title_width_emu", self.COVER_TITLE_WIDTH_EMU)
+        cover_title_min_height = self._component_spacing_emu("cover", "title_min_height_emu", self.COVER_TITLE_MIN_HEIGHT_EMU)
+        cover_meta_left = self._component_spacing_emu("cover", "meta_left_emu", self.COVER_META_LEFT_EMU)
+        cover_meta_top = self._component_spacing_emu("cover", "meta_top_emu", self.COVER_META_DEFAULT_TOP_EMU)
+        cover_meta_width = self._component_spacing_emu("cover", "meta_width_emu", self.COVER_META_WIDTH_EMU)
+        cover_title_font_pt = self._component_font_size("cover", "title", fallback=46.0)
+        cover_meta_font_pt = self._component_font_size("cover", "meta", fallback=22.0)
+        cover_text_color = self._component_font_color("cover", "title", fallback=RGBColor(0xF5, 0xF9, 0xFE))
+        cover_meta_color = self._component_font_color("cover", "meta", fallback=RGBColor(0xF5, 0xF9, 0xFE))
         title_shape = self._find_cover_title_shape(slide)
         meta_shape = self._find_cover_meta_shape(slide)
         keep_shape_ids = {
@@ -1007,32 +1128,32 @@ class PptxGenerator:
         }
 
         if title_shape is not None:
-            title_shape.left = self.COVER_TITLE_LEFT_EMU
-            title_shape.top = self.COVER_TITLE_TOP_EMU
-            title_shape.width = self.COVER_TITLE_WIDTH_EMU
-            title_shape.height = self.COVER_TITLE_MIN_HEIGHT_EMU
+            title_shape.left = cover_title_left
+            title_shape.top = cover_title_top
+            title_shape.width = cover_title_width
+            title_shape.height = cover_title_min_height
             self._set_cover_text(
                 title_shape,
                 slide_spec.title or "",
-                font_size=Pt(46),
+                font_size=Pt(cover_title_font_pt),
                 bold=True,
-                color=RGBColor(0xF5, 0xF9, 0xFE),
+                color=cover_text_color,
                 align=PP_ALIGN.LEFT,
             )
 
         if meta_shape is not None:
             meta_text = (slide_spec.notes or "").strip()
             if meta_text:
-                meta_shape.left = self.COVER_META_LEFT_EMU
-                meta_shape.top = self.COVER_META_DEFAULT_TOP_EMU
-                meta_shape.width = self.COVER_META_WIDTH_EMU
+                meta_shape.left = cover_meta_left
+                meta_shape.top = cover_meta_top
+                meta_shape.width = cover_meta_width
                 meta_shape.height = 1400000
                 self._set_cover_text(
                     meta_shape,
                     meta_text,
-                    font_size=Pt(22),
+                    font_size=Pt(cover_meta_font_pt),
                     bold=False,
-                    color=RGBColor(0xF5, 0xF9, 0xFE),
+                    color=cover_meta_color,
                     align=PP_ALIGN.LEFT,
                 )
             else:
@@ -1046,32 +1167,32 @@ class PptxGenerator:
 
         if title_shape is None:
             title_shape = slide.shapes.add_textbox(
-                self.COVER_TITLE_LEFT_EMU,
-                self.COVER_TITLE_TOP_EMU,
-                self.COVER_TITLE_WIDTH_EMU,
-                self.COVER_TITLE_MIN_HEIGHT_EMU,
+                cover_title_left,
+                cover_title_top,
+                cover_title_width,
+                cover_title_min_height,
             )
             self._set_cover_text(
                 title_shape,
                 slide_spec.title or "",
-                font_size=Pt(46),
+                font_size=Pt(cover_title_font_pt),
                 bold=True,
-                color=RGBColor(0xF5, 0xF9, 0xFE),
+                color=cover_text_color,
                 align=PP_ALIGN.LEFT,
             )
 
         if meta_shape is None and (slide_spec.notes or "").strip():
             meta_shape = slide.shapes.add_textbox(442913, 6120605, 3371850, 277813)
-            meta_shape.left = self.COVER_META_LEFT_EMU
-            meta_shape.top = self.COVER_META_DEFAULT_TOP_EMU
-            meta_shape.width = self.COVER_META_WIDTH_EMU
+            meta_shape.left = cover_meta_left
+            meta_shape.top = cover_meta_top
+            meta_shape.width = cover_meta_width
             meta_shape.height = 1400000
             self._set_cover_text(
                 meta_shape,
                 (slide_spec.notes or "").strip(),
-                font_size=Pt(22),
+                font_size=Pt(cover_meta_font_pt),
                 bold=False,
-                color=RGBColor(0xF5, 0xF9, 0xFE),
+                color=cover_meta_color,
                 align=PP_ALIGN.LEFT,
             )
 
@@ -1141,6 +1262,14 @@ class PptxGenerator:
         if title_shape is None or not getattr(title_shape, "has_text_frame", False):
             return
 
+        cover_title_min_height = self._component_spacing_emu("cover", "title_min_height_emu", self.COVER_TITLE_MIN_HEIGHT_EMU)
+        cover_meta_left = self._component_spacing_emu("cover", "meta_left_emu", self.COVER_META_LEFT_EMU)
+        cover_meta_width = self._component_spacing_emu("cover", "meta_width_emu", self.COVER_META_WIDTH_EMU)
+        cover_meta_gap = self._component_spacing_emu("cover", "meta_gap_emu", self.COVER_META_GAP_EMU)
+        cover_meta_top = self._component_spacing_emu("cover", "meta_top_emu", self.COVER_META_DEFAULT_TOP_EMU)
+        cover_meta_min_height = self._component_spacing_emu("cover", "meta_min_height_emu", self.COVER_META_MIN_HEIGHT_EMU)
+        cover_bottom_limit = self._component_spacing_emu("cover", "bottom_limit_emu", self.COVER_BOTTOM_LIMIT_EMU)
+        cover_meta_font_pt = self._component_font_size("cover", "meta", fallback=22.0)
         title_text = (getattr(title_shape, "text", "") or "").strip()
         if not title_text:
             return
@@ -1149,7 +1278,7 @@ class PptxGenerator:
         self._apply_font_size(title_shape, title_font_size_pt)
         self._configure_title_text_frame(title_shape)
         required_title_height = self._estimate_title_height_emu(title_shape, title_text, title_font_size_pt)
-        title_shape.height = max(self.COVER_TITLE_MIN_HEIGHT_EMU, required_title_height)
+        title_shape.height = max(cover_title_min_height, required_title_height)
 
         if meta_shape is None or not getattr(meta_shape, "has_text_frame", False):
             return
@@ -1158,31 +1287,132 @@ class PptxGenerator:
         if not meta_text:
             return
 
-        meta_shape.left = self.COVER_META_LEFT_EMU
-        meta_shape.width = self.COVER_META_WIDTH_EMU
-        desired_meta_top = title_shape.top + title_shape.height + self.COVER_META_GAP_EMU
-        meta_shape.top = max(self.COVER_META_DEFAULT_TOP_EMU, desired_meta_top)
-        meta_required_height = self._estimate_text_height_emu(meta_text, meta_shape.width, 22.0)
-        meta_shape.height = max(self.COVER_META_MIN_HEIGHT_EMU, meta_required_height)
+        meta_shape.left = cover_meta_left
+        meta_shape.width = cover_meta_width
+        desired_meta_top = title_shape.top + title_shape.height + cover_meta_gap
+        meta_shape.top = max(cover_meta_top, desired_meta_top)
+        meta_required_height = self._estimate_text_height_emu(meta_text, meta_shape.width, cover_meta_font_pt)
+        meta_shape.height = max(cover_meta_min_height, meta_required_height)
 
-        available_meta_height = self.COVER_BOTTOM_LIMIT_EMU - meta_shape.top
-        if available_meta_height < self.COVER_META_MIN_HEIGHT_EMU:
+        available_meta_height = cover_bottom_limit - meta_shape.top
+        if available_meta_height < cover_meta_min_height:
             # If the title becomes too tall, tighten the title first before collapsing the meta block.
             title_font_size_pt = self._fit_cover_title_font_size_points(title_text, title_shape.width, max_height_emu=1900000)
             self._apply_font_size(title_shape, title_font_size_pt)
             required_title_height = self._estimate_title_height_emu(title_shape, title_text, title_font_size_pt)
-            title_shape.height = max(self.COVER_TITLE_MIN_HEIGHT_EMU, required_title_height)
-            meta_shape.top = max(self.COVER_META_DEFAULT_TOP_EMU, title_shape.top + title_shape.height + self.COVER_META_GAP_EMU)
-            available_meta_height = self.COVER_BOTTOM_LIMIT_EMU - meta_shape.top
+            title_shape.height = max(cover_title_min_height, required_title_height)
+            meta_shape.top = max(cover_meta_top, title_shape.top + title_shape.height + cover_meta_gap)
+            available_meta_height = cover_bottom_limit - meta_shape.top
 
-        meta_shape.height = max(self.COVER_META_MIN_HEIGHT_EMU, min(meta_shape.height, available_meta_height))
+        meta_shape.height = max(cover_meta_min_height, min(meta_shape.height, available_meta_height))
 
     def _fit_cover_title_font_size_points(self, text: str, width_emu: int, max_height_emu: int = 2200000) -> float:
-        for candidate in (46.0, 42.0, 38.0, 34.0, 32.0, 30.0, 28.0):
+        base_size = self._component_font_size("cover", "title", fallback=46.0)
+        candidates: list[float] = [base_size]
+        for delta in (4.0, 8.0, 12.0, 14.0, 16.0, 18.0):
+            candidate = max(28.0, base_size - delta)
+            if candidate not in candidates:
+                candidates.append(candidate)
+        if 28.0 not in candidates:
+            candidates.append(28.0)
+
+        for candidate in candidates:
             estimated_height = self._estimate_text_height_emu(text, width_emu, candidate)
             if estimated_height <= max_height_emu:
                 return candidate
         return 28.0
+
+    def _populate_kpi_cards_slide(self, slide, slide_spec: SlideSpec, presentation_title: str) -> None:
+        if self._active_presentation is not None:
+            background = slide.shapes.add_shape(
+                MSO_AUTO_SHAPE_TYPE.RECTANGLE,
+                0,
+                0,
+                self._active_presentation.slide_width,
+                self._active_presentation.slide_height,
+            )
+            background.fill.solid()
+            background.fill.fore_color.rgb = RGBColor(0x34, 0x89, 0xF3)
+            background.line.fill.background()
+
+            glow = slide.shapes.add_shape(
+                MSO_AUTO_SHAPE_TYPE.OVAL,
+                int(self._active_presentation.slide_width * 0.48),
+                -300000,
+                int(self._active_presentation.slide_width * 0.58),
+                int(self._active_presentation.slide_width * 0.58),
+            )
+            glow.fill.solid()
+            glow.fill.fore_color.rgb = RGBColor(0x18, 0xC2, 0xFF)
+            glow.fill.transparency = 0.28
+            glow.line.fill.background()
+
+        title_shape = slide.shapes.add_textbox(
+            self.KPI_TITLE_LEFT_EMU,
+            self.KPI_TITLE_TOP_EMU,
+            self.KPI_TITLE_WIDTH_EMU,
+            self.KPI_TITLE_HEIGHT_EMU,
+        )
+        self._set_cover_text(
+            title_shape,
+            slide_spec.title or "",
+            font_size=Pt(38),
+            bold=True,
+            color=RGBColor(0xF5, 0xF9, 0xFE),
+            align=PP_ALIGN.LEFT,
+        )
+        self._configure_title_text_frame(title_shape)
+        title_shape.text_frame.margin_left = 0
+        title_shape.text_frame.margin_right = 0
+        title_shape.text_frame.margin_top = 0
+        title_shape.text_frame.margin_bottom = 0
+
+        description = (slide_spec.text or "").strip()
+        if description:
+            description_shape = slide.shapes.add_textbox(
+                self.KPI_DESCRIPTION_LEFT_EMU,
+                self.KPI_DESCRIPTION_TOP_EMU,
+                self.KPI_DESCRIPTION_WIDTH_EMU,
+                self.KPI_DESCRIPTION_HEIGHT_EMU,
+            )
+            self._set_cover_text(
+                description_shape,
+                description,
+                font_size=Pt(20),
+                bold=False,
+                color=RGBColor(0xF5, 0xF9, 0xFE),
+                align=PP_ALIGN.LEFT,
+            )
+            description_shape.text_frame.margin_left = 0
+            description_shape.text_frame.margin_right = 0
+            description_shape.text_frame.margin_top = 0
+            description_shape.text_frame.margin_bottom = 0
+
+        card_items = [item.strip() for item in slide_spec.bullets if item and item.strip()][:4]
+        metric_positions = [
+            (self.KPI_METRIC_LEFT_EMU, self.KPI_METRIC_START_TOP_EMU),
+            (self.KPI_METRIC_RIGHT_EMU, self.KPI_METRIC_START_TOP_EMU),
+            (self.KPI_METRIC_LEFT_EMU, self.KPI_METRIC_START_TOP_EMU + self.KPI_METRIC_HEIGHT_EMU + self.KPI_METRIC_ROW_GAP_EMU),
+            (self.KPI_METRIC_RIGHT_EMU, self.KPI_METRIC_START_TOP_EMU + self.KPI_METRIC_HEIGHT_EMU + self.KPI_METRIC_ROW_GAP_EMU),
+        ]
+        for index, item in enumerate(card_items):
+            left, top = metric_positions[index]
+            metric_shape = slide.shapes.add_textbox(left, top, self.KPI_METRIC_WIDTH_EMU, self.KPI_METRIC_HEIGHT_EMU)
+            self._set_card_text(metric_shape, item, profile_for_layout("cards_kpi"))
+
+        footer_shape = slide.shapes.add_textbox(442913, 6384626, 3371850, 277813)
+        self._set_cover_text(
+            footer_shape,
+            presentation_title,
+            font_size=Pt(14),
+            bold=False,
+            color=RGBColor(0xF5, 0xF9, 0xFE),
+            align=PP_ALIGN.LEFT,
+        )
+        footer_shape.text_frame.margin_left = 0
+        footer_shape.text_frame.margin_right = 0
+        footer_shape.text_frame.margin_top = 0
+        footer_shape.text_frame.margin_bottom = 0
 
     def _fill_body(self, shape, slide_spec: SlideSpec, layout_profile: LayoutCapacityProfile) -> None:
         if slide_spec.content_blocks:
@@ -1225,7 +1455,7 @@ class PptxGenerator:
             return
         self._set_text(shape, slide_spec.text or "", layout_profile)
 
-    def _fill_card_body(self, shape, slide_spec: SlideSpec, layout_profile: LayoutCapacityProfile) -> None:
+    def _fill_card_body(self, slide, shape, slide_spec: SlideSpec, layout_profile: LayoutCapacityProfile) -> None:
         placeholder_idx = None
         if getattr(shape, "is_placeholder", False):
             try:
@@ -1245,10 +1475,20 @@ class PptxGenerator:
             return
 
         common_font_pt = self._card_common_font_size(card_items, layout_profile)
+        rich_card = self._parse_rich_card_text(card_items[card_index])
+        if layout_profile.layout_key == "cards_3" and rich_card is not None:
+            self._set_rich_numeric_card_text(slide, shape, rich_card, layout_profile)
+            return
         self._set_card_text(shape, card_items[card_index], layout_profile, common_font_pt=common_font_pt)
 
     def _card_common_font_size(self, card_items: list[str], layout_profile: LayoutCapacityProfile) -> int:
         return int(min(max(20, layout_profile.min_font_pt), layout_profile.max_font_pt))
+
+    def _card_body_font_size(self, layout_profile: LayoutCapacityProfile) -> int:
+        token_value = self._design_token("cards_body_font_size_pt")
+        if isinstance(token_value, (int, float)):
+            return int(min(max(token_value, layout_profile.min_font_pt), layout_profile.max_font_pt))
+        return int(min(max(16, layout_profile.min_font_pt), layout_profile.max_font_pt))
 
     def _split_card_text(self, text: str) -> tuple[str, str]:
         normalized = "\n".join(line.strip() for line in (text or "").splitlines() if line.strip())
@@ -1268,14 +1508,55 @@ class PptxGenerator:
 
         return normalized, ""
 
+    def _split_numeric_card_text(self, text: str) -> tuple[str, str] | None:
+        title, description = self._split_card_text(text)
+        if title and description and re.search(r"\d", title):
+            return title, description
+        normalized = " ".join((text or "").split())
+        metric_match = re.match(
+            r"^([<>~≈]?\s*\d+(?:[.,]\d+)?(?:\s*(?:%|‰|млн|млрд|тыс|трлн|сек(?:унд[аы]?)?|с|мин|ч|дн(?:ей|я)?|₽|руб(?:\.|лей|ля|ль)?))*)\s+(.+)$",
+            normalized,
+            re.IGNORECASE,
+        )
+        if metric_match:
+            value_text = re.sub(r"\s+([%‰₽])", r"\1", metric_match.group(1).strip())
+            return value_text, metric_match.group(2).strip()
+        return None
+
+    def _parse_rich_card_text(self, text: str) -> tuple[str, str, list[tuple[str, str]]] | None:
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        if len(lines) < 2:
+            return None
+        title = lines[0]
+        description_lines: list[str] = []
+        metrics: list[tuple[str, str]] = []
+        for line in lines[1:]:
+            metric_parts = self._split_numeric_card_text(line)
+            if metric_parts is not None:
+                metrics.append(metric_parts)
+            else:
+                description_lines.append(line)
+        if not metrics:
+            return None
+        return title, " ".join(description_lines).strip(), metrics[:4]
+
     def _set_card_text(self, shape, text: str, layout_profile: LayoutCapacityProfile, *, common_font_pt: int | None = None) -> None:
         normalized = (text or "").strip()
         if not normalized:
             self._clear_placeholder(shape)
             return
 
+        numeric_parts = self._split_numeric_card_text(normalized)
+        if layout_profile.layout_key == "cards_kpi" and numeric_parts is not None:
+            self._set_kpi_card_text(shape, numeric_parts[0], numeric_parts[1], layout_profile)
+            return
+
         title, description = self._split_card_text(normalized)
         max_font_pt = common_font_pt or self._card_common_font_size([normalized], layout_profile)
+        body_font_pt = self._card_body_font_size(layout_profile)
+        card_title_font_pt = self._component_font_size("cards", "title", fallback=min(max_font_pt, 20))
+        card_body_color = self._component_font_color("cards", "body", fallback=RGBColor(0xFF, 0xFF, 0xFF))
+        card_title_color = self._component_font_color("cards", "title", fallback=RGBColor(0xFF, 0xFF, 0xFF))
         card_profile = replace(layout_profile, max_font_pt=min(layout_profile.max_font_pt, max_font_pt))
         self._configure_card_text_frame(shape.text_frame)
         text_frame = shape.text_frame
@@ -1290,14 +1571,197 @@ class PptxGenerator:
         self._configure_card_text_frame(text_frame)
         self._set_text_frame_font_size(text_frame, card_profile.max_font_pt, card_profile.layout_key)
         self._set_text_frame_regular(text_frame)
-        self._set_text_frame_color(text_frame, RGBColor(0xFF, 0xFF, 0xFF))
+        self._set_text_frame_color(text_frame, card_body_color)
         title_run.font.bold = True
-        title_run.font.size = Pt(min(card_profile.max_font_pt, 20))
+        title_run.font.size = Pt(card_title_font_pt)
+        title_run.font.color.rgb = card_title_color
         if description:
             title_paragraph.space_after = Pt(8)
             for run in text_frame.paragraphs[1].runs:
-                run.font.size = Pt(card_profile.max_font_pt)
+                run.font.size = Pt(body_font_pt)
                 run.font.bold = False
+                run.font.color.rgb = card_body_color
+
+    def _set_rich_numeric_card_text(
+        self,
+        slide,
+        shape,
+        card_content: tuple[str, str, list[tuple[str, str]]],
+        layout_profile: LayoutCapacityProfile,
+    ) -> None:
+        title_text, description_text, metrics = card_content
+        self._configure_card_text_frame(shape.text_frame)
+        shape.text_frame.clear()
+
+        margin_x = self._component_spacing_emu("cards", "content_margin_x_emu", self.DEFAULT_TEXT_MARGIN_X_EMU)
+        margin_y = self._component_spacing_emu("cards", "content_margin_y_emu", self.DEFAULT_TEXT_MARGIN_Y_EMU)
+        metric_gap_x = self._component_spacing_emu("cards", "metrics_gap_x_emu", 180000)
+        metric_gap_y = self._component_spacing_emu("cards", "metrics_gap_y_emu", 160000)
+        title_font_pt = self._component_font_size("cards", "title", fallback=min(layout_profile.max_font_pt, 20))
+        body_font_pt = self._numeric_card_body_font_size(description_text, metrics, layout_profile)
+        metric_value_font_pt = self._component_behavior_float("cards", "kpi_value_compact_font_pt" if len(metrics) >= 4 else "kpi_value_regular_font_pt", 20 if len(metrics) >= 4 else 22)
+        metric_label_font_pt = self._component_font_size("cards", "kpi_label", fallback=12)
+        title_body_gap = self._component_spacing_emu("cards", "title_body_gap_emu", 100000)
+        body_metrics_gap = self._component_spacing_emu("cards", "body_metrics_gap_emu", 180000)
+        card_title_color = self._component_font_color("cards", "title", fallback=RGBColor(0xFF, 0xFF, 0xFF))
+        card_body_color = self._component_font_color("cards", "body", fallback=RGBColor(0xF3, 0xF8, 0xFF))
+        card_kpi_value_color = self._component_font_color("cards", "kpi_value", fallback=RGBColor(0xFF, 0xFF, 0xFF))
+        card_kpi_label_color = self._component_font_color("cards", "kpi_label", fallback=RGBColor(0xE4, 0xF1, 0xFF))
+        inner_left = shape.left + margin_x
+        inner_top = shape.top + margin_y
+        inner_width = max(shape.width - margin_x * 2, 600000)
+        title_height = max(300000, self._estimate_text_height_emu(title_text, inner_width, title_font_pt))
+        description_height = self._estimate_text_height_emu(description_text, inner_width, body_font_pt) if description_text else 0
+        description_bottom = inner_top + title_height
+        if description_text:
+            description_bottom += title_body_gap + description_height
+        metric_top = description_bottom + (body_metrics_gap if description_text else 120000)
+        metric_bottom = shape.top + shape.height - margin_y
+        metric_area_height = max(metric_bottom - metric_top, 520000)
+        metric_boxes = self._numeric_card_metric_boxes(
+            count=len(metrics),
+            left=inner_left,
+            top=metric_top,
+            width=inner_width,
+            height=metric_area_height,
+            gap_x=metric_gap_x,
+            gap_y=metric_gap_y,
+        )
+
+        title_shape = slide.shapes.add_textbox(inner_left, inner_top, inner_width, title_height)
+        title_shape.name = f"A3_CARD_OVERLAY_{shape.placeholder_format.idx}_TITLE"
+        self._configure_card_text_frame(title_shape.text_frame)
+        title_shape.text_frame.clear()
+        title_run = title_shape.text_frame.paragraphs[0].add_run()
+        title_run.text = title_text
+        title_run.font.bold = True
+        title_run.font.size = Pt(title_font_pt)
+        title_run.font.color.rgb = card_title_color
+        body_style = self._fallback_theme_text_style("body")
+        if body_style.font_family:
+            self._apply_run_font_family(title_run, body_style.font_family)
+
+        if description_text:
+            description_shape = slide.shapes.add_textbox(inner_left, inner_top + title_height + title_body_gap, inner_width, description_height)
+            description_shape.name = f"A3_CARD_OVERLAY_{shape.placeholder_format.idx}_DESCRIPTION"
+            self._configure_card_text_frame(description_shape.text_frame)
+            description_shape.text_frame.clear()
+            description_run = description_shape.text_frame.paragraphs[0].add_run()
+            description_run.text = description_text
+            description_run.font.bold = False
+            description_run.font.size = Pt(body_font_pt)
+            description_run.font.color.rgb = card_body_color
+            if body_style.font_family:
+                self._apply_run_font_family(description_run, body_style.font_family)
+
+        for index, (value_text, label_text) in enumerate(metrics):
+            metric_left, metric_top_current, metric_width, metric_height = metric_boxes[index]
+            metric_shape = slide.shapes.add_textbox(metric_left, metric_top_current, metric_width, metric_height)
+            metric_shape.name = f"A3_CARD_OVERLAY_{shape.placeholder_format.idx}_METRIC_{index}"
+            self._configure_card_text_frame(metric_shape.text_frame)
+            metric_shape.text_frame.clear()
+            value_paragraph = metric_shape.text_frame.paragraphs[0]
+            value_run = value_paragraph.add_run()
+            value_run.text = value_text
+            value_run.font.bold = True
+            value_run.font.size = Pt(metric_value_font_pt)
+            value_run.font.color.rgb = card_kpi_value_color
+            if body_style.font_family:
+                self._apply_run_font_family(value_run, body_style.font_family)
+            if label_text:
+                label_paragraph = metric_shape.text_frame.add_paragraph()
+                label_paragraph.space_before = Pt(3)
+                label_run = label_paragraph.add_run()
+                label_run.text = label_text
+                label_run.font.bold = False
+                label_run.font.size = Pt(metric_label_font_pt)
+                label_run.font.color.rgb = card_kpi_label_color
+                if body_style.font_family:
+                    self._apply_run_font_family(label_run, body_style.font_family)
+
+    def _numeric_card_body_font_size(
+        self,
+        description_text: str,
+        metrics: list[tuple[str, str]],
+        layout_profile: LayoutCapacityProfile,
+    ) -> int:
+        points = self._card_body_font_size(layout_profile)
+        text_length = len(description_text or "")
+        if text_length >= 90 or len(metrics) >= 3:
+            points = min(points, 14)
+        if text_length >= 150:
+            points = min(points, 13)
+        return max(points, 12)
+
+    def _numeric_card_metric_boxes(
+        self,
+        *,
+        count: int,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+        gap_x: int,
+        gap_y: int,
+    ) -> list[tuple[int, int, int, int]]:
+        metric_count = max(1, min(count, 4))
+        half_width = max((width - gap_x) // 2, 900000)
+        if metric_count == 1:
+            return [(left, top, width, height)]
+        if metric_count == 2:
+            return [
+                (left, top, half_width, height),
+                (left + half_width + gap_x, top, half_width, height),
+            ]
+
+        row_height = max((height - gap_y) // 2, 420000)
+        boxes = [
+            (left, top, half_width, row_height),
+            (left + half_width + gap_x, top, half_width, row_height),
+            (left, top + row_height + gap_y, half_width, row_height),
+        ]
+        if metric_count == 4:
+            boxes.append((left + half_width + gap_x, top + row_height + gap_y, half_width, row_height))
+        return boxes
+
+    def _set_kpi_card_text(self, shape, value_text: str, label_text: str, layout_profile: LayoutCapacityProfile) -> None:
+        self._configure_card_text_frame(shape.text_frame)
+        text_frame = shape.text_frame
+        text_frame.clear()
+        value_paragraph = text_frame.paragraphs[0]
+        value_paragraph.alignment = PP_ALIGN.LEFT
+        value_run = value_paragraph.add_run()
+        value_run.text = value_text
+        value_run.font.bold = True
+        value_run.font.size = Pt(min(layout_profile.max_font_pt, 36))
+        value_run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        body_style = self._fallback_theme_text_style("body")
+        if body_style.font_family:
+            self._apply_run_font_family(value_run, body_style.font_family)
+
+        if label_text:
+            label_paragraph = text_frame.add_paragraph()
+            label_paragraph.alignment = PP_ALIGN.LEFT
+            label_paragraph.space_before = Pt(8)
+            label_run = label_paragraph.add_run()
+            label_run.text = label_text
+            label_run.font.bold = False
+            label_run.font.size = Pt(16)
+            label_run.font.color.rgb = RGBColor(0xE4, 0xF1, 0xFF)
+            if body_style.font_family:
+                self._apply_run_font_family(label_run, body_style.font_family)
+
+    def _add_kpi_fourth_card(self, slide, slide_spec: SlideSpec, layout_profile: LayoutCapacityProfile) -> None:
+        card_items = [item.strip() for item in slide_spec.bullets if item and item.strip()]
+        if len(card_items) < 4:
+            return
+        metric_shape = slide.shapes.add_textbox(
+            self.KPI_FOURTH_CARD_LEFT_EMU,
+            self.KPI_FOURTH_CARD_TOP_EMU,
+            self.KPI_FOURTH_CARD_WIDTH_EMU,
+            self.KPI_FOURTH_CARD_HEIGHT_EMU,
+        )
+        self._set_card_text(metric_shape, card_items[3], layout_profile)
 
     def _set_content_blocks(
         self,
@@ -1419,12 +1883,18 @@ class PptxGenerator:
         if slide_spec.kind == SlideKind.CHART and binding == "title":
             self._set_text(shape, str(binding_value), layout_profile)
             self._configure_title_text_frame(shape)
-            self._apply_font_size(shape, 35.0)
+            self._apply_font_size(
+                shape,
+                self._component_font_size("chart", "title", fallback=35.0),
+            )
             return
         if slide_spec.kind == SlideKind.CHART and binding == "subtitle":
             self._set_text(shape, str(binding_value), layout_profile)
             self._configure_subtitle_text_frame(shape)
-            self._apply_font_size(shape, 20.0)
+            self._apply_font_size(
+                shape,
+                self._component_font_size("chart", "subtitle", fallback=20.0),
+            )
             return
         self._set_text(shape, str(binding_value), layout_profile)
 
@@ -1537,8 +2007,8 @@ class PptxGenerator:
             shape.width = policy.width_emu
             shape.height = policy.height_emu
 
-    def _expand_cards_layout(self, slide) -> None:
-        geometry = geometry_policy_for_layout("cards_3")
+    def _expand_cards_layout(self, slide, layout_key: str = "cards_3") -> None:
+        geometry = geometry_policy_for_layout(layout_key)
         placeholders = {
             shape.placeholder_format.idx: shape
             for shape in slide.placeholders
@@ -1585,8 +2055,8 @@ class PptxGenerator:
             shape.width = policy.width_emu
             shape.height = policy.height_emu
 
-    def _expand_cards_layout(self, slide) -> None:
-        geometry = geometry_policy_for_layout("cards_3")
+    def _expand_cards_layout(self, slide, layout_key: str = "cards_3") -> None:
+        geometry = geometry_policy_for_layout(layout_key)
         placeholders = {
             shape.placeholder_format.idx: shape
             for shape in slide.placeholders
@@ -1643,7 +2113,7 @@ class PptxGenerator:
         if layout_key == "table":
             self._stack_table_content(slide, layout_key, slide_spec)
             return
-        if layout_key == "cards_3":
+        if layout_key in {"cards_3", "cards_kpi"}:
             self._stack_cards_content(slide, layout_key)
             return
         if layout_key == "list_with_icons":
@@ -1843,30 +2313,42 @@ class PptxGenerator:
             title.height = max(self._minimum_title_height_emu(layout_key), required_height)
 
         has_subtitle = subtitle is not None and getattr(subtitle, "text", "").strip()
-        title_gap = geometry.title_content_gap_emu if has_subtitle else geometry.title_body_gap_no_subtitle_emu
+        title_content_gap = self._component_spacing_emu("image", "title_content_gap_emu", geometry.title_content_gap_emu)
+        title_body_gap_no_subtitle = self._component_spacing_emu(
+            "image",
+            "title_body_gap_no_subtitle_emu",
+            geometry.title_body_gap_no_subtitle_emu,
+        )
+        content_footer_gap = self._component_spacing_emu("image", "content_footer_gap_emu", geometry.content_footer_gap_emu)
+        min_image_height = self._component_spacing_emu("image", "min_image_height_emu", 1200000)
+        secondary_min_height = self._component_spacing_emu("image", "secondary_min_height_emu", 700000)
+        secondary_reserved_gap = self._component_spacing_emu("image", "secondary_reserved_image_gap_emu", 900000)
+        title_gap = title_content_gap if has_subtitle else title_body_gap_no_subtitle
         cursor = title.top + title.height + title_gap
         if has_subtitle:
             subtitle_text = subtitle.text.strip()
             self._configure_subtitle_text_frame(subtitle)
-            self._apply_font_size(subtitle, 18.0)
-            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 18.0))
+            subtitle_font_pt = self._component_font_size("image", "subtitle", fallback=18.0)
+            self._apply_font_size(subtitle, subtitle_font_pt)
+            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, subtitle_font_pt))
             subtitle.top = cursor
-            cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
+            cursor = subtitle.top + subtitle.height + title_content_gap
 
-        available_bottom = footer.top - geometry.content_footer_gap_emu
+        available_bottom = footer.top - content_footer_gap
         if image is not None:
             image.top = cursor
-            image.height = max(1200000, available_bottom - image.top)
+            image.height = max(min_image_height, available_bottom - image.top)
 
         secondary_has_text = secondary is not None and getattr(secondary, "text", "").strip()
         if secondary_has_text and secondary is not None:
             secondary_text = secondary.text.strip()
-            secondary.height = max(secondary.height or 0, self._estimate_text_height_emu(secondary_text, secondary.width, 16.0))
-            secondary.height = min(secondary.height, max(700000, available_bottom - cursor - 900000))
+            secondary_font_pt = self._component_font_size("image", "body", fallback=16.0)
+            secondary.height = max(secondary.height or 0, self._estimate_text_height_emu(secondary_text, secondary.width, secondary_font_pt))
+            secondary.height = min(secondary.height, max(secondary_min_height, available_bottom - cursor - secondary_reserved_gap))
             body.top = cursor
-            body.height = max(900000, secondary.top - geometry.title_content_gap_emu - body.top)
-            secondary.top = body.top + body.height + geometry.title_content_gap_emu
-            secondary.height = max(700000, min(secondary.height, available_bottom - secondary.top))
+            body.height = max(900000, secondary.top - title_content_gap - body.top)
+            secondary.top = body.top + body.height + title_content_gap
+            secondary.height = max(secondary_min_height, min(secondary.height, available_bottom - secondary.top))
             return
 
         body.top = cursor
@@ -1896,6 +2378,8 @@ class PptxGenerator:
             font_size_pt = self._fit_title_font_size_for_height(title, title_text, layout_key, max_title_height)
             self._apply_font_size(title, font_size_pt)
             self._configure_title_text_frame(title)
+            if layout_key == "cards_kpi":
+                self._set_text_frame_color(title.text_frame, RGBColor(0xFF, 0xFF, 0xFF))
             title.text_frame.auto_size = MSO_AUTO_SIZE.NONE
             required_height = self._estimate_title_height_emu(title, title_text, font_size_pt)
             title.height = min(max(520000, required_height), max_title_height)
@@ -1937,15 +2421,23 @@ class PptxGenerator:
             title.height = max(self._minimum_title_height_emu(layout_key), required_height)
 
         has_subtitle = subtitle is not None and getattr(subtitle, "text", "").strip()
-        title_gap = geometry.title_content_gap_emu if has_subtitle else geometry.title_body_gap_no_subtitle_emu
+        title_content_gap = self._component_spacing_emu("list_with_icons", "title_content_gap_emu", geometry.title_content_gap_emu)
+        title_no_subtitle_gap = self._component_spacing_emu(
+            "list_with_icons",
+            "title_body_gap_no_subtitle_emu",
+            geometry.title_body_gap_no_subtitle_emu,
+        )
+        content_footer_gap = self._component_spacing_emu("list_with_icons", "content_footer_gap_emu", geometry.content_footer_gap_emu)
+        title_gap = title_content_gap if has_subtitle else title_no_subtitle_gap
         cursor = title.top + title.height + title_gap
         if has_subtitle:
             subtitle_text = subtitle.text.strip()
             self._configure_subtitle_text_frame(subtitle)
-            self._apply_font_size(subtitle, 18.0)
-            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, 18.0))
+            subtitle_font_pt = self._component_font_size("list_with_icons", "subtitle", fallback=18.0)
+            self._apply_font_size(subtitle, subtitle_font_pt)
+            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, subtitle_font_pt))
             subtitle.top = cursor
-            cursor = subtitle.top + subtitle.height + geometry.title_content_gap_emu
+            cursor = subtitle.top + subtitle.height + title_content_gap
 
         content_indices = [12, 14, 15, 16, 17, 18, 19, 20]
         content_shapes = [placeholders[idx] for idx in content_indices if idx in placeholders]
@@ -1953,7 +2445,7 @@ class PptxGenerator:
             return
         base_top = min(shape.top for shape in content_shapes)
         delta = max(0, cursor - base_top)
-        max_height = max(900000, footer.top - geometry.content_footer_gap_emu - (base_top + delta))
+        max_height = max(900000, footer.top - content_footer_gap - (base_top + delta))
         for shape in content_shapes:
             shape.top += delta
             if shape.placeholder_format.idx in {12, 14}:
@@ -1966,6 +2458,11 @@ class PptxGenerator:
             for shape in slide.placeholders
             if getattr(shape, "is_placeholder", False)
         }
+        primary_font = self._component_font_size("contacts", "primary", fallback=18.0)
+        secondary_font = self._component_font_size("contacts", "secondary", fallback=14.0)
+        primary_threshold = int(self._component_behavior_float("contacts", "primary_threshold_chars", 60.0))
+        secondary_threshold = int(self._component_behavior_float("contacts", "secondary_threshold_chars", 40.0))
+        decrement_pt = self._component_behavior_float("contacts", "font_decrement_pt", 2.0)
         for idx in (10, 11, 12, 13):
             shape = placeholders.get(idx)
             policy = geometry.placeholders.get(idx)
@@ -1974,9 +2471,9 @@ class PptxGenerator:
             text = (getattr(shape, "text", "") or "").strip()
             if not text:
                 continue
-            font_size_pt = 18.0 if idx == 10 else 14.0
-            if len(text) >= (60 if idx == 10 else 40):
-                font_size_pt -= 2.0
+            font_size_pt = primary_font if idx == 10 else secondary_font
+            if len(text) >= (primary_threshold if idx == 10 else secondary_threshold):
+                font_size_pt -= decrement_pt
             self._apply_font_size(shape, font_size_pt)
             self._configure_subtitle_text_frame(shape)
             shape.left = policy.left_emu
@@ -2127,6 +2624,11 @@ class PptxGenerator:
         rows = slide_spec.table.rows
         row_count = len(rows) + (1 if headers else 0)
         col_count = len(headers) if headers else max((len(row) for row in rows), default=0)
+        render_as_shapes = self._component_behavior_bool(
+            "table",
+            "render_as_shapes",
+            self._design_token_bool("table_render_as_shapes", default=False),
+        )
         if row_count == 0 or col_count == 0:
             if getattr(shape, "has_text_frame", False):
                 self._set_text(shape, "", profile_for_layout("text_full_width"))
@@ -2135,7 +2637,8 @@ class PptxGenerator:
         if hasattr(shape, "insert_table"):
             try:
                 target_width = shape.width
-                target_height = shape.height
+                target_height = self._table_target_height(shape)
+                slide_shapes = shape.part.slide.shapes
                 graphic_frame = shape.insert_table(row_count, col_count)
                 graphic_frame.width = target_width
                 graphic_frame.height = target_height
@@ -2157,6 +2660,30 @@ class PptxGenerator:
                     placeholder_spec=placeholder_spec,
                 )
                 graphic_frame.height = final_height
+                if render_as_shapes:
+                    original_left = graphic_frame.left
+                    original_top = graphic_frame.top
+                    original_width = graphic_frame.width
+                    original_height = graphic_frame.height
+                    graphic_frame.left = -graphic_frame.width - 1000000
+                    self._render_visible_table_grid(
+                        slide_shapes,
+                        slide_spec.table,
+                        table,
+                        left=original_left,
+                        top=original_top,
+                        width=original_width,
+                        height=original_height,
+                    )
+                else:
+                    self._overlay_table_grid_lines(
+                        slide_shapes,
+                        table,
+                        left=graphic_frame.left,
+                        top=graphic_frame.top,
+                        width=graphic_frame.width,
+                        height=graphic_frame.height,
+                    )
                 return
             except (AttributeError, TypeError, ValueError):
                 pass
@@ -2179,10 +2706,34 @@ class PptxGenerator:
                 table,
                 slide_spec.table,
                 shape.width,
-                shape.height,
+                self._table_target_height(shape),
                 placeholder_spec=placeholder_spec,
             )
             shape.height = final_height
+            if render_as_shapes:
+                original_left = shape.left
+                original_top = shape.top
+                original_width = shape.width
+                original_height = shape.height
+                shape.left = -shape.width - 1000000
+                self._render_visible_table_grid(
+                    shape.part.slide.shapes,
+                    slide_spec.table,
+                    table,
+                    left=original_left,
+                    top=original_top,
+                    width=original_width,
+                    height=original_height,
+                )
+            else:
+                self._overlay_table_grid_lines(
+                    shape.part.slide.shapes,
+                    table,
+                    left=shape.left,
+                    top=shape.top,
+                    width=shape.width,
+                    height=shape.height,
+                )
             return
 
         as_lines = []
@@ -2191,6 +2742,12 @@ class PptxGenerator:
         as_lines.extend(" | ".join(row) for row in rows)
         if getattr(shape, "has_text_frame", False):
             self._set_bullets(shape, as_lines, profile_for_layout("list_full_width"))
+
+    def _table_target_height(self, shape) -> int:
+        shape_height = int(getattr(shape, "height", 0) or 0)
+        shape_top = int(getattr(shape, "top", 0) or 0)
+        available_height = max(0, self.FOOTER_TOP_EMU - self.CONTENT_FOOTER_GAP_EMU - shape_top)
+        return max(shape_height, available_height, 900000)
 
     def _fill_table_or_chart(self, shape, slide_spec: SlideSpec, placeholder_spec: PlaceholderSpec | None = None) -> None:
         if slide_spec.chart is not None:
@@ -2224,7 +2781,10 @@ class PptxGenerator:
             top = shape.top
             width = shape.width
             height = shape.height
-            shape_style = placeholder_spec.shape_style if placeholder_spec is not None else None
+            shape_style = self._merged_component_shape_style(
+                "chart",
+                placeholder_spec.shape_style if placeholder_spec is not None else None,
+            )
             if shape_style is not None:
                 plot_left = shape_style.chart_plot_left_factor or 0.0
                 plot_top = shape_style.chart_plot_top_factor or 0.0
@@ -2414,8 +2974,9 @@ class PptxGenerator:
     def _style_chart_title(self, chart) -> None:
         try:
             text_frame = chart.chart_title.text_frame
-            font_size = Pt(self._title_font_size_points("table"))
-            self._style_text_frame_runs(text_frame, font_size=font_size, bold=True, color=self._style_rgb("textColor"))
+            font_size = Pt(self._component_font_size("chart", "title", fallback=self._title_font_size_points("table")))
+            color = self._component_font_color("chart", "title", fallback=self._style_rgb("textColor"))
+            self._style_text_frame_runs(text_frame, font_size=font_size, bold=True, color=color)
             self._apply_theme_text_style(text_frame, "title")
         except Exception:
             pass
@@ -2428,7 +2989,7 @@ class PptxGenerator:
             pass
 
     def _style_chart_series(self, series, chart_spec: ChartSpec, index: int) -> None:
-        color = self._series_color(index)
+        color = self._chart_series_color(chart_spec, index)
         if chart_spec.chart_type == ChartType.PIE:
             self._style_pie_points(series)
             return
@@ -2450,9 +3011,16 @@ class PptxGenerator:
         except Exception:
             pass
 
+        if chart_spec.chart_type in {ChartType.BAR, ChartType.COLUMN} and len(chart_spec.series) == 1:
+            self._style_ranked_points(series, chart_spec.series[0].values)
+
     def _style_pie_points(self, series) -> None:
+        ranked_colors = self._ranked_point_colors(
+            [point for point in getattr(series, "points", [])],
+            getattr(series, "values", []),
+        )
         for index, point in enumerate(getattr(series, "points", [])):
-            color = self._series_color(index)
+            color = ranked_colors.get(index, self._series_color(index))
             try:
                 point.format.fill.solid()
                 point.format.fill.fore_color.rgb = color
@@ -2474,6 +3042,26 @@ class PptxGenerator:
             series.marker.format.line.width = Pt(1)
         except Exception:
             pass
+
+    def _style_ranked_points(self, series, values: list[float]) -> None:
+        ranked_colors = self._ranked_point_colors(
+            [point for point in getattr(series, "points", [])],
+            values,
+        )
+        for index, point in enumerate(getattr(series, "points", [])):
+            color = ranked_colors.get(index)
+            if color is None:
+                continue
+            try:
+                point.format.fill.solid()
+                point.format.fill.fore_color.rgb = color
+            except Exception:
+                pass
+            try:
+                point.format.line.color.rgb = self._style_rgb("surfaceColor")
+                point.format.line.width = Pt(1)
+            except Exception:
+                pass
 
     def _style_data_labels(self, series, chart_spec: ChartSpec) -> None:
         try:
@@ -2964,11 +3552,21 @@ class PptxGenerator:
         row_count = len(all_rows)
         col_count = len(max_lengths)
         max_cell_length = max(max_lengths, default=0)
+        self._neutralize_table_style(table, has_header=bool(headers))
         avg_cell_length = (
             sum(len((headers[col] if headers and col < len(headers) else "")) for col in range(col_count))
             + sum(len(value or "") for row in rows for value in row[:col_count])
         ) / max(1, row_count * max(1, col_count))
-        self._apply_table_geometry(table, column_stats, target_width, target_height, row_count, avg_cell_length=avg_cell_length)
+        self._apply_table_geometry(
+            table,
+            column_stats,
+            target_width,
+            target_height,
+            row_count,
+            avg_cell_length=avg_cell_length,
+            rows=all_rows,
+            has_header=bool(headers),
+        )
         font_size = self._estimate_table_font_size(
             row_count=row_count,
             col_count=col_count,
@@ -2980,6 +3578,12 @@ class PptxGenerator:
             col_count=col_count,
             max_cell_length=max_cell_length,
             avg_cell_length=avg_cell_length,
+        )
+        margins = (
+            self._component_spacing_emu("table", "cell_margin_left_emu", margins[0]),
+            self._component_spacing_emu("table", "cell_margin_right_emu", margins[1]),
+            self._component_spacing_emu("table", "cell_margin_top_emu", margins[2]),
+            self._component_spacing_emu("table", "cell_margin_bottom_emu", margins[3]),
         )
         if placeholder_spec is not None and placeholder_spec.shape_style is not None:
             shape_style = placeholder_spec.shape_style
@@ -3043,6 +3647,8 @@ class PptxGenerator:
         row_count: int,
         *,
         avg_cell_length: float,
+        rows: list[list[str]] | None = None,
+        has_header: bool = False,
     ) -> None:
         if column_stats and target_width > 0:
             weights = self._column_width_weights(column_stats)
@@ -3058,22 +3664,56 @@ class PptxGenerator:
                 column.width = width
 
         if row_count > 0 and target_height > 0:
-            row_height = self._table_row_height(target_height, row_count, avg_cell_length)
-            for row in table.rows:
+            row_heights = self._table_row_heights(table, target_height, row_count, avg_cell_length, rows or [], has_header=has_header)
+            for row, row_height in zip(table.rows, row_heights, strict=False):
                 row.height = row_height
 
     def _table_row_height(self, target_height: int, row_count: int, avg_cell_length: float) -> int:
         computed = max(int(target_height / row_count), 200000)
-        if row_count <= 3:
-            cap = 360000 if avg_cell_length < 45 else 420000
-            return min(computed, cap)
-        if row_count <= 5:
-            cap = 340000 if avg_cell_length < 45 else 400000
-            return min(computed, cap)
-        if row_count <= 8:
-            cap = 320000 if avg_cell_length < 45 else 360000
-            return min(computed, cap)
         return computed
+
+    def _table_row_heights(
+        self,
+        table,
+        target_height: int,
+        row_count: int,
+        avg_cell_length: float,
+        rows: list[list[str]],
+        *,
+        has_header: bool = False,
+    ) -> list[int]:
+        if row_count <= 0:
+            return []
+        base_height = self._table_row_height(target_height, row_count, avg_cell_length)
+        if not rows:
+            return [base_height] * row_count
+
+        column_widths = [int(column.width) for column in table.columns]
+        weights: list[float] = []
+        for row_index in range(row_count):
+            row = rows[row_index] if row_index < len(rows) else []
+            if has_header and row_index == 0:
+                weights.append(0.85)
+                continue
+            max_lines = 1.0
+            for col_index, value in enumerate(row):
+                width = column_widths[min(col_index, len(column_widths) - 1)] if column_widths else 1
+                # Approximate wrapped text demand; enough for proportional row-height allocation.
+                chars_per_line = max(8, int(width / 95000))
+                explicit_lines = str(value or "").splitlines() or [str(value or "")]
+                line_count = sum(max(1, (len(line) + chars_per_line - 1) // chars_per_line) for line in explicit_lines)
+                max_lines = max(max_lines, float(line_count))
+            weights.append(min(max(max_lines, 1.0), 3.5))
+
+        total_weight = sum(weights) or float(row_count)
+        min_height = 240000
+        heights = [max(min_height, int(target_height * weight / total_weight)) for weight in weights]
+        if sum(heights) > target_height:
+            return [max(int(target_height / row_count), 180000)] * row_count
+        delta = target_height - sum(heights)
+        if heights:
+            heights[-1] = max(min_height, heights[-1] + delta)
+        return heights
 
     def _column_width_weights(self, column_stats: list[dict[str, float]]) -> list[float]:
         col_count = len(column_stats)
@@ -3123,15 +3763,19 @@ class PptxGenerator:
             points -= 1
         if max_cell_length >= 90 or avg_cell_length >= 45:
             points -= 1
+        if max_cell_length >= 180 or avg_cell_length >= 75:
+            points -= 1
+        if max_cell_length >= 240:
+            points -= 2
         if row_count >= 10 and (max_cell_length >= 140 or avg_cell_length >= 60):
             points -= 1
 
         if row_count <= 4:
-            points = max(points, 9)
+            points = max(points, 7 if max_cell_length >= 240 or avg_cell_length >= 100 else (8 if max_cell_length >= 180 or avg_cell_length >= 75 else 9))
         elif row_count <= 7:
-            points = max(points, 8)
+            points = max(points, 7 if max_cell_length >= 220 else 8)
         else:
-            points = max(points, 8)
+            points = max(points, 7 if max_cell_length >= 220 else 8)
 
         points = min(points, 11)
         return Pt(points)
@@ -3161,23 +3805,53 @@ class PptxGenerator:
         placeholder_spec: PlaceholderSpec | None = None,
     ) -> None:
         fill = cell.fill
-        fill.solid()
-        resolved_fill = self._table_fill_rgb(fill_color, is_header=is_header)
-        fill.fore_color.rgb = resolved_fill
+        header_fill_rgb = self._component_behavior_color_rgb("table", "header_fill_color") or self._design_token_color_rgb("table_header_fill_color")
+        header_text_rgb = self._component_behavior_color_rgb("table", "header_text_color") or self._design_token_color_rgb("table_header_text_color")
+        body_transparent = self._component_behavior_bool("table", "body_fill_transparent", self._design_token_bool("table_body_fill_transparent", default=False))
+        preserve_source_fill = self._component_behavior_bool(
+            "table",
+            "preserve_source_fill_colors",
+            self._design_token_bool("table_preserve_source_fill_colors", default=True),
+        )
+
+        effective_fill_color = fill_color if preserve_source_fill else None
+        resolved_fill = None
+        if is_header and header_fill_rgb is not None:
+            fill.solid()
+            fill.fore_color.rgb = header_fill_rgb
+            resolved_fill = header_fill_rgb
+        elif not is_header and body_transparent:
+            try:
+                fill.background()
+            except Exception:
+                fill.solid()
+                fill.transparency = 1.0
+        else:
+            fill.solid()
+            resolved_fill = self._table_fill_rgb(effective_fill_color, is_header=is_header)
+            fill.fore_color.rgb = resolved_fill
 
         text_frame = cell.text_frame
         text_frame.word_wrap = True
         cell.margin_left, cell.margin_right, cell.margin_top, cell.margin_bottom = margins
+        self._set_table_cell_borders(cell, self._table_border_rgb())
+        text_style = self._component_text_style("table", "header" if is_header else "body")
 
         for paragraph in text_frame.paragraphs:
             for run in paragraph.runs:
                 run.font.size = font_size
-                run.font.bold = bool(is_header)
-                run.font.color.rgb = self._table_text_rgb_for_fill(resolved_fill, is_header=is_header)
-                theme = self._active_manifest.theme if self._active_manifest is not None else None
-                body_style = theme.master_text_styles.get("body") if theme is not None else None
-                if body_style is not None and body_style.font_family:
-                    run.font.name = body_style.font_family
+                run.font.bold = bool(text_style.bold) if text_style is not None and text_style.bold is not None else bool(is_header)
+                if is_header and header_text_rgb is not None:
+                    run.font.color.rgb = header_text_rgb
+                else:
+                    run.font.color.rgb = self._table_text_rgb_for_fill(resolved_fill, is_header=is_header)
+                if text_style is not None and text_style.font_family:
+                    run.font.name = text_style.font_family
+                else:
+                    theme = self._active_manifest.theme if self._active_manifest is not None else None
+                    body_style = theme.master_text_styles.get("body") if theme is not None else None
+                    if body_style is not None and body_style.font_family:
+                        run.font.name = body_style.font_family
 
     def _table_fill_rgb(self, fill_color: str | None, *, is_header: bool) -> RGBColor:
         if fill_color:
@@ -3186,7 +3860,9 @@ class PptxGenerator:
                 return RGBColor.from_string(normalized)
         return RGBColor(0x08, 0x1C, 0x4F) if is_header else RGBColor(0xEB, 0xF3, 0xFE)
 
-    def _table_text_rgb_for_fill(self, fill_rgb: RGBColor, *, is_header: bool) -> RGBColor:
+    def _table_text_rgb_for_fill(self, fill_rgb: RGBColor | None, *, is_header: bool) -> RGBColor:
+        if fill_rgb is None:
+            return RGBColor(0x08, 0x1C, 0x4F)
         red, green, blue = fill_rgb[0], fill_rgb[1], fill_rgb[2]
         luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255
         if luminance < 0.45:
@@ -3194,6 +3870,367 @@ class PptxGenerator:
         if is_header:
             return RGBColor(0x08, 0x1C, 0x4F)
         return RGBColor(0x08, 0x1C, 0x4F)
+
+    def _design_token(self, key: str):
+        if self._active_manifest is None:
+            return None
+        return self._active_manifest.design_tokens.get(key)
+
+    def _component_style(self, component_key: str):
+        if self._active_manifest is None:
+            return None
+        return self._active_manifest.component_styles.get(component_key)
+
+    def _component_text_style(self, component_key: str, role: str):
+        component_style = self._component_style(component_key)
+        if component_style is None:
+            return None
+        return component_style.text_styles.get(role)
+
+    def _component_shape_style(self, component_key: str):
+        component_style = self._component_style(component_key)
+        if component_style is None:
+            return None
+        return component_style.shape_style
+
+    def _merged_component_shape_style(
+        self,
+        component_key: str,
+        placeholder_style: TemplateShapeStyleSpec | None,
+    ) -> TemplateShapeStyleSpec | None:
+        component_style = self._component_shape_style(component_key)
+        if component_style is None:
+            return placeholder_style
+        if placeholder_style is None:
+            return component_style
+
+        merged = component_style.model_dump()
+        for key, value in placeholder_style.model_dump().items():
+            if value is None:
+                continue
+            if isinstance(value, list) and not value:
+                continue
+            merged[key] = value
+        return TemplateShapeStyleSpec.model_validate(merged)
+
+    def _component_spacing_emu(self, component_key: str, token: str, fallback: int) -> int:
+        component_style = self._component_style(component_key)
+        value = component_style.spacing_tokens.get(token) if component_style is not None else None
+        return int(value) if isinstance(value, (int, float)) else fallback
+
+    def _component_behavior_float(self, component_key: str, token: str, fallback: float) -> float:
+        component_style = self._component_style(component_key)
+        value = component_style.behavior_tokens.get(token) if component_style is not None else None
+        return float(value) if isinstance(value, (int, float)) else fallback
+
+    def _component_behavior_bool(self, component_key: str, token: str, fallback: bool) -> bool:
+        component_style = self._component_style(component_key)
+        value = component_style.behavior_tokens.get(token) if component_style is not None else None
+        return value if isinstance(value, bool) else fallback
+
+    def _component_behavior_color_rgb(self, component_key: str, token: str) -> RGBColor | None:
+        component_style = self._component_style(component_key)
+        value = component_style.behavior_tokens.get(token) if component_style is not None else None
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lstrip("#")
+        if re.fullmatch(r"[0-9A-Fa-f]{6}", normalized):
+            return RGBColor.from_string(normalized.upper())
+        return None
+
+    def _component_font_size(self, component_key: str, role: str, *, fallback: float) -> float:
+        style = self._component_text_style(component_key, role)
+        if style is not None and style.font_size_pt:
+            return float(style.font_size_pt)
+        return fallback
+
+    def _component_font_color(self, component_key: str, role: str, *, fallback: RGBColor) -> RGBColor:
+        style = self._component_text_style(component_key, role)
+        if style is not None and style.color:
+            normalized = style.color.strip().lstrip("#")
+            if len(normalized) == 6:
+                return RGBColor.from_string(normalized)
+        return fallback
+
+    def _design_token_bool(self, key: str, *, default: bool) -> bool:
+        value = self._design_token(key)
+        if isinstance(value, bool):
+            return value
+        return default
+
+    def _design_token_color_rgb(self, key: str) -> RGBColor | None:
+        value = self._design_token(key)
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        hex_color = normalized.lstrip("#")
+        if re.fullmatch(r"[0-9A-Fa-f]{6}", hex_color):
+            return RGBColor.from_string(hex_color.upper())
+        rgba_match = re.fullmatch(
+            r"rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(0|0?\.\d+|1(?:\.0+)?)\s*\)",
+            normalized,
+            re.IGNORECASE,
+        )
+        if rgba_match:
+            red, green, blue = (int(rgba_match.group(index)) for index in range(1, 4))
+            if all(0 <= channel <= 255 for channel in (red, green, blue)):
+                return RGBColor(red, green, blue)
+        return None
+
+    def _table_border_rgb(self) -> RGBColor:
+        return self._component_behavior_color_rgb("table", "border_color") or self._design_token_color_rgb("table_border_color") or RGBColor(0xC6, 0xDF, 0xFF)
+
+    def _set_table_cell_borders(self, cell, color: RGBColor) -> None:
+        tc_pr = cell._tc.get_or_add_tcPr()
+        for edge_tag in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
+            for existing in tc_pr.xpath(f"./{edge_tag}"):
+                tc_pr.remove(existing)
+            line = OxmlElement(edge_tag)
+            line.set("w", "12700")
+            solid_fill = OxmlElement("a:solidFill")
+            rgb = OxmlElement("a:srgbClr")
+            rgb.set("val", f"{color[0]:02X}{color[1]:02X}{color[2]:02X}")
+            solid_fill.append(rgb)
+            line.append(solid_fill)
+            dash = OxmlElement("a:prstDash")
+            dash.set("val", "solid")
+            line.append(dash)
+            round_join = OxmlElement("a:round")
+            line.append(round_join)
+            head_end = OxmlElement("a:headEnd")
+            head_end.set("type", "none")
+            head_end.set("w", "med")
+            head_end.set("len", "med")
+            line.append(head_end)
+            tail_end = OxmlElement("a:tailEnd")
+            tail_end.set("type", "none")
+            tail_end.set("w", "med")
+            tail_end.set("len", "med")
+            line.append(tail_end)
+            tc_pr.append(line)
+
+    def _neutralize_table_style(self, table, *, has_header: bool) -> None:
+        try:
+            tbl_pr = table._tbl.tblPr
+        except Exception:
+            return
+        if tbl_pr is None:
+            return
+        table_style_ids = list(tbl_pr.xpath("./a:tableStyleId"))
+        for style_id in table_style_ids:
+            tbl_pr.remove(style_id)
+        if has_header:
+            tbl_pr.set("firstRow", "1")
+        else:
+            tbl_pr.attrib.pop("firstRow", None)
+        tbl_pr.set("bandRow", "0")
+
+    def _render_visible_table_grid(self, slide_shapes, table_block: TableBlock | None, native_table, *, left: int, top: int, width: int, height: int) -> None:
+        if table_block is None:
+            return
+        headers = table_block.headers
+        rows = table_block.rows
+        all_rows = [headers, *rows] if headers else rows
+        if not all_rows:
+            return
+
+        row_count = len(all_rows)
+        col_count = max(len(headers), max((len(row) for row in rows), default=0))
+        max_cell_length = max((len(str(value or "")) for row in all_rows for value in row), default=0)
+        total_cells = max(1, sum(len(row) for row in all_rows))
+        avg_cell_length = sum(len(str(value or "")) for row in all_rows for value in row) / total_cells
+        font_size = self._estimate_table_font_size(
+            row_count=row_count,
+            col_count=col_count,
+            max_cell_length=max_cell_length,
+            avg_cell_length=avg_cell_length,
+        )
+        margins = self._estimate_table_margins(
+            row_count=row_count,
+            col_count=col_count,
+            max_cell_length=max_cell_length,
+            avg_cell_length=avg_cell_length,
+        )
+        margins = (
+            self._component_spacing_emu("table", "cell_margin_left_emu", margins[0]),
+            self._component_spacing_emu("table", "cell_margin_right_emu", margins[1]),
+            self._component_spacing_emu("table", "cell_margin_top_emu", margins[2]),
+            self._component_spacing_emu("table", "cell_margin_bottom_emu", margins[3]),
+        )
+        header_fill_rgb = self._component_behavior_color_rgb("table", "header_fill_color") or self._design_token_color_rgb("table_header_fill_color") or RGBColor(0xC6, 0xDF, 0xFF)
+        header_text_rgb = self._component_behavior_color_rgb("table", "header_text_color") or self._design_token_color_rgb("table_header_text_color") or RGBColor(0x09, 0x1E, 0x38)
+        body_text_rgb = self._component_font_color("table", "body", fallback=RGBColor(0x08, 0x1C, 0x4F))
+        border_rgb = self._table_border_rgb()
+        header_style = self._component_text_style("table", "header")
+        body_style = self._component_text_style("table", "body")
+
+        column_widths = [int(column.width) for column in native_table.columns]
+        row_heights = [int(row.height) for row in native_table.rows]
+
+        current_top = top
+        for row_index, row in enumerate(all_rows):
+            current_left = left
+            row_height = row_heights[min(row_index, len(row_heights) - 1)]
+            for col_index in range(col_count):
+                cell_width = column_widths[min(col_index, len(column_widths) - 1)]
+                value = row[col_index] if col_index < len(row) else ""
+                if row_index == 0 and headers:
+                    background = slide_shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, current_left, current_top, cell_width, row_height)
+                    background.fill.solid()
+                    background.fill.fore_color.rgb = header_fill_rgb
+                    background.line.fill.background()
+                text_box = slide_shapes.add_textbox(current_left, current_top, cell_width, row_height)
+                text_box.name = f"A3_TABLE_CELL_{row_index}_{col_index}"
+                text_box.fill.background()
+                text_box.line.fill.background()
+                text_frame = text_box.text_frame
+                text_frame.clear()
+                text_frame.word_wrap = True
+                text_frame.margin_left, text_frame.margin_right, text_frame.margin_top, text_frame.margin_bottom = margins
+                role_style = header_style if row_index == 0 and headers else body_style
+                role_fallback_size = font_size.pt if hasattr(font_size, "pt") else float(font_size)
+                configured_size = self._component_font_size("table", "header" if row_index == 0 and headers else "body", fallback=role_fallback_size)
+                effective_font_size = min(configured_size, role_fallback_size)
+                lines = str(value or "").splitlines() or [str(value or "")]
+                for line_index, line in enumerate(lines):
+                    paragraph = text_frame.paragraphs[0] if line_index == 0 else text_frame.add_paragraph()
+                    paragraph.line_spacing = 1.0
+                    paragraph.space_after = Pt(0)
+                    paragraph.space_before = Pt(0)
+                    run = paragraph.add_run()
+                    run.text = line
+                    run.font.size = Pt(effective_font_size)
+                    run.font.bold = bool(role_style.bold) if role_style is not None and role_style.bold is not None else bool(row_index == 0 and headers)
+                    run.font.color.rgb = header_text_rgb if row_index == 0 and headers else body_text_rgb
+                    if role_style is not None and role_style.font_family:
+                        run.font.name = role_style.font_family
+                current_left += cell_width
+            current_top += row_height
+
+        self._draw_visible_table_borders(
+            slide_shapes,
+            column_widths,
+            row_heights,
+            left=left,
+            top=top,
+            border_rgb=border_rgb,
+        )
+
+    def _draw_visible_table_borders(self, slide_shapes, column_widths: list[int], row_heights: list[int], *, left: int, top: int, border_rgb: RGBColor) -> None:
+        thickness = 28000
+        total_width = sum(column_widths)
+        total_height = sum(row_heights)
+
+        x_positions = [left]
+        current_x = left
+        for value in column_widths:
+            current_x += value
+            x_positions.append(current_x)
+
+        y_positions = [top]
+        current_y = top
+        for value in row_heights:
+            current_y += value
+            y_positions.append(current_y)
+
+        for x in x_positions:
+            rect = slide_shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, x - thickness // 2, top, thickness, total_height)
+            rect.fill.solid()
+            rect.fill.fore_color.rgb = border_rgb
+            rect.line.fill.background()
+
+        for y in y_positions:
+            rect = slide_shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, left, y - thickness // 2, total_width, thickness)
+            rect.fill.solid()
+            rect.fill.fore_color.rgb = border_rgb
+            rect.line.fill.background()
+
+    def _overlay_table_grid_lines(self, slide_shapes, table, *, left: int, top: int, width: int, height: int) -> None:
+        border_rgb = self._table_border_rgb()
+        thickness = 42000
+        cover = thickness * 2
+
+        x_positions = [left]
+        current_x = left
+        for column in table.columns:
+            current_x += int(column.width)
+            x_positions.append(current_x)
+
+        y_positions = [top]
+        current_y = top
+        for row in table.rows:
+            current_y += int(row.height)
+            y_positions.append(current_y)
+
+        # Clamp last boundaries to the actual rendered frame.
+        x_positions[-1] = left + width
+        y_positions[-1] = top + height
+
+        for x in x_positions:
+            rect = slide_shapes.add_shape(
+                MSO_AUTO_SHAPE_TYPE.RECTANGLE,
+                x - thickness,
+                top - thickness,
+                cover,
+                height + cover,
+            )
+            rect.fill.solid()
+            rect.fill.fore_color.rgb = border_rgb
+            rect.line.fill.background()
+
+        for y in y_positions:
+            rect = slide_shapes.add_shape(
+                MSO_AUTO_SHAPE_TYPE.RECTANGLE,
+                left - thickness,
+                y - thickness,
+                width + cover,
+                cover,
+            )
+            rect.fill.solid()
+            rect.fill.fore_color.rgb = border_rgb
+            rect.line.fill.background()
+
+    def _chart_palette_rgb(self) -> list[RGBColor]:
+        colors = [
+            self._component_behavior_color_rgb("chart", "rank_color_1"),
+            self._component_behavior_color_rgb("chart", "rank_color_2"),
+            self._component_behavior_color_rgb("chart", "rank_color_3"),
+            self._component_behavior_color_rgb("chart", "rank_color_4"),
+        ]
+        if not any(color is not None for color in colors):
+            token_keys = (
+                "chart_rank_color_1",
+                "chart_rank_color_2",
+                "chart_rank_color_3",
+                "chart_rank_color_4",
+            )
+            colors = [self._design_token_color_rgb(key) for key in token_keys]
+        filtered = [color for color in colors if color is not None]
+        if filtered:
+            return filtered
+        return [
+            RGBColor(0x09, 0x1E, 0x38),
+            RGBColor(0x34, 0x89, 0xF3),
+            RGBColor(0x26, 0x45, 0x95),
+            RGBColor(0xBF, 0xCE, 0xF5),
+        ]
+
+    def _chart_series_color(self, chart_spec: ChartSpec, index: int) -> RGBColor:
+        return self._series_color(index)
+
+    def _ranked_point_colors(self, points, values) -> dict[int, RGBColor]:
+        palette = self._chart_palette_rgb()
+        ranked = sorted(
+            [(index, float(values[index])) for index in range(min(len(points), len(values)))],
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        return {
+            point_index: palette[min(rank, len(palette) - 1)]
+            for rank, (point_index, _) in enumerate(ranked)
+        }
 
     def _clear_placeholder(self, shape) -> None:
         if getattr(shape, "has_text_frame", False):

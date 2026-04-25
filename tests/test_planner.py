@@ -15,6 +15,7 @@ from a3presentation.domain.api import ChartOverride, DocumentBlock
 from a3presentation.domain.chart import ChartConfidence, ChartSeries, ChartSpec, ChartType
 from a3presentation.domain.presentation import (
     PresentationPlan,
+    RenderTargetType,
     SlideContentBlock,
     SlideContentBlockKind,
     SlideKind,
@@ -74,8 +75,37 @@ class TextToPlanServiceTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(plan.slides), 2)
-        self.assertEqual(plan.slides[0].preferred_layout_key, "cover")
-        self.assertTrue(any(slide.preferred_layout_key in {"text_full_width", "list_full_width"} for slide in plan.slides[1:]))
+        self.assertTrue(all(slide.preferred_layout_key is None for slide in plan.slides))
+        self.assertEqual(plan.slides[0].runtime_profile_key, "cover")
+        self.assertTrue(any(slide.runtime_profile_key for slide in plan.slides[1:]))
+        self.assertTrue(all(slide.render_target is not None for slide in plan.slides))
+        self.assertTrue(all(slide.render_target.type == RenderTargetType.LAYOUT for slide in plan.slides if slide.render_target is not None))
+        self.assertEqual(plan.slides[0].render_target.key, "cover")
+
+    def test_build_plan_clears_legacy_template_layout_keys_from_output(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="title", text="A3 Presentation", level=0),
+            DocumentBlock(kind="heading", text="Контакты", level=1),
+            DocumentBlock(kind="paragraph", text="Иван Иванов"),
+            DocumentBlock(kind="paragraph", text="+7 999 123-45-67"),
+            DocumentBlock(kind="paragraph", text="ivan@example.com"),
+            DocumentBlock(kind="heading", text="Иллюстрация", level=1),
+            DocumentBlock(kind="paragraph", text="Подпись к изображению"),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title="A3 Presentation",
+            blocks=blocks,
+        )
+
+        self.assertTrue(plan.slides)
+        self.assertTrue(all(slide.preferred_layout_key is None for slide in plan.slides))
+        self.assertTrue(all(slide.runtime_profile_key for slide in plan.slides))
+        self.assertTrue(all(slide.render_target is not None for slide in plan.slides))
+        self.assertTrue(all((slide.render_target.key or "").strip() for slide in plan.slides if slide.render_target is not None))
 
     def test_planner_splits_dense_bullets_by_content_weight(self) -> None:
         service = TextToPlanService()
@@ -241,6 +271,36 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertEqual(len(compacted), 1)
         self.assertEqual(compacted[0].title, "Раздел")
         self.assertGreaterEqual(len(compacted[0].bullets), 4)
+
+    def test_compact_continuation_slides_keeps_pure_text_pair_when_group_has_subtitle(self) -> None:
+        service = TextToPlanService()
+        slides = [
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел", subtitle="Подзаголовок", text="A" * 320, preferred_layout_key="dense_text_full_width"),
+            SlideSpec(kind=SlideKind.TEXT, title="Раздел (2)", text="B" * 211, preferred_layout_key="dense_text_full_width"),
+        ]
+
+        compacted = service._compact_continuation_slides(slides, "Раздел", "Подзаголовок")
+
+        self.assertEqual(len(compacted), 2)
+        self.assertEqual(compacted[0].subtitle, "Подзаголовок")
+        self.assertEqual(compacted[1].subtitle, "")
+
+    def test_build_single_slide_keeps_numeric_metric_bullets_out_of_kpi_slide_layout(self) -> None:
+        service = TextToPlanService()
+        section = Section(
+            title="A3 GIS",
+            bullet_lists=[[
+                "99,5 % успешных поисков",
+                "53 млн активных начислений",
+                "92 млн документов для поиска",
+                "0,86 % среднее время поиска в секундах",
+            ]],
+        )
+
+        slide = service._build_single_slide(section)
+
+        self.assertEqual(slide.kind, SlideKind.BULLETS)
+        self.assertNotEqual(slide.preferred_layout_key, "cards_kpi")
 
     def test_preferred_textual_layout_keeps_mixed_paragraph_dominant_slide_in_text_layout(self) -> None:
         service = TextToPlanService()
@@ -783,6 +843,27 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertEqual(slide.kind, SlideKind.TEXT)
         self.assertEqual(slide.preferred_layout_key, "dense_text_full_width")
         self.assertTrue(any(block.kind == SlideContentBlockKind.BULLET_LIST for block in slide.content_blocks))
+
+    def test_build_continuation_slide_uses_dense_text_for_pure_narrative_payload(self) -> None:
+        service = TextToPlanService()
+        units = [
+            ContinuationUnit(kind="paragraph", text="A" * 430),
+            ContinuationUnit(kind="paragraph", text="B" * 430),
+        ]
+
+        slide = service._build_continuation_slide("Плотный narrative", "", units)
+
+        self.assertEqual(slide.kind, SlideKind.TEXT)
+        self.assertEqual(slide.preferred_layout_key, "dense_text_full_width")
+
+    def test_continuation_units_fit_single_slide_uses_dense_text_for_pure_narrative_payload(self) -> None:
+        service = TextToPlanService()
+        units = [
+            ContinuationUnit(kind="paragraph", text="A" * 430),
+            ContinuationUnit(kind="paragraph", text="B" * 430),
+        ]
+
+        self.assertTrue(service._continuation_units_fit_single_slide(units))
 
     def test_first_section_with_tables_is_not_swallowed_by_cover(self) -> None:
         service = TextToPlanService()
@@ -1828,8 +1909,8 @@ class TextToPlanServiceTests(unittest.TestCase):
             chart = next(shape.chart for shape in presentation.slides[1].shapes if getattr(shape, "has_chart", False))
             points = chart.series[0].points
 
-            self.assertEqual(points[0].format.fill.fore_color.rgb, RGBColor(0x67, 0x9A, 0xEA))
-            self.assertEqual(points[1].format.fill.fore_color.rgb, RGBColor(0x5A, 0xB2, 0x9C))
+            self.assertEqual(points[0].format.fill.fore_color.rgb, RGBColor(0x09, 0x1E, 0x38))
+            self.assertEqual(points[1].format.fill.fore_color.rgb, RGBColor(0x34, 0x89, 0xF3))
 
     def test_generator_resolves_supported_chart_types_and_combo_fallback(self) -> None:
         generator = PptxGenerator()
@@ -1852,6 +1933,45 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertEqual(generator._resolve_chart_type(make_spec(ChartType.STACKED_COLUMN)), XL_CHART_TYPE.COLUMN_STACKED)
         self.assertEqual(generator._resolve_chart_type(make_spec(ChartType.PIE)), XL_CHART_TYPE.PIE)
         self.assertEqual(generator._resolve_chart_type(make_spec(ChartType.COMBO)), XL_CHART_TYPE.COLUMN_CLUSTERED)
+
+    def test_generator_ranks_single_series_column_points_by_value_palette(self) -> None:
+        plan = PresentationPlan(
+            template_id="corp_light_v1",
+            title="A3 Presentation",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
+                SlideSpec(
+                    kind=SlideKind.CHART,
+                    title="Рейтинг значений",
+                    chart=ChartSpec(
+                        chart_id="chart_column_ranked",
+                        source_table_id="table_1",
+                        chart_type=ChartType.COLUMN,
+                        title="Рейтинг",
+                        categories=["A", "B", "C", "D"],
+                        series=[ChartSeries(name="Значения", values=[40.0, 25.0, 35.0, 10.0])],
+                        confidence=ChartConfidence.HIGH,
+                    ),
+                    preferred_layout_key="table",
+                ),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = PptxGenerator().generate(
+                template_path=self.template_path,
+                manifest=self.manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+            chart = next(shape.chart for shape in presentation.slides[1].shapes if getattr(shape, "has_chart", False))
+            points = chart.series[0].points
+
+            self.assertEqual(points[0].format.fill.fore_color.rgb, RGBColor(0x09, 0x1E, 0x38))
+            self.assertEqual(points[2].format.fill.fore_color.rgb, RGBColor(0x34, 0x89, 0xF3))
+            self.assertEqual(points[1].format.fill.fore_color.rgb, RGBColor(0x26, 0x45, 0x95))
+            self.assertEqual(points[3].format.fill.fore_color.rgb, RGBColor(0xBF, 0xCE, 0xF5))
 
     def test_generator_renders_supported_chart_type_matrix(self) -> None:
         chart_specs = [

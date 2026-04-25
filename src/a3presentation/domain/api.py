@@ -3,8 +3,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from a3presentation.domain.chart import ChartabilityAssessment, ChartSpec
-from a3presentation.domain.presentation import TableBlock
-from a3presentation.domain.template import TemplateManifest
+from a3presentation.domain.presentation import PresentationPlan, TableBlock
+from a3presentation.domain.template import ComponentGeometry, TemplateManifest
 
 
 class ChartOverride(BaseModel):
@@ -19,13 +19,100 @@ class TemplateSummary(BaseModel):
     description: str | None = None
 
 
+class InventoryTargetSummary(BaseModel):
+    key: str
+    name: str
+    source: str = Field(pattern="^(layout|prototype)$")
+    source_label: str | None = None
+    supported_slide_kinds: list[str] = Field(default_factory=list)
+    representation_hints: list[str] = Field(default_factory=list)
+    editable_slot_count: int = 0
+    editable_roles: list[str] = Field(default_factory=list)
+
+
+class TemplateInventorySummary(BaseModel):
+    generation_mode: str = Field(pattern="^(layout|prototype)$")
+    usability_status: str = Field(pattern="^(usable|usable_with_degradation|not_safely_editable)$", default="not_safely_editable")
+    has_usable_layout_inventory: bool = False
+    has_prototype_inventory: bool = False
+    degradation_mode: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    layout_target_count: int = 0
+    prototype_target_count: int = 0
+    targets: list[InventoryTargetSummary] = Field(default_factory=list)
+
+
+class EditableTargetSummary(BaseModel):
+    key: str
+    name: str
+    source: str = Field(pattern="^(layout|prototype)$")
+    source_label: str | None = None
+    runtime_profile_key: str | None = None
+    supported_slide_kinds: list[str] = Field(default_factory=list)
+    representation_hints: list[str] = Field(default_factory=list)
+    editable_slot_count: int = 0
+    editable_roles: list[str] = Field(default_factory=list)
+
+
+class DetectedComponentSummary(BaseModel):
+    component_id: str
+    source_kind: str = Field(pattern="^(layout|slide)$")
+    source_index: int
+    source_name: str | None = None
+    shape_name: str | None = None
+    component_type: str
+    role: str
+    binding: str | None = None
+    confidence: str = Field(pattern="^(high|medium|low)$")
+    editability: str = Field(pattern="^(editable|semi_editable|decorative|unsafe)$")
+    capabilities: list[str] = Field(default_factory=list)
+    geometry: ComponentGeometry = Field(default_factory=ComponentGeometry)
+    text_excerpt: str | None = None
+    child_component_ids: list[str] = Field(default_factory=list)
+
+
 class TextPlanRequest(BaseModel):
-    template_id: str
+    template_id: str = Field(min_length=1)
     raw_text: str = Field(min_length=1)
     title: str | None = None
     tables: list[TableBlock] = Field(default_factory=list)
     blocks: list["DocumentBlock"] = Field(default_factory=list)
     chart_overrides: list[ChartOverride] = Field(default_factory=list)
+
+
+class PlanWithTemplateResponse(BaseModel):
+    plan: "PresentationPlan"
+    manifest: TemplateManifest
+    inventory_summary: TemplateInventorySummary
+    editable_targets: list[EditableTargetSummary] = Field(default_factory=list)
+    detected_components: list[DetectedComponentSummary] = Field(default_factory=list)
+    slide_layout_reviews: list["SlideLayoutReview"] = Field(default_factory=list)
+
+
+class SlideLayoutOption(BaseModel):
+    key: str
+    name: str
+    source: str = Field(pattern="^(layout|prototype)$")
+    source_label: str | None = None
+    runtime_profile_key: str | None = None
+    supported_slide_kinds: list[str] = Field(default_factory=list)
+    representation_hints: list[str] = Field(default_factory=list)
+    editable_slot_count: int = 0
+    editable_roles: list[str] = Field(default_factory=list)
+    supports_current_slide_kind: bool = False
+    estimated_text_capacity_chars: int | None = None
+    match_summary: str | None = None
+    recommendation_label: str | None = None
+    recommendation_reasons: list[str] = Field(default_factory=list)
+
+
+class SlideLayoutReview(BaseModel):
+    slide_index: int
+    current_layout_key: str | None = None
+    current_target_key: str | None = None
+    current_target_type: str | None = Field(default=None, pattern="^(layout|prototype|direct_shape_binding|auto_layout)$")
+    current_runtime_profile_key: str | None = None
+    available_layouts: list[SlideLayoutOption] = Field(default_factory=list)
 
 
 class GeneratePresentationResponse(BaseModel):
@@ -43,11 +130,17 @@ class UploadTemplateResponse(BaseModel):
 class TemplateDetailsResponse(BaseModel):
     manifest: TemplateManifest
     has_template_file: bool
+    inventory_summary: TemplateInventorySummary
+    editable_targets: list[EditableTargetSummary] = Field(default_factory=list)
+    detected_components: list[DetectedComponentSummary] = Field(default_factory=list)
 
 
 class AnalyzeTemplateResponse(BaseModel):
     template_id: str
     manifest_path: str
+    inventory_summary: TemplateInventorySummary
+    editable_targets: list[EditableTargetSummary] = Field(default_factory=list)
+    detected_components: list[DetectedComponentSummary] = Field(default_factory=list)
 
 
 class AutoUploadTemplateResponse(BaseModel):
@@ -55,6 +148,9 @@ class AutoUploadTemplateResponse(BaseModel):
     manifest_path: str
     template_path: str
     analyzed: bool = True
+    inventory_summary: TemplateInventorySummary
+    editable_targets: list[EditableTargetSummary] = Field(default_factory=list)
+    detected_components: list[DetectedComponentSummary] = Field(default_factory=list)
 
 
 class DocumentBlock(BaseModel):

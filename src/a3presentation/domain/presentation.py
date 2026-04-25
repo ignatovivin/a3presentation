@@ -42,6 +42,23 @@ class SlideContentBlock(BaseModel):
     items: list[str] = Field(default_factory=list)
 
 
+class RenderTargetType(str, Enum):
+    LAYOUT = "layout"
+    PROTOTYPE = "prototype"
+    DIRECT_SHAPE_BINDING = "direct_shape_binding"
+    AUTO_LAYOUT = "auto_layout"
+
+
+class SlideRenderTarget(BaseModel):
+    type: RenderTargetType
+    key: str | None = None
+    label: str | None = None
+    source: str | None = None
+    binding_keys: list[str] = Field(default_factory=list)
+    degradation_reasons: list[str] = Field(default_factory=list)
+    confidence: str | None = None
+
+
 class SlideSpec(BaseModel):
     kind: SlideKind
     title: str | None = None
@@ -55,7 +72,9 @@ class SlideSpec(BaseModel):
     chart: ChartSpec | None = None
     source_table_id: str | None = None
     notes: str | None = None
+    runtime_profile_key: str | None = None
     preferred_layout_key: str | None = None
+    render_target: SlideRenderTarget | None = None
     background_only: bool = False
     background_xml: str | None = None
     image_base64: str | None = None

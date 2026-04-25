@@ -15,6 +15,7 @@ from a3presentation.services.layout_capacity import (
     PlaceholderGeometryPolicy,
     derive_capacity_profile_for_geometry,
     geometry_policy_for_layout,
+    runtime_profile_key_for_target,
 )
 from a3presentation.services.pptx_generator import PptxGenerator
 from a3presentation.services.chart_render_contract import (
@@ -37,6 +38,17 @@ EXPECTED_CHART_TITLE_FONT_PT = 35.0
 EXPECTED_CHART_SUBTITLE_FONT_PT = 20.0
 CHART_TITLE_FONT_TOLERANCE_PT = 0.1
 MAX_REASONABLE_STACK_GAP_EMU = 450000
+RUNTIME_EXPANDED_LAYOUT_KEYS = {
+    "text_full_width",
+    "dense_text_full_width",
+    "list_full_width",
+    "table",
+    "image_text",
+    "cards_3",
+    "cards_kpi",
+    "list_with_icons",
+    "contacts",
+}
 
 
 @dataclass(frozen=True)
@@ -74,6 +86,9 @@ class SlideAudit:
     auxiliary_tops: dict[int, int] | None = None
     auxiliary_char_counts: dict[int, int] | None = None
     expected_auxiliary_char_counts: dict[int, int] | None = None
+    placeholder_char_counts: dict[int, int] | None = None
+    expected_placeholder_char_counts: dict[int, int] | None = None
+    expected_subtitle_char_count: int = 0
     image_width: int | None = None
     image_left: int | None = None
     image_top: int | None = None
@@ -105,6 +120,9 @@ class SlideAudit:
     expected_chart_content_width: int | None = None
     expected_title_font_pt: float | None = None
     expected_subtitle_font_pt: float | None = None
+    table_overlay_overflow_count: int = 0
+    table_overlay_overflow_details: tuple[str, ...] = ()
+    runtime_profile_key: str = ""
     geometry: LayoutGeometryPolicy | None = None
 
     @property
@@ -220,24 +238,26 @@ def audit_generated_presentation(
         subtitle_geometry_idx = _geometry_idx_for_role(slide_spec, manifest, PlaceholderKind.SUBTITLE, subtitle_idx)
         body_geometry_idx = _geometry_idx_for_role(slide_spec, manifest, PlaceholderKind.BODY, body_idx)
         footer_geometry_idx = _geometry_idx_for_role(slide_spec, manifest, PlaceholderKind.FOOTER, footer_idx)
-        body = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.BODY, body_idx)
+        body_candidates = _shapes_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.BODY, body_idx)
+        body = _preferred_text_shape(body_candidates)
         footer = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.FOOTER, footer_idx)
         title = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.TITLE, title_idx)
         subtitle = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.SUBTITLE, subtitle_idx)
         layout_key = slide_spec.preferred_layout_key or _infer_layout_key(slide_spec.kind.value)
+        runtime_profile_key = _runtime_profile_key_for_slide(slide_spec, manifest)
         resolved_geometry = _geometry_policy_for_slide(slide_spec, manifest)
         expected_body_spec = _shape_spec_for_role(slide_spec, manifest, PlaceholderKind.BODY)
         expected_footer_spec = _shape_spec_for_role(slide_spec, manifest, PlaceholderKind.FOOTER)
         expected_body_geometry = resolved_geometry.placeholders.get(body_geometry_idx or 14)
         effective_profile = derive_capacity_profile_for_geometry(
-            layout_key,
+            runtime_profile_key,
             width_emu=expected_body_geometry.width_emu if expected_body_geometry is not None else None,
             height_emu=expected_body_geometry.height_emu if expected_body_geometry is not None else None,
         )
         excluded_auxiliary_indices = {
             value for value in {title_idx, subtitle_idx, body_idx, footer_idx, 17} if value is not None
         }
-        if layout_key == "cards_3":
+        if runtime_profile_key in {"cards_3", "cards_kpi"}:
             excluded_auxiliary_indices -= {11, 12, 13}
         auxiliary_widths = {
             idx: getattr(shape, "width", None)
@@ -259,7 +279,13 @@ def audit_generated_presentation(
             for idx, shape in placeholders.items()
             if idx not in excluded_auxiliary_indices
         }
-        expected_auxiliary_char_counts = _expected_auxiliary_char_counts_for_slide(slide_spec, layout_key)
+        expected_auxiliary_char_counts = _expected_auxiliary_char_counts_for_slide(slide_spec, runtime_profile_key)
+        placeholder_char_counts = {
+            idx: _shape_text_char_count(shape)
+            for idx, shape in placeholders.items()
+        }
+        expected_placeholder_char_counts = _expected_placeholder_char_counts_for_slide(slide_spec, runtime_profile_key)
+        expected_subtitle_char_count = _expected_subtitle_char_count_for_slide(slide_spec, runtime_profile_key)
         content_width = getattr(body, "width", None) if body is not None else None
         footer_width = getattr(footer, "width", None) if footer is not None else None
         expected_footer_width = None
@@ -273,60 +299,134 @@ def audit_generated_presentation(
         body_char_count = 0
         body_font_sizes: tuple[float, ...] = ()
         rendered_items: tuple[str, ...] = ()
-        if layout_key == "cards_3":
+        if runtime_profile_key in {"cards_3", "cards_kpi"}:
+            card_texts: list[str] = []
+            body_paragraphs: list[str] = []
+            card_font_size_values: set[float] = set()
+            weighted_body_char_count = 0
             card_shapes = [placeholders[idx] for idx in (11, 12, 13) if idx in placeholders]
-            card_texts = [
-                " ".join(
+            if runtime_profile_key == "cards_kpi":
+                metric_geometry = geometry_policy_for_layout("cards_kpi")
+                metric_top = metric_geometry.placeholders[11].top_emu
+                metric_bottom_limit = (
+                    metric_geometry.placeholders[13].top_emu
+                    + metric_geometry.placeholders[13].height_emu
+                    - GEOMETRY_TOLERANCE_EMU
+                )
+                card_shapes.extend(
+                    shape
+                    for shape in slide.shapes
+                    if getattr(shape, "has_text_frame", False)
+                    and not getattr(shape, "is_placeholder", False)
+                    and getattr(shape, "text", "").strip()
+                    and getattr(shape, "top", 0) >= metric_top
+                    and getattr(shape, "top", 0) <= metric_bottom_limit
+                )
+                card_shapes = sorted(card_shapes, key=lambda shape: (getattr(shape, "top", 0), getattr(shape, "left", 0)))
+                card_texts = [
+                    " ".join(
+                        paragraph.text.strip()
+                        for paragraph in shape.text_frame.paragraphs
+                        if paragraph.text.strip()
+                    )
+                    for shape in card_shapes
+                    if getattr(shape, "has_text_frame", False)
+                ]
+                body_paragraphs = [
                     paragraph.text.strip()
+                    for shape in card_shapes
+                    if getattr(shape, "has_text_frame", False)
                     for paragraph in shape.text_frame.paragraphs
                     if paragraph.text.strip()
-                )
-                for shape in card_shapes
-                if getattr(shape, "has_text_frame", False)
-            ]
-            body_paragraphs = [
-                paragraph.text.strip()
-                for shape in card_shapes
-                if getattr(shape, "has_text_frame", False)
-                for paragraph in shape.text_frame.paragraphs
-                if paragraph.text.strip()
-            ]
-            body_char_count = sum(len(paragraph) for paragraph in body_paragraphs)
+                ]
+                weighted_body_char_count = sum(len(paragraph) for paragraph in body_paragraphs)
+            else:
+                overlay_shapes = [
+                    shape
+                    for shape in slide.shapes
+                    if getattr(shape, "has_text_frame", False)
+                    and not getattr(shape, "is_placeholder", False)
+                    and getattr(shape, "name", "").startswith("A3_CARD_OVERLAY_")
+                    and getattr(shape, "text", "").strip()
+                ]
+                overlay_shapes_by_idx: dict[int, list] = {}
+                for shape in overlay_shapes:
+                    match = re.match(r"^A3_CARD_OVERLAY_(\d+)_", getattr(shape, "name", ""))
+                    if not match:
+                        continue
+                    overlay_shapes_by_idx.setdefault(int(match.group(1)), []).append(shape)
+                for idx in (11, 12, 13):
+                    placeholder = placeholders.get(idx)
+                    if placeholder is None:
+                        continue
+                    current_shapes = overlay_shapes_by_idx.get(idx)
+                    if current_shapes:
+                        current_shapes = sorted(current_shapes, key=lambda shape: (getattr(shape, "top", 0), getattr(shape, "left", 0)))
+                        card_texts.append(
+                            " ".join(
+                                paragraph.text.strip()
+                                for shape in current_shapes
+                                for paragraph in shape.text_frame.paragraphs
+                                if paragraph.text.strip()
+                            )
+                        )
+                        body_paragraphs.extend(
+                            paragraph.text.strip()
+                            for shape in current_shapes
+                            for paragraph in shape.text_frame.paragraphs
+                            if paragraph.text.strip()
+                        )
+                        weighted_body_char_count += sum(_weighted_card_overlay_char_count(shape) for shape in current_shapes)
+                        for shape in current_shapes:
+                            for paragraph in shape.text_frame.paragraphs:
+                                for run in paragraph.runs:
+                                    if run.font.size is not None:
+                                        card_font_size_values.add(run.font.size.pt)
+                        continue
+                    if getattr(placeholder, "has_text_frame", False):
+                        paragraphs = [paragraph.text.strip() for paragraph in placeholder.text_frame.paragraphs if paragraph.text.strip()]
+                        if paragraphs:
+                            card_texts.append(" ".join(paragraphs))
+                            body_paragraphs.extend(paragraphs)
+                            weighted_body_char_count += sum(len(paragraph) for paragraph in paragraphs)
+                            for paragraph in placeholder.text_frame.paragraphs:
+                                for run in paragraph.runs:
+                                    if run.font.size is not None:
+                                        card_font_size_values.add(run.font.size.pt)
+            body_char_count = weighted_body_char_count or sum(len(paragraph) for paragraph in body_paragraphs)
             rendered_items = tuple(text for text in card_texts if text)
-            body_font_sizes = tuple(
-                sorted(
-                    {
-                        run.font.size.pt
-                        for shape in card_shapes
-                        if getattr(shape, "has_text_frame", False)
-                        for paragraph in shape.text_frame.paragraphs
-                        for run in paragraph.runs
-                        if run.font.size is not None
-                    }
+            body_font_sizes = tuple(sorted(card_font_size_values))
+        elif body_candidates:
+            body_paragraphs: list[str] = []
+            body_font_size_values: set[float] = set()
+            for candidate in body_candidates:
+                if not getattr(candidate, "has_text_frame", False):
+                    continue
+                body_paragraphs.extend(
+                    paragraph.text.strip()
+                    for paragraph in candidate.text_frame.paragraphs
+                    if paragraph.text.strip()
                 )
-            )
-        elif body is not None and getattr(body, "has_text_frame", False):
-            body_paragraphs = [paragraph.text.strip() for paragraph in body.text_frame.paragraphs if paragraph.text.strip()]
+                body_font_size_values.update(_text_frame_font_sizes(candidate))
             body_char_count = sum(len(paragraph) for paragraph in body_paragraphs)
             rendered_items = tuple(body_paragraphs)
-            body_font_sizes = tuple(
-                sorted(
-                    {
-                        run.font.size.pt
-                        for paragraph in body.text_frame.paragraphs
-                        for run in paragraph.runs
-                        if run.font.size is not None
-                    }
-                )
-            )
+            expected_body_font_size = getattr(getattr(expected_body_spec, "text_style", None), "font_size_pt", None)
+            if expected_body_font_size is None and manifest is not None and manifest.theme.master_text_styles.get("body") is not None:
+                expected_body_font_size = manifest.theme.master_text_styles.get("body").font_size_pt
+            if expected_body_font_size is None:
+                expected_body_font_size = effective_profile.max_font_pt
+            if not body_font_size_values and expected_body_font_size is not None:
+                body_font_size_values.add(expected_body_font_size)
+            body_font_sizes = tuple(sorted(body_font_size_values))
         title_font_sizes = _text_frame_font_sizes(title)
         subtitle_font_sizes = _text_frame_font_sizes(subtitle)
         subtitle_has_text = bool((slide_spec.subtitle or "").strip())
 
         has_table = any(getattr(shape, "has_table", False) for shape in slide.shapes)
         has_chart = any(getattr(shape, "has_chart", False) for shape in slide.shapes)
-        has_image = any(self_has_image(shape) for shape in slide.shapes)
-        image_shape = next((shape for shape in slide.shapes if self_has_image(shape)), None)
+        table_overlay_overflows = _table_overlay_overflows(slide) if slide_spec.kind == SlideKind.TABLE else ()
+        image_shape = _content_image_shape(slide, placeholders)
+        has_image = image_shape is not None
         chart_shape = next((shape for shape in slide.shapes if getattr(shape, "has_chart", False)), None)
         expected_chart_type = _expected_render_chart_type(slide_spec.chart) if slide_spec.kind == SlideKind.CHART else None
         expected_chart_series_count = _expected_render_chart_series_count(slide_spec.chart) if slide_spec.kind == SlideKind.CHART else None
@@ -358,14 +458,24 @@ def audit_generated_presentation(
             elif getattr(expected_chart_shape_spec, "shape_name", None) and content_width is not None:
                 expected_chart_content_width = content_width
         expected_items = _expected_items_for_slide(slide_spec)
+        fallback_body_font_sizes = body_font_sizes
+        if not fallback_body_font_sizes and body is not None:
+            fallback_font_size = getattr(getattr(expected_body_spec, "text_style", None), "font_size_pt", None)
+            if fallback_font_size is None and manifest is not None and manifest.theme.master_text_styles.get("body") is not None:
+                fallback_font_size = manifest.theme.master_text_styles.get("body").font_size_pt
+            if fallback_font_size is None:
+                fallback_font_size = effective_profile.max_font_pt
+            if fallback_font_size is not None:
+                fallback_body_font_sizes = (float(fallback_font_size),)
         audits.append(
             SlideAudit(
                 slide_index=slide_index,
                 title=slide_spec.title or "",
                 kind=slide_spec.kind.value,
                 layout_key=layout_key,
+                runtime_profile_key=runtime_profile_key,
                 body_char_count=body_char_count,
-                body_font_sizes=body_font_sizes,
+                body_font_sizes=fallback_body_font_sizes,
                 title_font_sizes=title_font_sizes,
                 subtitle_font_sizes=subtitle_font_sizes if subtitle_has_text else (),
                 profile=effective_profile,
@@ -389,12 +499,15 @@ def audit_generated_presentation(
                 footer_left=getattr(footer, "left", None) if footer is not None else None,
                 auxiliary_widths=auxiliary_widths,
                 auxiliary_lefts=auxiliary_lefts,
-                auxiliary_tops=auxiliary_tops,
-                auxiliary_char_counts=auxiliary_char_counts,
-                expected_auxiliary_char_counts=expected_auxiliary_char_counts,
-                image_width=getattr(image_shape, "width", None) if image_shape is not None else None,
-                image_left=getattr(image_shape, "left", None) if image_shape is not None else None,
-                image_top=getattr(image_shape, "top", None) if image_shape is not None else None,
+            auxiliary_tops=auxiliary_tops,
+            auxiliary_char_counts=auxiliary_char_counts,
+            expected_auxiliary_char_counts=expected_auxiliary_char_counts,
+            placeholder_char_counts=placeholder_char_counts,
+            expected_placeholder_char_counts=expected_placeholder_char_counts,
+            expected_subtitle_char_count=expected_subtitle_char_count,
+            image_width=getattr(image_shape, "width", None) if image_shape is not None else None,
+            image_left=getattr(image_shape, "left", None) if image_shape is not None else None,
+            image_top=getattr(image_shape, "top", None) if image_shape is not None else None,
                 body_margin_left=getattr(getattr(body, "text_frame", None), "margin_left", None) if body is not None and getattr(body, "has_text_frame", False) else None,
                 body_margin_right=getattr(getattr(body, "text_frame", None), "margin_right", None) if body is not None and getattr(body, "has_text_frame", False) else None,
                 body_margin_top=getattr(getattr(body, "text_frame", None), "margin_top", None) if body is not None and getattr(body, "has_text_frame", False) else None,
@@ -432,6 +545,8 @@ def audit_generated_presentation(
                     if manifest is not None and manifest.theme.master_text_styles.get("body") is not None
                     else None
                 ),
+                table_overlay_overflow_count=len(table_overlay_overflows),
+                table_overlay_overflow_details=table_overlay_overflows,
                 geometry=resolved_geometry,
             )
         )
@@ -443,6 +558,35 @@ def _expected_render_chart_type(chart_spec: ChartSpec | None) -> ChartType | Non
     if chart_spec is None:
         return None
     return render_chart_type(chart_spec)
+
+
+def _table_overlay_overflows(slide) -> tuple[str, ...]:
+    overflows: list[str] = []
+    for shape in slide.shapes:
+        name = getattr(shape, "name", "") or ""
+        if not name.startswith("A3_TABLE_CELL_") or not getattr(shape, "has_text_frame", False):
+            continue
+        text = "\n".join(paragraph.text.strip() for paragraph in shape.text_frame.paragraphs if paragraph.text.strip())
+        if not text:
+            continue
+        font_sizes = _text_frame_font_sizes(shape)
+        font_pt = min(font_sizes) if font_sizes else 8.0
+        margin_left = getattr(shape.text_frame, "margin_left", 0) or 0
+        margin_right = getattr(shape.text_frame, "margin_right", 0) or 0
+        margin_top = getattr(shape.text_frame, "margin_top", 0) or 0
+        margin_bottom = getattr(shape.text_frame, "margin_bottom", 0) or 0
+        available_width = max(int(getattr(shape, "width", 0) - margin_left - margin_right), 1)
+        available_height = max(int(getattr(shape, "height", 0) - margin_top - margin_bottom), 1)
+        char_width_emu = max(int(font_pt * 12700 * 0.52), 1)
+        chars_per_line = max(4, int(available_width / char_width_emu))
+        explicit_lines = text.splitlines() or [text]
+        line_count = sum(max(1, (len(line) + chars_per_line - 1) // chars_per_line) for line in explicit_lines)
+        required_height = int(line_count * font_pt * 12700 * 1.18)
+        if required_height > int(available_height * 1.08):
+            overflows.append(
+                f"{name}: required={required_height} available={available_height} text_len={len(text)} font={font_pt:.1f}"
+            )
+    return tuple(overflows)
 
 
 def _expected_render_chart_series_count(chart_spec: ChartSpec | None) -> int | None:
@@ -511,16 +655,14 @@ def _expected_render_chart_spec(chart_spec: ChartSpec | None) -> ChartSpec | Non
 def _text_frame_font_sizes(shape) -> tuple[float, ...]:
     if shape is None or not getattr(shape, "has_text_frame", False):
         return ()
-    return tuple(
-        sorted(
-            {
-                run.font.size.pt
-                for paragraph in shape.text_frame.paragraphs
-                for run in paragraph.runs
-                if run.font.size is not None
-            }
-        )
-    )
+    font_sizes: set[float] = set()
+    for paragraph in shape.text_frame.paragraphs:
+        for run in paragraph.runs:
+            if run.font.size is not None:
+                font_sizes.add(run.font.size.pt)
+        if not font_sizes and getattr(paragraph, "font", None) is not None and paragraph.font.size is not None:
+            font_sizes.add(paragraph.font.size.pt)
+    return tuple(sorted(font_sizes))
 
 
 def _font_sizes_match(font_sizes: tuple[float, ...], expected: float) -> bool:
@@ -556,7 +698,9 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
     violations: list[CapacityViolation] = []
 
     for audit in audits:
-        geometry = audit.geometry or geometry_policy_for_layout(audit.layout_key)
+        geometry = audit.geometry or geometry_policy_for_layout(
+            audit.runtime_profile_key or audit.profile.layout_key or audit.layout_key
+        )
         if not audit.within_font_bounds:
             violations.append(
                 CapacityViolation(
@@ -596,6 +740,15 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                         title=audit.title,
                         rule="narrow_table_content",
                         details=f"content_width_ratio={audit.content_width_ratio:.2f}",
+                    )
+                )
+            if audit.table_overlay_overflow_count:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="table_overlay_text_overflow",
+                        details="; ".join(audit.table_overlay_overflow_details[:4]),
                     )
                 )
 
@@ -872,12 +1025,11 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
                 )
 
-        if audit.layout_key == "cards_3":
+        if audit.layout_key in {"cards_3", "cards_kpi"}:
             card_lefts = audit.auxiliary_lefts or {}
             card_widths = audit.auxiliary_widths or {}
             card_positions = [(idx, card_lefts.get(idx), card_widths.get(idx)) for idx in (11, 12, 13)]
             if all(left is not None and width is not None for _, left, width in card_positions):
-                previous_right = None
                 for idx, left, width in card_positions:
                     if width < geometry.placeholders[idx].width_emu - GEOMETRY_TOLERANCE_EMU:
                         violations.append(
@@ -888,16 +1040,34 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                                 details=f"idx={idx} width={width}",
                             )
                         )
-                    if previous_right is not None and left < previous_right + 120000:
+                if audit.layout_key == "cards_3":
+                    previous_right = None
+                    for idx, left, width in card_positions:
+                        if previous_right is not None and left < previous_right + 120000:
+                            violations.append(
+                                CapacityViolation(
+                                    slide_index=audit.slide_index,
+                                    title=audit.title,
+                                    rule="card_overlap",
+                                    details=f"idx={idx} left={left} previous_right={previous_right}",
+                                )
+                            )
+                        previous_right = left + width
+                elif audit.layout_key == "cards_kpi":
+                    row_positions = {
+                        "top": [(idx, left, width) for idx, left, width in card_positions if idx in {11, 12}],
+                        "bottom": [(idx, left, width) for idx, left, width in card_positions if idx in {13}],
+                    }
+                    top_cards = row_positions["top"]
+                    if len(top_cards) == 2 and top_cards[1][1] < top_cards[0][1] + top_cards[0][2] + 120000:
                         violations.append(
                             CapacityViolation(
                                 slide_index=audit.slide_index,
                                 title=audit.title,
                                 rule="card_overlap",
-                                details=f"idx={idx} left={left} previous_right={previous_right}",
+                                details=f"idx={top_cards[1][0]} left={top_cards[1][1]} previous_right={top_cards[0][1] + top_cards[0][2]}",
                             )
                         )
-                    previous_right = left + width
 
         if audit.layout_key == "list_with_icons":
             aux_lefts = audit.auxiliary_lefts or {}
@@ -1000,6 +1170,70 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                         )
                     )
 
+        if audit.layout_key == "contacts" and audit.expected_placeholder_char_counts:
+            rendered_placeholder_chars = audit.placeholder_char_counts or {}
+            for idx, expected_chars in audit.expected_placeholder_char_counts.items():
+                if expected_chars <= 0:
+                    continue
+                rendered_chars = rendered_placeholder_chars.get(idx, 0)
+                if rendered_chars <= 0:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="underfilled_contact_placeholder_fill",
+                            details=f"idx={idx} expected_chars={expected_chars} rendered_chars={rendered_chars}",
+                        )
+                    )
+
+        if audit.layout_key == "list_with_icons" and audit.expected_placeholder_char_counts:
+            rendered_placeholder_chars = audit.placeholder_char_counts or {}
+            for idx, expected_chars in audit.expected_placeholder_char_counts.items():
+                if expected_chars <= 0:
+                    continue
+                rendered_chars = rendered_placeholder_chars.get(idx, 0)
+                if rendered_chars <= 0:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="underfilled_two_column_placeholder_fill",
+                            details=f"idx={idx} expected_chars={expected_chars} rendered_chars={rendered_chars}",
+                        )
+                    )
+
+        if audit.layout_key == "cards_3" and audit.expected_placeholder_char_counts:
+            rendered_placeholder_chars = audit.placeholder_char_counts or {}
+            for idx, expected_chars in audit.expected_placeholder_char_counts.items():
+                if expected_chars <= 0:
+                    continue
+                rendered_chars = rendered_placeholder_chars.get(idx, 0)
+                if rendered_chars <= 0 and not audit.rendered_items:
+                    violations.append(
+                        CapacityViolation(
+                            slide_index=audit.slide_index,
+                            title=audit.title,
+                            rule="underfilled_card_placeholder_fill",
+                            details=f"idx={idx} expected_chars={expected_chars} rendered_chars={rendered_chars}",
+                        )
+                    )
+
+        if audit.expected_subtitle_char_count > 0 and audit.placeholder_char_counts and audit.subtitle_placeholder_idx is not None:
+            rendered_subtitle_chars = audit.placeholder_char_counts.get(audit.subtitle_placeholder_idx, 0)
+            if rendered_subtitle_chars <= 0:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="underfilled_subtitle_placeholder_fill",
+                        details=(
+                            f"idx={audit.subtitle_placeholder_idx} "
+                            f"expected_chars={audit.expected_subtitle_char_count} "
+                            f"rendered_chars={rendered_subtitle_chars}"
+                        ),
+                    )
+                )
+
         if audit.body_top is not None and audit.body_height is not None and audit.footer_top is not None:
             minimum_bottom_gap = geometry.content_footer_gap_emu - GEOMETRY_TOLERANCE_EMU
             body_bottom = audit.body_top + audit.body_height
@@ -1081,7 +1315,7 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
                 expected_title_body_gap = _expected_gap_between(expected_title_geometry, expected_body_geometry)
                 title_body_gap_limit = _maximum_reasonable_gap(expected_title_body_gap)
-                if title_body_gap_limit is not None and title_body_gap > title_body_gap_limit:
+                if audit.layout_key != "cards_kpi" and title_body_gap_limit is not None and title_body_gap > title_body_gap_limit:
                     violations.append(
                         CapacityViolation(
                             slide_index=audit.slide_index,
@@ -1096,7 +1330,7 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
         )
         if should_check_body_order and audit.expected_items:
             expected_source = audit.expected_items
-            if audit.layout_key == "cards_3":
+            if audit.layout_key in {"cards_3", "cards_kpi"}:
                 expected_source = tuple(_normalize_card_audit_item(item) for item in audit.expected_items)
             expected = [_normalize_audit_text(item) for item in expected_source if _normalize_audit_text(item)]
             rendered = [_normalize_audit_text(item) for item in audit.rendered_items if _normalize_audit_text(item)]
@@ -1221,6 +1455,66 @@ def _expected_auxiliary_char_counts_for_slide(slide_spec: SlideSpec, layout_key:
     return {}
 
 
+def _expected_placeholder_char_counts_for_slide(slide_spec: SlideSpec, layout_key: str) -> dict[int, int]:
+    def text_len(value: str | None) -> int:
+        return len((value or "").strip())
+
+    def list_len(values: list[str]) -> int:
+        return len("\n".join(item.strip() for item in values if item.strip()))
+
+    if layout_key == "contacts":
+        expected = {
+            10: text_len(slide_spec.title),
+            11: text_len(slide_spec.subtitle),
+            12: list_len(slide_spec.left_bullets),
+            13: list_len(slide_spec.right_bullets),
+        }
+        return {idx: count for idx, count in expected.items() if count > 0}
+    if layout_key == "list_with_icons":
+        expected = {
+            12: list_len(slide_spec.left_bullets),
+            14: list_len(slide_spec.right_bullets),
+        }
+        return {idx: count for idx, count in expected.items() if count > 0}
+    if layout_key == "cards_3":
+        bullets = [item.strip() for item in slide_spec.bullets if item.strip()]
+        return {
+            idx: len(text)
+            for idx, text in zip((11, 12, 13), bullets, strict=False)
+            if len(text) > 0
+        }
+    return {}
+
+
+def _expected_subtitle_char_count_for_slide(slide_spec: SlideSpec, layout_key: str) -> int:
+    subtitle_text = (slide_spec.subtitle or "").strip()
+    if not subtitle_text:
+        return 0
+    if layout_key in {"contacts", "list_with_icons"}:
+        return 0
+    if layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"} and _subtitle_duplicates_body_payload(slide_spec, subtitle_text):
+        return 0
+    return len(subtitle_text)
+
+
+def _subtitle_duplicates_body_payload(slide_spec: SlideSpec, subtitle_text: str) -> bool:
+    body_text = ""
+    if slide_spec.content_blocks:
+        for block in slide_spec.content_blocks:
+            if block.text and block.text.strip():
+                body_text = block.text.strip()
+                break
+    if not body_text:
+        body_text = (slide_spec.text or "").strip()
+    if not body_text:
+        return False
+    if body_text.startswith(subtitle_text):
+        return True
+    if len(subtitle_text) >= 24 and body_text.startswith(subtitle_text[:-1]):
+        return True
+    return False
+
+
 def _shape_text_char_count(shape) -> int:
     if shape is None or not getattr(shape, "has_text_frame", False):
         return 0
@@ -1294,17 +1588,27 @@ def _shape_spec_for_role(
 ):
     if manifest is None:
         return None
-    layout = next(
-        (item for item in manifest.layouts if item.key == (slide_spec.preferred_layout_key or "")),
-        None,
-    )
+    layout = _layout_target_for_spec(slide_spec, manifest)
     if layout is not None:
-        preferred_indices = _preferred_placeholder_indices_for_role(slide_spec, kind)
+        typed = [placeholder for placeholder in layout.placeholders if placeholder.kind == kind and placeholder.idx is not None]
+        if manifest.generation_mode.value == "layout" and typed:
+            explicit_typed = [
+                placeholder
+                for placeholder in typed
+                if None not in {
+                    getattr(placeholder, "left_emu", None),
+                    getattr(placeholder, "top_emu", None),
+                    getattr(placeholder, "width_emu", None),
+                    getattr(placeholder, "height_emu", None),
+                }
+            ]
+            if explicit_typed:
+                return explicit_typed[0]
+        preferred_indices = _preferred_placeholder_indices_for_role(slide_spec, kind, manifest)
         for preferred_idx in preferred_indices:
             preferred = next((placeholder for placeholder in layout.placeholders if placeholder.idx == preferred_idx), None)
             if preferred is not None:
                 return preferred
-        typed = [placeholder for placeholder in layout.placeholders if placeholder.kind == kind and placeholder.idx is not None]
         if typed:
             return typed[0]
     prototype = _prototype_slide_for_spec(slide_spec, manifest)
@@ -1317,14 +1621,18 @@ def _shape_spec_for_role(
     return None
 
 
-def _preferred_placeholder_indices_for_role(slide_spec: SlideSpec, kind: PlaceholderKind) -> tuple[int, ...]:
-    layout_key = slide_spec.preferred_layout_key or _infer_layout_key(slide_spec.kind.value)
+def _preferred_placeholder_indices_for_role(
+    slide_spec: SlideSpec,
+    kind: PlaceholderKind,
+    manifest: TemplateManifest | None,
+) -> tuple[int, ...]:
+    layout_key = _runtime_profile_key_for_slide(slide_spec, manifest)
     if kind == PlaceholderKind.TITLE:
         return (0,)
     if kind == PlaceholderKind.SUBTITLE:
         return (13,)
     if kind == PlaceholderKind.BODY:
-        if layout_key == "cards_3":
+        if layout_key in {"cards_3", "cards_kpi"}:
             return (11, 12, 13)
         if layout_key in {"text_full_width", "dense_text_full_width", "list_full_width", "image_text"}:
             return (14,)
@@ -1343,22 +1651,17 @@ def _preferred_placeholder_indices_for_role(slide_spec: SlideSpec, kind: Placeho
 def _template_has_explicit_layout_or_prototype(slide_spec: SlideSpec, manifest: TemplateManifest | None) -> bool:
     if manifest is None:
         return False
-    layout_key = slide_spec.preferred_layout_key or ""
-    if any(item.key == layout_key for item in manifest.layouts):
+    if _layout_target_for_spec(slide_spec, manifest) is not None:
         return True
     return _prototype_slide_for_spec(slide_spec, manifest) is not None
 
 
 def _geometry_policy_for_slide(slide_spec: SlideSpec, manifest: TemplateManifest | None) -> LayoutGeometryPolicy:
-    base_layout_key = slide_spec.preferred_layout_key or _infer_layout_key(slide_spec.kind.value)
-    base_policy = geometry_policy_for_layout(base_layout_key)
+    runtime_profile_key = _runtime_profile_key_for_slide(slide_spec, manifest)
+    base_policy = geometry_policy_for_layout(runtime_profile_key)
     if manifest is None:
         return base_policy
-    # Built-in corp_light_v1 layouts are expanded at runtime by the generator,
-    # so the static manifest placeholder coordinates are not the source of truth.
-    if manifest.template_id == "corp_light_v1" and manifest.generation_mode == "layout":
-        return base_policy
-    layout = next((item for item in manifest.layouts if item.key == base_layout_key), None)
+    layout = _layout_target_for_spec(slide_spec, manifest)
     if layout is None:
         return base_policy
     placeholders: dict[int, PlaceholderGeometryPolicy] = {}
@@ -1399,7 +1702,7 @@ def _geometry_policy_for_slide(slide_spec: SlideSpec, manifest: TemplateManifest
         if not placeholders:
             return base_policy
     return LayoutGeometryPolicy(
-        layout_key=base_layout_key,
+        layout_key=layout.key,
         placeholders=placeholders,
         title_content_gap_emu=base_policy.title_content_gap_emu,
         title_body_gap_no_subtitle_emu=base_policy.title_body_gap_no_subtitle_emu,
@@ -1408,13 +1711,61 @@ def _geometry_policy_for_slide(slide_spec: SlideSpec, manifest: TemplateManifest
 
 
 def _shape_for_role(slide, placeholders: dict[int, object], slide_spec: SlideSpec, manifest: TemplateManifest | None, kind: PlaceholderKind, placeholder_idx: int | None):
+    shapes = _shapes_for_role(slide, placeholders, slide_spec, manifest, kind, placeholder_idx)
+    return _preferred_text_shape(shapes)
+
+
+def _shapes_for_role(
+    slide,
+    placeholders: dict[int, object],
+    slide_spec: SlideSpec,
+    manifest: TemplateManifest | None,
+    kind: PlaceholderKind,
+    placeholder_idx: int | None,
+) -> list[object]:
     if placeholder_idx is not None and placeholder_idx in placeholders:
-        return placeholders[placeholder_idx]
+        return [placeholders[placeholder_idx]]
     shape_spec = _shape_spec_for_role(slide_spec, manifest, kind)
+    if shape_spec is None:
+        return []
     shape_name = getattr(shape_spec, "shape_name", None)
-    if not shape_name:
+    named_matches = []
+    if shape_name:
+        named_matches = [shape for shape in slide.shapes if getattr(shape, "name", None) == shape_name]
+        if named_matches:
+            return named_matches
+    geometry_matches = _shapes_matching_geometry(slide, shape_spec)
+    if geometry_matches:
+        return geometry_matches
+    return named_matches
+
+
+def _shapes_matching_geometry(slide, shape_spec) -> list[object]:
+    expected_left = getattr(shape_spec, "left_emu", None)
+    expected_top = getattr(shape_spec, "top_emu", None)
+    expected_width = getattr(shape_spec, "width_emu", None)
+    expected_height = getattr(shape_spec, "height_emu", None)
+    if None in {expected_left, expected_top, expected_width, expected_height}:
+        return []
+    matches = [
+        shape
+        for shape in slide.shapes
+        if getattr(shape, "has_text_frame", False)
+        and abs(getattr(shape, "left", 0) - expected_left) <= GEOMETRY_TOLERANCE_EMU
+        and abs(getattr(shape, "top", 0) - expected_top) <= GEOMETRY_TOLERANCE_EMU
+        and abs(getattr(shape, "width", 0) - expected_width) <= GEOMETRY_TOLERANCE_EMU
+        and abs(getattr(shape, "height", 0) - expected_height) <= GEOMETRY_TOLERANCE_EMU
+    ]
+    return sorted(matches, key=lambda shape: (getattr(shape, "top", 0), getattr(shape, "left", 0)))
+
+
+def _preferred_text_shape(shapes: list[object]) -> object | None:
+    if not shapes:
         return None
-    return next((shape for shape in slide.shapes if getattr(shape, "name", None) == shape_name), None)
+    with_text = [shape for shape in shapes if getattr(shape, "has_text_frame", False) and getattr(shape, "text", "").strip()]
+    if with_text:
+        return with_text[0]
+    return shapes[0]
 
 
 def _prototype_slide_for_spec(slide_spec: SlideSpec, manifest: TemplateManifest | None):
@@ -1429,6 +1780,28 @@ def _prototype_slide_for_spec(slide_spec: SlideSpec, manifest: TemplateManifest 
         if preferred is not None:
             return preferred
     return next((item for item in manifest.prototype_slides if slide_spec.kind.value in item.supported_slide_kinds), None)
+
+
+def _layout_target_for_spec(slide_spec: SlideSpec, manifest: TemplateManifest | None):
+    if manifest is None:
+        return None
+    preferred_key = slide_spec.preferred_layout_key or ""
+    if not preferred_key:
+        return None
+    return next((item for item in manifest.layouts if item.key == preferred_key), None)
+
+
+def _runtime_profile_key_for_slide(slide_spec: SlideSpec, manifest: TemplateManifest | None) -> str:
+    target = None
+    if manifest is not None:
+        target = _layout_target_for_spec(slide_spec, manifest)
+        if target is None:
+            target = _prototype_slide_for_spec(slide_spec, manifest)
+    return runtime_profile_key_for_target(
+        target,
+        fallback_layout_key=slide_spec.runtime_profile_key or slide_spec.preferred_layout_key or _infer_layout_key(slide_spec.kind.value),
+        slide_kind=slide_spec.kind.value,
+    )
 
 
 def _prototype_supports_chart(prototype) -> bool:
@@ -1512,6 +1885,20 @@ def self_has_image(shape) -> bool:
     return hasattr(shape, "image") or "Picture Placeholder" in (getattr(shape, "name", "") or "")
 
 
+def _content_image_shape(slide, placeholders: dict[int, object]):
+    for preferred_idx in (16,):
+        shape = placeholders.get(preferred_idx)
+        if shape is not None:
+            return shape
+    for shape in slide.shapes:
+        if "Picture Placeholder" in (getattr(shape, "name", "") or ""):
+            return shape
+    for shape in slide.shapes:
+        if hasattr(shape, "image"):
+            return shape
+    return None
+
+
 def _expected_items_for_slide(slide_spec: SlideSpec) -> tuple[str, ...]:
     if slide_spec.content_blocks:
         has_list_like_block = any(block.items for block in slide_spec.content_blocks)
@@ -1529,7 +1916,8 @@ def _expected_items_for_slide(slide_spec: SlideSpec) -> tuple[str, ...]:
 
 
 def _normalize_audit_text(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip())
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    return re.sub(r"\s+([%‰₽])", r"\1", normalized)
 
 
 def _normalize_card_audit_item(text: str) -> str:
@@ -1546,3 +1934,23 @@ def _normalize_card_audit_item(text: str) -> str:
     if dash_match:
         return f"{dash_match.group(1).strip()} {dash_match.group(2).strip()}"
     return normalized
+
+
+def _weighted_card_overlay_char_count(shape) -> int:
+    paragraphs = [
+        paragraph.text.strip()
+        for paragraph in shape.text_frame.paragraphs
+        if paragraph.text.strip()
+    ]
+    if not paragraphs:
+        return 0
+    shape_name = getattr(shape, "name", "")
+    if "_METRIC_" in shape_name:
+        value_text = paragraphs[0]
+        label_text = " ".join(paragraphs[1:])
+        return min(len(value_text), 8) + int(len(label_text) * 0.35)
+    if "_DESCRIPTION" in shape_name:
+        return int(sum(len(paragraph) for paragraph in paragraphs) * 0.7)
+    if "_TITLE" in shape_name:
+        return int(sum(len(paragraph) for paragraph in paragraphs) * 0.8)
+    return sum(len(paragraph) for paragraph in paragraphs)

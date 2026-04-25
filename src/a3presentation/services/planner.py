@@ -7,9 +7,11 @@ from dataclasses import dataclass, field
 from a3presentation.domain.api import ChartOverride, DocumentBlock
 from a3presentation.domain.presentation import (
     PresentationPlan,
+    RenderTargetType,
     SlideContentBlock,
     SlideContentBlockKind,
     SlideKind,
+    SlideRenderTarget,
     SlideSpec,
     TableBlock,
 )
@@ -65,6 +67,7 @@ class TextToPlanService:
     )
     CARD_BULLET_MAX_CHARS = 100
     CARD_BULLET_COUNT = 3
+    KPI_CARD_COUNT = 4
     LIST_BATCH_SIZE = LIST_FULL_WIDTH_PROFILE.max_items
     LIST_SLIDE_MAX_WEIGHT = LIST_FULL_WIDTH_PROFILE.max_weight
     LIST_BULLET_MAX_CHARS = 220
@@ -77,6 +80,18 @@ class TextToPlanService:
     STRUCTURED_SUMMARY_MAX_ITEMS = 5
     RESUME_SUMMARY_MAX_ITEMS = 6
     DENSE_TEXT_INITIAL_BATCH_MAX_CHARS = 900
+    LEGACY_LAYOUT_KEYS = {
+        "cover",
+        "text_full_width",
+        "dense_text_full_width",
+        "list_full_width",
+        "table",
+        "image_text",
+        "cards_3",
+        "cards_kpi",
+        "contacts",
+        "list_with_icons",
+    }
 
     def __init__(self) -> None:
         self.normalizer = SemanticDocumentNormalizer()
@@ -103,6 +118,25 @@ class TextToPlanService:
     def _text_slide_weight_budget(self) -> float:
         return self.text_profile.max_weight
 
+    def _make_layout_render_target(self, layout_key: str | None) -> SlideRenderTarget | None:
+        if not layout_key:
+            return None
+        return SlideRenderTarget(
+            type=RenderTargetType.LAYOUT,
+            key=layout_key,
+            label=layout_key,
+            source="planner",
+        )
+
+    def _targeted_slide(self, *, layout_key: str | None = None, runtime_profile_key: str | None = None, **payload) -> SlideSpec:
+        resolved_runtime_profile_key = runtime_profile_key or layout_key
+        return SlideSpec(
+            runtime_profile_key=resolved_runtime_profile_key,
+            preferred_layout_key=layout_key,
+            render_target=self._make_layout_render_target(layout_key),
+            **payload,
+        )
+
     def build_plan(
         self,
         template_id: str,
@@ -127,12 +161,12 @@ class TextToPlanService:
         cover_title, cover_meta = self._build_cover(plan_title, sections, blocks or [])
         sections = self._detach_cover_title_from_first_section(sections, cover_title)
         slides: list[SlideSpec] = [
-            SlideSpec(
+            self._targeted_slide(
                 kind=SlideKind.TITLE,
                 title=cover_title,
                 subtitle="",
                 notes=cover_meta,
-                preferred_layout_key="cover",
+                layout_key="cover",
             )
         ]
         chart_override_map = {override.table_id: override for override in chart_overrides or []}
@@ -160,7 +194,7 @@ class TextToPlanService:
                 if index == 0 and self._is_cover_section(section, cover_title):
                     continue
                 for slide in self._section_to_slides(section):
-                    if slide.preferred_layout_key == "contacts":
+                    if slide.runtime_profile_key == "contacts":
                         contact_slides.append(slide)
                     else:
                         content_slides.append(slide)
@@ -183,12 +217,12 @@ class TextToPlanService:
             for index, table in enumerate(tables or [], start=1):
                 if not table.headers and not table.rows:
                     continue
-                table_slide = SlideSpec(
+                table_slide = self._targeted_slide(
                     kind=SlideKind.TABLE,
                     title=f"{table_title_base} {index}",
                     subtitle="Ключевые данные из документа",
                     table=table,
-                    preferred_layout_key="table",
+                    layout_key="table",
                 )
                 table_sequence += 1
                 slides.append(self._apply_chart_override(table_slide, f"table_{table_sequence}", chart_override_map))
@@ -213,6 +247,7 @@ class TextToPlanService:
         slides = self._enforce_hard_safety_rules(slides, plan_title, semantic_document, blocks or [], tables or [], sections)
         slides = self._backfill_structural_subtitles(slides)
         slides = self._preserve_missing_subheadings(slides, blocks or [])
+        slides = self._clear_legacy_preferred_layout_keys(slides)
         return PresentationPlan(template_id=template_id, title=plan_title, slides=slides)
 
     def _backfill_structural_subtitles(self, slides: list[SlideSpec]) -> list[SlideSpec]:
@@ -315,7 +350,9 @@ class TextToPlanService:
             chart=override.selected_chart.model_copy(deep=True),
             source_table_id=table_id,
             notes=slide.notes,
-            preferred_layout_key=slide.preferred_layout_key or "table",
+            runtime_profile_key=slide.runtime_profile_key or slide.preferred_layout_key,
+            preferred_layout_key=slide.preferred_layout_key,
+            render_target=slide.render_target,
         )
 
     def _apply_chart_overrides_to_slide_list(
@@ -785,14 +822,14 @@ class TextToPlanService:
             suffix = table_index if table_index is not None else chunk_index
             slide_title = title_base if not use_suffix else f"{title_base} ({suffix})"
             slides.append(
-                SlideSpec(
+                self._targeted_slide(
                     kind=SlideKind.TABLE,
                     title=slide_title[:120],
                     subtitle=(subtitle or "")[:120],
                     table=chunk,
                     text=supporting_text if len(chunks) == 1 else "",
                     content_blocks=self._paragraph_blocks_from_parts(supporting_text) if supporting_text and len(chunks) == 1 else [],
-                    preferred_layout_key="table",
+                    layout_key="table",
                 )
             )
         return slides
@@ -927,13 +964,15 @@ class TextToPlanService:
         units = self._section_continuation_units(section)
         text = " ".join(unit.text for unit in units if unit.kind == "paragraph").strip()
         bullets = [unit.text for unit in units if unit.kind == "bullet"]
-        if bullets and not text and self._should_use_cards_layout(section.title, bullets):
-            return SlideSpec(
+        cards_layout_key = self._cards_layout_key(section.title, bullets) if bullets and not text else None
+        if cards_layout_key is not None:
+            return self._targeted_slide(
                 kind=SlideKind.BULLETS,
                 title=section.title,
+                text=" ".join(section.paragraphs).strip() or None,
                 bullets=bullets,
                 content_blocks=self._content_blocks_from_units(units),
-                preferred_layout_key="cards_3",
+                layout_key=cards_layout_key,
             )
 
         if bullets:
@@ -957,23 +996,23 @@ class TextToPlanService:
                 content_blocks,
                 fallback_text=primary_text,
             )
-            return SlideSpec(
+            return self._targeted_slide(
                 kind=SlideKind.TEXT,
                 title=slide_title,
                 subtitle=subtitle,
                 text=primary_text,
                 notes=secondary_text,
                 content_blocks=content_blocks,
-                preferred_layout_key="text_full_width",
+                layout_key="text_full_width",
             )
 
         sentences = self._sentence_chunks(text)
-        return SlideSpec(
+        return self._targeted_slide(
             kind=SlideKind.BULLETS,
             title=section.title,
             bullets=sentences[: self._bullet_slide_item_budget()],
             content_blocks=[self._list_block(sentences[: self._bullet_slide_item_budget()])],
-            preferred_layout_key="list_full_width",
+            layout_key="list_full_width",
         )
 
     def _split_large_section(self, section: Section) -> list[SlideSpec]:
@@ -1003,14 +1042,14 @@ class TextToPlanService:
                     fallback_text=primary_text,
                 )
                 slides.append(
-                    SlideSpec(
+                    self._targeted_slide(
                         kind=SlideKind.TEXT,
                         title=slide_title,
                         subtitle=subtitle,
                         text=primary_text,
                         notes=secondary_text,
                         content_blocks=content_blocks,
-                        preferred_layout_key=profile.layout_key,
+                        layout_key=profile.layout_key,
                     )
                 )
             return slides
@@ -1519,6 +1558,11 @@ class TextToPlanService:
         normalized_subtitle = (subtitle or "").strip()[:120]
         return normalized_title, normalized_subtitle
 
+    def _cards_layout_key(self, title: str, bullets: list[str]) -> str | None:
+        if self._should_use_cards_layout(title, bullets):
+            return "cards_3"
+        return None
+
     def _should_use_cards_layout(self, title: str, bullets: list[str]) -> bool:
         if not bullets or len(bullets) > self.CARD_BULLET_COUNT:
             return False
@@ -1530,6 +1574,28 @@ class TextToPlanService:
         if any(any(marker in item for marker in (":", "—", ";", ".")) for item in bullets):
             return False
         return all(len(item) <= self.CARD_BULLET_MAX_CHARS for item in bullets)
+
+    def _should_use_kpi_cards_layout(self, title: str, bullets: list[str]) -> bool:
+        if not bullets or len(bullets) > self.KPI_CARD_COUNT:
+            return False
+        normalized_title = title.strip().lower()
+        if re.match(r"^(q\d+|question\b|\d+(\.\d+)*)", normalized_title):
+            return False
+        metric_signals = 0
+        for item in bullets:
+            text = item.strip()
+            if not text:
+                return False
+            normalized = " ".join(text.split())
+            if not re.match(
+                r"^[<>~≈]?\s*\d+(?:[.,]\d+)?(?:\s*(?:%|‰|млн|млрд|тыс|трлн|сек(?:унд[аы]?)?|с|мин|ч|дн(?:ей|я)?|₽|руб(?:\.|лей|ля|ль)?))*(?:\s+.+)?$",
+                normalized,
+                re.IGNORECASE,
+            ):
+                continue
+            if re.search(r"\d", normalized) and re.search(r"\s+\D", normalized):
+                metric_signals += 1
+        return metric_signals >= 2
 
     def _leading_cover_lines(self, blocks: list[DocumentBlock]) -> list[str]:
         lines: list[str] = []
@@ -1625,7 +1691,7 @@ class TextToPlanService:
 
     def _build_contact_slide(self, section: Section) -> SlideSpec:
         all_lines = [section.title, *(section.paragraphs or []), *[item for group in section.bullet_lists for item in group]]
-        return SlideSpec(
+        return self._targeted_slide(
             kind=SlideKind.TEXT,
             title=section.title,
             subtitle=section.subtitle or (section.paragraphs[0] if section.paragraphs else ""),
@@ -1635,7 +1701,7 @@ class TextToPlanService:
             content_blocks=self._paragraph_blocks_from_parts(
                 "\n".join(section.paragraphs[1:3]) if len(section.paragraphs) > 1 else ""
             ),
-            preferred_layout_key="contacts",
+            layout_key="contacts",
         )
 
     def _build_safe_fallback_slides(
@@ -1653,12 +1719,12 @@ class TextToPlanService:
             summary_items = self._structured_summary_items(blocks, sections, semantic_document)
         if summary_items:
             slides.append(
-                SlideSpec(
+                self._targeted_slide(
                     kind=SlideKind.BULLETS,
                     title=f"{plan_title} - обзор",
                     bullets=summary_items[: self._bullet_slide_item_budget()],
                     content_blocks=[self._list_block(summary_items[: self._bullet_slide_item_budget()])],
-                    preferred_layout_key="list_full_width",
+                    layout_key="list_full_width",
                 )
             )
 
@@ -1666,13 +1732,13 @@ class TextToPlanService:
         for title, text in narrative_entries:
             primary_text, secondary_text = self._split_text_for_slide(text)
             slides.append(
-                SlideSpec(
+                self._targeted_slide(
                     kind=SlideKind.TEXT,
                     title=title[:120],
                     text=primary_text,
                     notes=secondary_text,
                     content_blocks=self._paragraph_blocks_from_parts(primary_text, secondary_text),
-                    preferred_layout_key="text_full_width",
+                    layout_key="text_full_width",
                 )
             )
 
@@ -1682,12 +1748,12 @@ class TextToPlanService:
                 if not table.headers and not table.rows:
                     continue
                 table_slides.append(
-                    SlideSpec(
+                    self._targeted_slide(
                         kind=SlideKind.TABLE,
                         title=f"{plan_title} ({index})",
                         subtitle="Ключевые данные из документа",
                         table=table,
-                        preferred_layout_key="table",
+                        layout_key="table",
                     )
                 )
 
@@ -1701,13 +1767,13 @@ class TextToPlanService:
             if fallback_text:
                 primary_text, secondary_text = self._split_text_for_slide(fallback_text[:2400])
                 slides.append(
-                    SlideSpec(
+                    self._targeted_slide(
                         kind=SlideKind.TEXT,
                         title=plan_title,
                         text=primary_text,
                         notes=secondary_text,
                         content_blocks=self._paragraph_blocks_from_parts(primary_text, secondary_text),
-                        preferred_layout_key="text_full_width",
+                        layout_key="text_full_width",
                     )
                 )
 
@@ -1722,12 +1788,12 @@ class TextToPlanService:
         summary_items = self._resume_summary_items(semantic_document)
         if summary_items:
             slides.append(
-                SlideSpec(
+                self._targeted_slide(
                     kind=SlideKind.BULLETS,
                     title=f"{plan_title} - профиль",
                     bullets=summary_items[: self.RESUME_SUMMARY_MAX_ITEMS],
                     content_blocks=[self._list_block(summary_items[: self.RESUME_SUMMARY_MAX_ITEMS])],
-                    preferred_layout_key="list_full_width",
+                    layout_key="list_full_width",
                 )
             )
 
@@ -1742,13 +1808,13 @@ class TextToPlanService:
             seen_texts.add(text)
             primary_text, secondary_text = self._split_text_for_slide(text[:1800])
             slides.append(
-                SlideSpec(
+                self._targeted_slide(
                     kind=SlideKind.TEXT,
                     title=current_title,
                     text=primary_text,
                     notes=secondary_text,
                     content_blocks=self._paragraph_blocks_from_parts(primary_text, secondary_text),
-                    preferred_layout_key="text_full_width",
+                    layout_key="text_full_width",
                 )
             )
             if len(slides) >= 4:
@@ -1883,12 +1949,12 @@ class TextToPlanService:
                 use_suffix = len(chunks) > 1 or table_index > 1
                 title = pending_title if not use_suffix else f"{pending_title} ({table_index if len(chunks) == 1 else chunk_index})"
                 slides.append(
-                    SlideSpec(
+                    self._targeted_slide(
                         kind=SlideKind.TABLE,
                         title=title[:120],
                         subtitle="Ключевые данные из документа",
                         table=chunk,
-                        preferred_layout_key="table",
+                        layout_key="table",
                     )
                 )
 
@@ -1907,11 +1973,11 @@ class TextToPlanService:
             return None
         caption = self._normalize_line(image.alt_text or image.name or f"Изображение {index}")
         body = caption if len(caption) <= 240 else caption[:240]
-        return SlideSpec(
+        return self._targeted_slide(
             kind=SlideKind.IMAGE,
             title=f"{plan_title} - иллюстрация {index}",
             text=body,
-            preferred_layout_key="image_text",
+            layout_key="image_text",
             image_base64=image.image_base64,
             image_content_type=image.content_type,
         )
@@ -1950,12 +2016,12 @@ class TextToPlanService:
         has_appendix = any(slide.title and "Приложение" in slide.title for slide in normalized_slides)
         if appendix_items and not has_appendix:
             normalized_slides.append(
-                SlideSpec(
+                self._targeted_slide(
                     kind=SlideKind.BULLETS,
                     title=f"{plan_title} - Приложение",
                     bullets=appendix_items[: self._bullet_slide_item_budget()],
                     content_blocks=[self._list_block(appendix_items[: self._bullet_slide_item_budget()])],
-                    preferred_layout_key="list_full_width",
+                    layout_key="list_full_width",
                 )
             )
 
@@ -2029,13 +2095,13 @@ class TextToPlanService:
 
     def _merge_slide_pair(self, previous: SlideSpec, current: SlideSpec) -> SlideSpec:
         merged_bullets = (self._slide_as_mergeable_bullets(previous) or []) + (self._slide_as_mergeable_bullets(current) or [])
-        return SlideSpec(
+        return self._targeted_slide(
             kind=SlideKind.BULLETS,
             title=self._base_slide_title(previous.title),
             subtitle=previous.subtitle or current.subtitle,
             bullets=merged_bullets,
             content_blocks=[self._list_block(merged_bullets)],
-            preferred_layout_key="list_full_width",
+            layout_key="list_full_width",
         )
 
     def _slide_as_mergeable_bullets(self, slide: SlideSpec) -> list[str] | None:
@@ -2148,14 +2214,14 @@ class TextToPlanService:
                 merged = " ".join(batch)
                 primary_text, secondary_text = self._split_text_for_slide(merged)
                 rebuilt.append(
-                    SlideSpec(
+                    self._targeted_slide(
                         kind=SlideKind.TEXT,
                         title=slide_title,
                         subtitle=slide_subtitle,
                         text=primary_text,
                         notes=secondary_text,
                         content_blocks=content_blocks,
-                        preferred_layout_key=profile.layout_key,
+                        layout_key=profile.layout_key,
                     )
                 )
             return self._compact_continuation_slides(rebuilt or slides, base_title, subtitle)
@@ -2235,6 +2301,9 @@ class TextToPlanService:
         total_chars = sum(len(unit.text) for unit in units)
         has_bullets = any(unit.kind == "bullet" for unit in units)
         if not has_bullets:
+            preferred_layout_key = self._preferred_textual_layout_key(content_blocks, total_chars=total_chars)
+            if preferred_layout_key == "dense_text_full_width":
+                return DENSE_TEXT_FULL_WIDTH_PROFILE.max_chars, DENSE_TEXT_FULL_WIDTH_PROFILE.max_weight, None
             return self.text_profile.max_chars, self._text_slide_weight_budget(), None
 
         preferred_layout_key = self._preferred_textual_layout_key(content_blocks, total_chars=total_chars)
@@ -2311,6 +2380,9 @@ class TextToPlanService:
                 continue
 
             merged_units = self._slide_to_continuation_units(compacted[min(index, neighbor_index)]) + self._slide_to_continuation_units(compacted[max(index, neighbor_index)])
+            if subtitle.strip() and all(unit.kind == "paragraph" for unit in merged_units):
+                index += 1
+                continue
             if not self._continuation_units_fit_single_slide(merged_units):
                 index += 1
                 continue
@@ -2483,7 +2555,7 @@ class TextToPlanService:
             projected_next = next_bucket[1:]
             if not self._continuation_units_fit_single_slide(projected_current):
                 break
-            if projected_next and sum(len(unit.text) for unit in projected_next) < next_min_chars:
+            if projected_next and sum(len(unit.text) for unit in projected_next) < self._continuation_bucket_min_payload_chars(projected_next):
                 break
             current_delta = abs(next_chars - current_chars)
             projected_delta = abs((next_chars - candidate_chars) - (current_chars + candidate_chars))
@@ -2502,7 +2574,7 @@ class TextToPlanService:
             projected_next = [candidate, *next_bucket]
             if not projected_current or not self._continuation_units_fit_single_slide(projected_next):
                 break
-            if sum(len(unit.text) for unit in projected_current) < current_min_chars:
+            if sum(len(unit.text) for unit in projected_current) < self._continuation_bucket_min_payload_chars(projected_current):
                 break
             current_delta = abs(next_chars - current_chars)
             projected_delta = abs((next_chars + candidate_chars) - (current_chars - candidate_chars))
@@ -2544,14 +2616,14 @@ class TextToPlanService:
                 merged,
                 primary_budget=self._continuation_primary_char_budget(normalized_subtitle),
             )
-            return SlideSpec(
+            return self._targeted_slide(
                 kind=SlideKind.TEXT,
                 title=title,
                 subtitle=normalized_subtitle,
                 text=primary_text,
                 notes=secondary_text,
                 content_blocks=content_blocks,
-                preferred_layout_key="text_full_width",
+                layout_key=preferred_layout_key,
             )
 
         if has_bullets and paragraph_block_count >= bullet_item_count and paragraph_block_count > 0:
@@ -2560,22 +2632,22 @@ class TextToPlanService:
                 merged,
                 primary_budget=self._continuation_primary_char_budget(normalized_subtitle),
             )
-            return SlideSpec(
+            return self._targeted_slide(
                 kind=SlideKind.TEXT,
                 title=title,
                 subtitle=normalized_subtitle,
                 text=primary_text,
                 notes=secondary_text,
                 content_blocks=content_blocks,
-                preferred_layout_key=preferred_layout_key,
+                layout_key=preferred_layout_key,
             )
 
-        return SlideSpec(
+        return self._targeted_slide(
             kind=SlideKind.BULLETS,
             title=title,
             bullets=[unit.text for unit in units],
             content_blocks=content_blocks,
-            preferred_layout_key="list_full_width",
+            layout_key="list_full_width",
         )
 
     def _paragraph_blocks_from_parts(self, *parts: str) -> list[SlideContentBlock]:
@@ -2584,6 +2656,12 @@ class TextToPlanService:
             for part in parts
             if part and part.strip()
         ]
+
+    def _clear_legacy_preferred_layout_keys(self, slides: list[SlideSpec]) -> list[SlideSpec]:
+        for slide in slides:
+            if slide.preferred_layout_key in self.LEGACY_LAYOUT_KEYS:
+                slide.preferred_layout_key = None
+        return slides
 
     def _list_block(self, items: list[str]) -> SlideContentBlock:
         return SlideContentBlock(
@@ -2661,6 +2739,9 @@ class TextToPlanService:
 
         if len(paragraph_like_blocks) <= 2 and total_chars <= self._text_slide_char_budget():
             return "text_full_width"
+
+        if total_chars > self.text_profile.max_chars and total_chars <= DENSE_TEXT_FULL_WIDTH_PROFILE.max_chars:
+            return "dense_text_full_width"
 
         emphasized_blocks = sum(
             1 for block in paragraph_like_blocks if block.kind in {SlideContentBlockKind.CALLOUT, SlideContentBlockKind.QA_ITEM}
