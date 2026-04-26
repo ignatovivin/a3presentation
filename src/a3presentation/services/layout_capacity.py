@@ -135,6 +135,19 @@ CARDS_3_PROFILE = LayoutCapacityProfile(
     continuation_balance_tolerance=0.16,
 )
 
+CARDS_KPI_PROFILE = LayoutCapacityProfile(
+    layout_key="cards_kpi",
+    max_items=4,
+    max_weight=5.5,
+    max_chars=220,
+    max_primary_chars=0,
+    min_font_pt=14,
+    max_font_pt=44,
+    target_fill_ratio=0.68,
+    max_fill_ratio=0.88,
+    continuation_balance_tolerance=0.14,
+)
+
 LIST_WITH_ICONS_PROFILE = LayoutCapacityProfile(
     layout_key="list_with_icons",
     max_items=8,
@@ -223,6 +236,19 @@ CARDS_3_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
     title_content_gap_emu=220000,
     title_body_gap_no_subtitle_emu=320000,
     content_footer_gap_emu=180000,
+)
+
+CARDS_KPI_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
+    layout_key="cards_kpi",
+    placeholders={
+        0: PlaceholderGeometryPolicy(placeholder_idx=0, left_emu=828675, top_emu=610000, width_emu=10300000, height_emu=1400000),
+        11: PlaceholderGeometryPolicy(placeholder_idx=11, left_emu=828675, top_emu=3170000, width_emu=3600000, height_emu=1350000),
+        12: PlaceholderGeometryPolicy(placeholder_idx=12, left_emu=6980000, top_emu=3170000, width_emu=3600000, height_emu=1350000),
+        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=828675, top_emu=4950000, width_emu=3600000, height_emu=1350000),
+    },
+    title_content_gap_emu=220000,
+    title_body_gap_no_subtitle_emu=420000,
+    content_footer_gap_emu=0,
 )
 
 LIST_WITH_ICONS_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
@@ -322,6 +348,80 @@ CONTACTS_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
     cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
 )
 
+BUILTIN_RUNTIME_PROFILE_KEYS = {
+    "text_full_width",
+    "dense_text_full_width",
+    "list_full_width",
+    "table",
+    "image_text",
+    "cards_3",
+    "cards_kpi",
+    "list_with_icons",
+    "contacts",
+}
+
+
+def runtime_profile_key_for_target(
+    target,
+    *,
+    fallback_layout_key: str | None = None,
+    slide_kind: str | None = None,
+) -> str:
+    target_key = getattr(target, "key", None) or fallback_layout_key or ""
+    if target_key in BUILTIN_RUNTIME_PROFILE_KEYS:
+        return target_key
+
+    slots = getattr(target, "placeholders", None) or getattr(target, "tokens", None) or ()
+    supported_slide_kinds = {
+        str(kind)
+        for kind in (getattr(target, "supported_slide_kinds", None) or ())
+        if kind
+    }
+    representation_hints = {
+        str(hint)
+        for hint in (getattr(target, "representation_hints", None) or ())
+        if hint
+    }
+    editable_roles = {
+        str(role)
+        for role in (
+            getattr(slot, "editable_role", None)
+            for slot in slots
+        )
+        if role
+    }
+    editable_slot_count = sum(
+        1
+        for slot in slots
+        if getattr(slot, "editable_role", None) or getattr(slot, "editable_capabilities", None)
+    )
+
+    normalized_slide_kind = slide_kind or ""
+    if hasattr(normalized_slide_kind, "value"):
+        normalized_slide_kind = normalized_slide_kind.value
+    normalized_slide_kind = str(normalized_slide_kind)
+
+    if "contacts" in representation_hints:
+        return "contacts"
+    if "cards" in representation_hints:
+        if target_key == "cards_kpi" or editable_slot_count >= 4:
+            return "cards_kpi"
+        return "cards_3"
+    if "table" in representation_hints or normalized_slide_kind == "table":
+        return "table"
+    if "image" in representation_hints or normalized_slide_kind == "image":
+        return "image_text"
+    if "two_column" in representation_hints:
+        return "list_with_icons"
+    if (
+        "bullet_list" in editable_roles
+        or "bullet_item" in editable_roles
+        or "bullets" in supported_slide_kinds
+        or normalized_slide_kind == "bullets"
+    ):
+        return "list_full_width"
+    return "text_full_width"
+
 
 def profile_for_layout(layout_key: str) -> LayoutCapacityProfile:
     if layout_key == "dense_text_full_width":
@@ -332,6 +432,8 @@ def profile_for_layout(layout_key: str) -> LayoutCapacityProfile:
         return IMAGE_TEXT_PROFILE
     if layout_key == "cards_3":
         return CARDS_3_PROFILE
+    if layout_key == "cards_kpi":
+        return CARDS_KPI_PROFILE
     if layout_key == "list_with_icons":
         return LIST_WITH_ICONS_PROFILE
     if layout_key == "contacts":
@@ -402,6 +504,8 @@ def geometry_policy_for_layout(layout_key: str) -> LayoutGeometryPolicy:
         return IMAGE_TEXT_LAYOUT_GEOMETRY_POLICY
     if layout_key == "cards_3":
         return CARDS_3_LAYOUT_GEOMETRY_POLICY
+    if layout_key == "cards_kpi":
+        return CARDS_KPI_LAYOUT_GEOMETRY_POLICY
     if layout_key == "list_with_icons":
         return LIST_WITH_ICONS_LAYOUT_GEOMETRY_POLICY
     if layout_key == "contacts":
@@ -419,6 +523,8 @@ def spacing_policy_for_layout(layout_key: str) -> LayoutSpacingPolicy:
     if layout_key == "image_text":
         return IMAGE_TEXT_LAYOUT_SPACING_POLICY
     if layout_key == "cards_3":
+        return CARDS_3_LAYOUT_SPACING_POLICY
+    if layout_key == "cards_kpi":
         return CARDS_3_LAYOUT_SPACING_POLICY
     if layout_key == "list_with_icons":
         return LIST_WITH_ICONS_LAYOUT_SPACING_POLICY

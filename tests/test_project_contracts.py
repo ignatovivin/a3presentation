@@ -28,7 +28,13 @@ from a3presentation.domain.presentation import (
     TableBlock,
 )
 from a3presentation.domain.template import (
+    ComponentConfidence,
+    ComponentEditability,
+    ComponentGeometry,
+    ExtractedComponent,
     ExtractedComponentRole,
+    ExtractedPresentationInventory,
+    ExtractedSlideInventory,
     ExtractedComponentType,
     GenerationMode,
     InventorySourceKind,
@@ -576,6 +582,10 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(reviews[0].current_layout_key, adapted.slides[0].preferred_layout_key)
         self.assertEqual(reviews[0].current_target_key, adapted.slides[0].render_target.key)
         self.assertEqual(reviews[0].current_target_type, adapted.slides[0].render_target.type.value)
+        self.assertEqual(reviews[0].current_target_source, adapted.slides[0].render_target.source)
+        self.assertEqual(reviews[0].current_target_explanation, adapted.slides[0].render_target.source and "Слайд будет заполнен через layout target из извлеченного inventory.")
+        self.assertEqual(reviews[0].current_target_confidence, adapted.slides[0].render_target.confidence)
+        self.assertEqual(reviews[0].current_target_degradation_reasons, adapted.slides[0].render_target.degradation_reasons)
         self.assertEqual(reviews[0].current_runtime_profile_key, adapted.slides[0].runtime_profile_key)
         self.assertTrue(reviews[0].available_layouts)
         self.assertEqual(reviews[0].available_layouts[0].key, adapted.slides[0].preferred_layout_key)
@@ -633,6 +643,65 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(reviews[0].current_target_type, "prototype")
         self.assertEqual(reviews[0].available_layouts[0].key, "prototype_text")
 
+    def test_template_registry_preserves_planner_degradation_metadata_when_resolving_target(self) -> None:
+        manifest = TemplateManifest(
+            template_id="degradation_merge_demo",
+            display_name="Degradation Merge Demo",
+            source_pptx="demo.pptx",
+            generation_mode=GenerationMode.LAYOUT,
+            layouts=[
+                LayoutSpec(
+                    key="text_layout",
+                    name="Text Layout",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1200000,
+                            width_emu=7000000,
+                            height_emu=2600000,
+                        )
+                    ],
+                )
+            ],
+        )
+        plan = PresentationPlan(
+            template_id="degradation_merge_demo",
+            title="Merge Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Fallback text",
+                    text="Narrative body",
+                    runtime_profile_key="text_layout",
+                    render_target=SlideRenderTarget(
+                        type=RenderTargetType.LAYOUT,
+                        key="text_layout",
+                        source="planner fallback",
+                        degradation_reasons=["document_fallback"],
+                        confidence="medium",
+                    ),
+                )
+            ],
+        )
+
+        adapted = self.registry.apply_layout_inventory_to_plan(manifest, plan)
+        review = self.registry.build_slide_layout_reviews(manifest, adapted)[0]
+
+        self.assertEqual(adapted.slides[0].render_target.key, "text_layout")
+        self.assertIn("document_fallback", adapted.slides[0].render_target.degradation_reasons)
+        self.assertEqual(adapted.slides[0].render_target.confidence, "medium")
+        self.assertIn("planner fallback", adapted.slides[0].render_target.source or "")
+        self.assertEqual(review.current_target_source, adapted.slides[0].render_target.source)
+        self.assertEqual(review.current_target_confidence, "medium")
+        self.assertIn("document_fallback", review.current_target_degradation_reasons)
+
     def test_template_registry_marks_unresolved_target_as_auto_layout(self) -> None:
         manifest = TemplateManifest(
             template_id="empty_inventory_demo",
@@ -658,6 +727,152 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(adapted.slides[0].render_target.type.value, "auto_layout")
         self.assertEqual(adapted.slides[0].render_target.key, "text_full_width")
         self.assertEqual(adapted.slides[0].render_target.degradation_reasons, ["inventory_unresolved"])
+
+    def test_template_registry_builds_direct_shape_binding_target_from_inventory(self) -> None:
+        manifest = TemplateManifest(
+            template_id="direct_binding_demo",
+            display_name="Direct Binding Demo",
+            source_pptx="demo.pptx",
+            inventory=ExtractedPresentationInventory(
+                degradation_mode="direct_shape_binding",
+                slides=[
+                    ExtractedSlideInventory(
+                        source_kind=InventorySourceKind.SLIDE,
+                        source_index=0,
+                        name="Direct Slide",
+                        component_ids=["slide_0_title", "slide_0_body"],
+                        supported_slide_kinds=["text"],
+                        representation_hints=["text"],
+                    )
+                ],
+                components=[
+                    ExtractedComponent(
+                        component_id="slide_0_title",
+                        source_kind=InventorySourceKind.SLIDE,
+                        source_index=0,
+                        source_name="Direct Slide",
+                        shape_name="Title Box",
+                        component_type=ExtractedComponentType.TEXT,
+                        role=ExtractedComponentRole.TITLE,
+                        binding="title",
+                        confidence=ComponentConfidence.MEDIUM,
+                        editability=ComponentEditability.EDITABLE,
+                        capabilities=["text"],
+                        geometry=ComponentGeometry(left_emu=600000, top_emu=400000, width_emu=8000000, height_emu=900000),
+                    ),
+                    ExtractedComponent(
+                        component_id="slide_0_body",
+                        source_kind=InventorySourceKind.SLIDE,
+                        source_index=0,
+                        source_name="Direct Slide",
+                        shape_name="Body Box",
+                        component_type=ExtractedComponentType.TEXT,
+                        role=ExtractedComponentRole.BODY,
+                        binding="body",
+                        confidence=ComponentConfidence.MEDIUM,
+                        editability=ComponentEditability.EDITABLE,
+                        capabilities=["text"],
+                        geometry=ComponentGeometry(left_emu=600000, top_emu=1800000, width_emu=7600000, height_emu=2400000),
+                    ),
+                ],
+            ),
+        )
+        plan = PresentationPlan(
+            template_id="direct_binding_demo",
+            title="Direct Binding",
+            slides=[SlideSpec(kind=SlideKind.TEXT, title="Title", text="Body text")],
+        )
+
+        adapted = self.registry.apply_layout_inventory_to_plan(manifest, plan)
+        summary = self.registry.build_inventory_summary(manifest)
+        editable_targets = self.registry.build_editable_targets(manifest)
+        reviews = self.registry.build_slide_layout_reviews(manifest, adapted)
+
+        self.assertEqual(summary.direct_target_count, 1)
+        self.assertTrue(any(target.source == "direct_shape_binding" for target in summary.targets))
+        self.assertTrue(any(target.source == "direct_shape_binding" for target in editable_targets))
+        self.assertEqual(adapted.slides[0].render_target.type.value, "direct_shape_binding")
+        self.assertEqual(adapted.slides[0].render_target.key, "direct_slide_0")
+        self.assertIn("direct_shape_binding", adapted.slides[0].render_target.degradation_reasons)
+        self.assertEqual(reviews[0].current_target_type, "direct_shape_binding")
+        self.assertEqual(reviews[0].current_target_key, "direct_slide_0")
+        self.assertEqual(
+            reviews[0].current_target_explanation,
+            "Слайд будет заполнен через извлеченные именованные shapes исходной презентации.",
+        )
+
+    def test_template_registry_prefers_direct_shape_binding_target_when_manifest_declares_direct_binding_degradation(self) -> None:
+        manifest = TemplateManifest(
+            template_id="direct_binding_priority_demo",
+            display_name="Direct Binding Priority Demo",
+            source_pptx="demo.pptx",
+            layouts=[
+                LayoutSpec(
+                    key="text_layout",
+                    name="Text Layout",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1200000,
+                            width_emu=7000000,
+                            height_emu=2600000,
+                        )
+                    ],
+                )
+            ],
+            inventory=ExtractedPresentationInventory(
+                degradation_mode="direct_shape_binding",
+                slides=[
+                    ExtractedSlideInventory(
+                        source_kind=InventorySourceKind.SLIDE,
+                        source_index=0,
+                        name="Direct Slide",
+                        component_ids=["slide_0_body"],
+                        supported_slide_kinds=["text"],
+                        representation_hints=["text"],
+                    )
+                ],
+                components=[
+                    ExtractedComponent(
+                        component_id="slide_0_body",
+                        source_kind=InventorySourceKind.SLIDE,
+                        source_index=0,
+                        source_name="Direct Slide",
+                        shape_name="Body Box",
+                        component_type=ExtractedComponentType.TEXT,
+                        role=ExtractedComponentRole.BODY,
+                        binding="body",
+                        confidence=ComponentConfidence.MEDIUM,
+                        editability=ComponentEditability.EDITABLE,
+                        capabilities=["text"],
+                        geometry=ComponentGeometry(left_emu=600000, top_emu=1800000, width_emu=7600000, height_emu=2400000),
+                    )
+                ],
+            ),
+        )
+        slide = SlideSpec(kind=SlideKind.TEXT, title="Targeted slide", text="Narrative body")
+
+        reviews = self.registry.build_slide_layout_reviews(
+            manifest,
+            PresentationPlan(template_id="direct_binding_priority_demo", title="Ranking", slides=[slide]),
+        )
+        resolved = self.registry.resolve_layout_key_for_slide(manifest, slide)
+
+        self.assertEqual(reviews[0].available_layouts[0].source, "direct_shape_binding")
+        self.assertEqual(reviews[0].available_layouts[0].key, "direct_slide_0")
+        self.assertIn("direct binding", reviews[0].available_layouts[0].match_summary or "")
+        self.assertIn("source shapes", reviews[0].available_layouts[0].match_summary or "")
+        self.assertTrue(
+            any("shape bindings" in reason for reason in reviews[0].available_layouts[0].recommendation_reasons)
+        )
+        self.assertEqual(resolved, "direct_slide_0")
 
     def test_template_registry_ranks_text_layouts_by_semantics_and_capacity(self) -> None:
         manifest = TemplateManifest(
@@ -1955,6 +2170,99 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(shape.top, bound_text_token.top_emu)
         self.assertEqual(shape.width, bound_text_token.width_emu)
         self.assertEqual(shape.height, bound_text_token.height_emu)
+
+    def test_generator_renders_direct_shape_binding_target_from_inventory(self) -> None:
+        pptx = Presentation()
+        slide = pptx.slides.add_slide(pptx.slide_layouts[6])
+        title_shape = slide.shapes.add_textbox(600000, 400000, 8000000, 900000)
+        title_shape.name = "Title Box"
+        body_shape = slide.shapes.add_textbox(600000, 1800000, 7600000, 2400000)
+        body_shape.name = "Body Box"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            template_path = Path(temp_dir) / "direct-binding-template.pptx"
+            pptx.save(str(template_path))
+            manifest = TemplateManifest(
+                template_id="direct_binding_demo",
+                display_name="Direct Binding Demo",
+                source_pptx=template_path.name,
+                inventory=ExtractedPresentationInventory(
+                    degradation_mode="direct_shape_binding",
+                    slides=[
+                        ExtractedSlideInventory(
+                            source_kind=InventorySourceKind.SLIDE,
+                            source_index=0,
+                            name="Direct Slide",
+                            component_ids=["slide_0_title", "slide_0_body"],
+                            supported_slide_kinds=["text"],
+                            representation_hints=["text"],
+                        )
+                    ],
+                    components=[
+                        ExtractedComponent(
+                            component_id="slide_0_title",
+                            source_kind=InventorySourceKind.SLIDE,
+                            source_index=0,
+                            source_name="Direct Slide",
+                            shape_name="Title Box",
+                            component_type=ExtractedComponentType.TEXT,
+                            role=ExtractedComponentRole.TITLE,
+                            binding="title",
+                            confidence=ComponentConfidence.MEDIUM,
+                            editability=ComponentEditability.EDITABLE,
+                            capabilities=["text"],
+                            geometry=ComponentGeometry(left_emu=600000, top_emu=400000, width_emu=8000000, height_emu=900000),
+                        ),
+                        ExtractedComponent(
+                            component_id="slide_0_body",
+                            source_kind=InventorySourceKind.SLIDE,
+                            source_index=0,
+                            source_name="Direct Slide",
+                            shape_name="Body Box",
+                            component_type=ExtractedComponentType.TEXT,
+                            role=ExtractedComponentRole.BODY,
+                            binding="body",
+                            confidence=ComponentConfidence.MEDIUM,
+                            editability=ComponentEditability.EDITABLE,
+                            capabilities=["text"],
+                            geometry=ComponentGeometry(left_emu=600000, top_emu=1800000, width_emu=7600000, height_emu=2400000),
+                        ),
+                    ],
+                ),
+            )
+            plan = PresentationPlan(
+                template_id="direct_binding_demo",
+                title="Direct Binding Demo",
+                slides=[
+                    SlideSpec(
+                        kind=SlideKind.TEXT,
+                        title="Direct title",
+                        text="Direct body text",
+                        render_target=SlideRenderTarget(
+                            type=RenderTargetType.DIRECT_SHAPE_BINDING,
+                            key="direct_slide_0",
+                        ),
+                    )
+                ],
+            )
+
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+            audits = audit_generated_presentation(output_path, plan, manifest)
+
+        output_slide = presentation.slides[0]
+        rendered_title = next(shape for shape in output_slide.shapes if shape.name == "Title Box")
+        rendered_body = next(shape for shape in output_slide.shapes if shape.name == "Body Box")
+        self.assertIn("Direct title", rendered_title.text)
+        self.assertIn("Direct body text", rendered_body.text)
+        self.assertEqual(audits[0].target_type, "direct_shape_binding")
+        self.assertTrue(audits[0].degraded_but_valid)
+        self.assertEqual(audits[0].target_degradation_reasons, ())
 
     def test_deck_audit_uses_manifest_geometry_metadata_for_uploaded_prototype_templates(self) -> None:
         template_id = "razmeshchenie_soglasiy"
@@ -4482,6 +4790,80 @@ class ProjectContractTests(unittest.TestCase):
 
         violations = find_capacity_violations([audit])
         self.assertIn("underfilled_placeholder_fill", {violation.rule for violation in violations})
+
+    def test_deck_audit_skips_strict_safe_layout_rules_for_auto_layout_targets(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Fallback",
+            kind=SlideKind.TEXT.value,
+            layout_key="text_full_width",
+            body_char_count=140,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("text_full_width"),
+            title_top=671247,
+            title_height=800000,
+            body_top=1900000,
+            body_height=1200000,
+            body_left=900000,
+            body_margin_left=0,
+            body_margin_right=0,
+            body_margin_top=0,
+            body_margin_bottom=0,
+            footer_top=6384626,
+            footer_left=0,
+            footer_width=1000000,
+            footer_placeholder_idx=17,
+            placeholder_char_counts={0: 6, 14: 40, 17: 10},
+            subtitle_placeholder_idx=13,
+            expected_subtitle_char_count=12,
+            target_type="auto_layout",
+        )
+
+        violations = {violation.rule for violation in find_capacity_violations([audit])}
+        self.assertNotIn("underfilled_placeholder_fill", violations)
+        self.assertNotIn("body_left_misalignment", violations)
+        self.assertNotIn("body_margin_mismatch", violations)
+        self.assertNotIn("narrow_text_footer", violations)
+        self.assertNotIn("narrow_footer", violations)
+        self.assertNotIn("footer_left_misalignment", violations)
+        self.assertNotIn("underfilled_subtitle_placeholder_fill", violations)
+
+    def test_deck_audit_skips_strict_safe_layout_rules_for_direct_shape_binding_targets(self) -> None:
+        audit = SlideAudit(
+            slide_index=2,
+            title="Direct binding",
+            kind=SlideKind.TEXT.value,
+            layout_key="text_full_width",
+            body_char_count=140,
+            body_font_sizes=(14.0,),
+            profile=profile_for_layout("text_full_width"),
+            title_top=671247,
+            title_height=800000,
+            body_top=1900000,
+            body_height=1200000,
+            body_left=900000,
+            body_margin_left=0,
+            body_margin_right=0,
+            body_margin_top=0,
+            body_margin_bottom=0,
+            footer_top=6384626,
+            footer_left=0,
+            footer_width=1000000,
+            footer_placeholder_idx=17,
+            placeholder_char_counts={0: 6, 14: 40, 17: 10},
+            subtitle_placeholder_idx=13,
+            expected_subtitle_char_count=12,
+            target_type="direct_shape_binding",
+        )
+
+        violations = {violation.rule for violation in find_capacity_violations([audit])}
+        self.assertNotIn("underfilled_placeholder_fill", violations)
+        self.assertNotIn("body_left_misalignment", violations)
+        self.assertNotIn("body_margin_mismatch", violations)
+        self.assertNotIn("narrow_text_footer", violations)
+        self.assertNotIn("narrow_footer", violations)
+        self.assertNotIn("footer_left_misalignment", violations)
+        self.assertNotIn("underfilled_subtitle_placeholder_fill", violations)
 
     def test_deck_audit_flags_underfilled_auxiliary_placeholder_fill(self) -> None:
         audit = SlideAudit(

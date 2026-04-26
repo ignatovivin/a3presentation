@@ -234,6 +234,40 @@ class RegressionCorpusTests(unittest.TestCase):
                     presentation = Presentation(str(output_path))
                     self.assertEqual(len(presentation.slides), len(plan.slides))
 
+    def test_generated_docx_corpus_covers_stress_and_rich_media_document_classes(self) -> None:
+        cases = [
+            ("question-callout.docx", self._build_question_callout_docx(), None),
+            ("long-title-stress.docx", self._build_long_title_layout_stress_docx(), None),
+            ("appendix-heavy.docx", self._build_appendix_heavy_docx(), None),
+            ("chart-heavy.docx", self._build_chart_heavy_docx(), {SlideKind.TABLE, SlideKind.CHART}),
+            ("image-heavy.docx", self._build_image_heavy_docx(), {SlideKind.IMAGE}),
+            ("fact-only.docx", self._build_fact_only_docx(), None),
+        ]
+        extractor = DocumentTextExtractor()
+        planner = TextToPlanService()
+
+        for filename, content, required_kinds in cases:
+            with self.subTest(case=filename):
+                text, tables, blocks = extractor.extract(filename, content)
+                plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+
+                self.assertGreaterEqual(len(plan.slides), 1)
+                if required_kinds is not None:
+                    self.assertTrue(any(slide.kind in required_kinds for slide in plan.slides))
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    output_path = PptxGenerator().generate(
+                        template_path=self.template_path,
+                        manifest=self.manifest,
+                        plan=plan,
+                        output_dir=Path(temp_dir),
+                    )
+                    presentation = Presentation(str(output_path))
+                    audits = audit_generated_presentation(output_path, plan)
+
+                self.assertEqual(len(presentation.slides), len(plan.slides))
+                self.assertEqual(find_capacity_violations(audits), [])
+
     def test_form_like_docx_generates_deck_without_capacity_violations(self) -> None:
         extractor = DocumentTextExtractor()
         planner = TextToPlanService()

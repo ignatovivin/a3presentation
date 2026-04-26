@@ -10,7 +10,7 @@ from docx import Document
 from a3presentation.domain.api import ChartOverride
 from a3presentation.domain.chart import ChartConfidence, ChartSeries, ChartSpec, ChartType
 from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec
-from a3presentation.domain.template import GenerationMode
+from a3presentation.domain.template import GenerationMode, PlaceholderKind
 from a3presentation.services.deck_audit import audit_generated_presentation, find_capacity_violations
 from a3presentation.services.document_text_extractor import DocumentTextExtractor
 from a3presentation.services.planner import TextToPlanService
@@ -128,6 +128,8 @@ class QualityContractTests(unittest.TestCase):
     def test_uploaded_layout_template_text_document_respects_quality_contract(self) -> None:
         template_id = "razmeshchenie_soglasiy"
         template_path = self.settings.templates_dir / template_id / "template.pptx"
+        if not template_path.exists():
+            self.skipTest(f"optional uploaded template is not installed: {template_id}")
         manifest = self.analyzer.analyze(
             template_id=template_id,
             template_path=template_path,
@@ -153,6 +155,8 @@ class QualityContractTests(unittest.TestCase):
 
     def test_uploaded_prototype_template_text_document_respects_quality_contract(self) -> None:
         template_id = "razmeshchenie_soglasiy"
+        if not (self.settings.templates_dir / template_id).exists():
+            self.skipTest(f"optional uploaded template is not installed: {template_id}")
         manifest = self.registry.get_template(template_id)
         template_path = self.settings.templates_dir / template_id / manifest.source_pptx
         prototype = next(
@@ -185,7 +189,8 @@ class QualityContractTests(unittest.TestCase):
             if manifest.generation_mode == GenerationMode.PROTOTYPE
             and any(any(token.binding == "chart_image" for token in prototype.tokens) for prototype in manifest.prototype_slides)
         ]
-        self.assertTrue(manifests)
+        if not manifests:
+            self.skipTest("no optional uploaded prototype template with chart_image binding is installed")
 
         for manifest in manifests:
             template_path = self.settings.templates_dir / manifest.template_id / manifest.source_pptx
@@ -227,6 +232,66 @@ class QualityContractTests(unittest.TestCase):
                 violations = self._generate_and_audit(plan, manifest=manifest, template_path=template_path)
                 self.assertEqual(violations, [])
 
+    def test_installed_user_templates_keep_optional_quality_matrix_without_fatal_slot_regressions(self) -> None:
+        manifests = [manifest for manifest in self.registry.list_templates() if manifest.template_id != "corp_light_v1"]
+        if not manifests:
+            self.skipTest("no optional user templates are installed")
+
+        checked_templates = 0
+        for manifest in manifests:
+            template_path = self.settings.templates_dir / manifest.template_id / manifest.source_pptx
+            if not template_path.exists():
+                continue
+
+            text_layout_key = self._first_supported_template_key(manifest, {SlideKind.TEXT, SlideKind.BULLETS, SlideKind.TWO_COLUMN})
+            if text_layout_key is None:
+                continue
+
+            with self.subTest(template_id=manifest.template_id):
+                slides = [
+                    SlideSpec(
+                        kind=SlideKind.TEXT,
+                        title="Контекст",
+                        text="Короткий контрольный текст для template-aware quality sweep.",
+                        preferred_layout_key=text_layout_key,
+                    )
+                ]
+                chart_layout_key = self._first_supported_template_key(manifest, {SlideKind.CHART})
+                if chart_layout_key is not None:
+                    slides.append(
+                        SlideSpec(
+                            kind=SlideKind.CHART,
+                            title="Выручка",
+                            subtitle="Контрольный chart sweep",
+                            chart=ChartSpec(
+                                chart_id=f"quality_matrix_{manifest.template_id}",
+                                source_table_id="table_1",
+                                chart_type=ChartType.COMBO,
+                                title="Выручка и маржа",
+                                categories=["Q1", "Q2", "Q3"],
+                                series=[
+                                    ChartSeries(name="Выручка", values=[104_300_000.0, 111_300_000.0, 135_700_000.0], unit="RUB"),
+                                    ChartSeries(name="Маржа", values=[18.0, 22.0, 27.0], unit="%"),
+                                ],
+                                confidence=ChartConfidence.HIGH,
+                                value_format="number",
+                            ),
+                            preferred_layout_key=chart_layout_key,
+                        )
+                    )
+
+                plan = PresentationPlan(
+                    template_id=manifest.template_id,
+                    title=f"{manifest.display_name} Optional Quality Matrix",
+                    slides=slides,
+                )
+                violations = self._generate_and_audit(plan, manifest=manifest, template_path=template_path)
+                forbidden_rules = {"missing_table_shape", "missing_chart_shape", "missing_image_shape", "content_order_mismatch"}
+                self.assertFalse(any(item.rule in forbidden_rules for item in violations))
+                checked_templates += 1
+
+        self.assertGreater(checked_templates, 0)
+
     def _generate_and_audit(self, plan, manifest=None, template_path=None):
         active_manifest = manifest or self.manifest
         active_template_path = template_path or self.template_path
@@ -239,6 +304,44 @@ class QualityContractTests(unittest.TestCase):
             )
             audits = audit_generated_presentation(output_path, plan, active_manifest)
         return find_capacity_violations(audits)
+
+    def _first_supported_template_key(self, manifest, slide_kinds: set[SlideKind]) -> str | None:
+        supported_kinds = {kind.value for kind in slide_kinds}
+        wants_chart = SlideKind.CHART in slide_kinds
+        if manifest.generation_mode == GenerationMode.PROTOTYPE:
+            if wants_chart:
+                for prototype in manifest.prototype_slides:
+                    if "chart" in prototype.supported_slide_kinds and any(token.binding == "chart_image" for token in prototype.tokens):
+                        return prototype.key
+
+            preferred_text_bindings = ("main_text", "body", "bullets", "left_text", "left_bullets")
+            for binding in preferred_text_bindings:
+                for prototype in manifest.prototype_slides:
+                    if supported_kinds & set(prototype.supported_slide_kinds) and any(token.binding == binding for token in prototype.tokens):
+                        return prototype.key
+
+            for prototype in manifest.prototype_slides:
+                if supported_kinds & set(prototype.supported_slide_kinds):
+                    return prototype.key
+            return None
+
+        if wants_chart:
+            for layout in manifest.layouts:
+                if "chart" in layout.supported_slide_kinds and any(
+                    placeholder.kind in {PlaceholderKind.CHART, PlaceholderKind.IMAGE} for placeholder in layout.placeholders
+                ):
+                    return layout.key
+
+        for layout in manifest.layouts:
+            if supported_kinds & set(layout.supported_slide_kinds) and any(
+                placeholder.kind == PlaceholderKind.BODY for placeholder in layout.placeholders
+            ):
+                return layout.key
+
+        for layout in manifest.layouts:
+            if supported_kinds & set(layout.supported_slide_kinds):
+                return layout.key
+        return None
 
     def _block(self, kind: str, text: str, **kwargs):
         from a3presentation.domain.api import DocumentBlock

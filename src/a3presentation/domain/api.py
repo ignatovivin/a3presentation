@@ -22,7 +22,7 @@ class TemplateSummary(BaseModel):
 class InventoryTargetSummary(BaseModel):
     key: str
     name: str
-    source: str = Field(pattern="^(layout|prototype)$")
+    source: str = Field(pattern="^(layout|prototype|direct_shape_binding)$")
     source_label: str | None = None
     supported_slide_kinds: list[str] = Field(default_factory=list)
     representation_hints: list[str] = Field(default_factory=list)
@@ -39,13 +39,14 @@ class TemplateInventorySummary(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     layout_target_count: int = 0
     prototype_target_count: int = 0
+    direct_target_count: int = 0
     targets: list[InventoryTargetSummary] = Field(default_factory=list)
 
 
 class EditableTargetSummary(BaseModel):
     key: str
     name: str
-    source: str = Field(pattern="^(layout|prototype)$")
+    source: str = Field(pattern="^(layout|prototype|direct_shape_binding)$")
     source_label: str | None = None
     runtime_profile_key: str | None = None
     supported_slide_kinds: list[str] = Field(default_factory=list)
@@ -92,7 +93,7 @@ class PlanWithTemplateResponse(BaseModel):
 class SlideLayoutOption(BaseModel):
     key: str
     name: str
-    source: str = Field(pattern="^(layout|prototype)$")
+    source: str = Field(pattern="^(layout|prototype|direct_shape_binding)$")
     source_label: str | None = None
     runtime_profile_key: str | None = None
     supported_slide_kinds: list[str] = Field(default_factory=list)
@@ -111,6 +112,10 @@ class SlideLayoutReview(BaseModel):
     current_layout_key: str | None = None
     current_target_key: str | None = None
     current_target_type: str | None = Field(default=None, pattern="^(layout|prototype|direct_shape_binding|auto_layout)$")
+    current_target_source: str | None = None
+    current_target_explanation: str | None = None
+    current_target_confidence: str | None = None
+    current_target_degradation_reasons: list[str] = Field(default_factory=list)
     current_runtime_profile_key: str | None = None
     available_layouts: list[SlideLayoutOption] = Field(default_factory=list)
 

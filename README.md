@@ -96,6 +96,26 @@ yarn build
 yarn verify
 ```
 
+## Graphify
+
+`graphify` is installed in the project virtual environment for lower-token codebase analysis.
+
+Setup already applied in this repo:
+
+- local CLI in `.venv`
+- project exclusions in `.graphifyignore`
+- Codex integration in `AGENTS.md` and `.codex/hooks.json`
+
+Common commands:
+
+```bash
+/graphify .                                  # first graph build in Codex for the repo
+.venv\Scripts\graphify.exe update .          # refresh after code changes, AST-only for code-only diffs
+.venv\Scripts\graphify.exe query "question"  # ask against graphify-out/graph.json
+```
+
+Recommended exclusions are maintained in `.graphifyignore` so the graph skips `.venv`, frontend build output, logs, generated PPTX files, and other high-noise folders.
+
 ## Environment requirements
 
 - Python 3.11+
@@ -166,12 +186,31 @@ Frontend smoke and visual checks:
 ```bash
 cd frontend
 yarn test:smoke
+yarn test:runtime
 yarn test:visual
+```
+
+Minimal local release gate:
+
+```powershell
+.\scripts\release-gate.ps1
+.\scripts\release-gate.ps1 -IncludeVisual
 ```
 
 GitHub Actions runs backend tests, frontend verification, and the dedicated quality-contract gate on pushes and pull requests for `dev`, `test`, and `main`.
 Frontend smoke tests are also suitable as a separate CI gate.
 For the actual production server, pushes to `dev` trigger an SSH deploy job to Timeweb after all checks pass.
+
+Runtime and Playwright guardrails:
+
+- local frontend dev stays on `127.0.0.1:5173`, while Playwright uses `127.0.0.1:4173` by default to avoid colliding with an already running dev session
+- Playwright backend stays on `127.0.0.1:8000`
+- if a CI runner or parallel local session needs different ports, override `PLAYWRIGHT_FRONTEND_PORT` and `PLAYWRIGHT_BACKEND_PORT`
+- these two ports must stay different; `frontend/playwright.config.ts` now fails fast on invalid or overlapping values
+- Playwright injects `VITE_API_BASE_URL` to the local backend origin, so smoke/runtime tests must not point at production or shared staging APIs
+- `yarn test:runtime` should stay serial (`--workers 1`) because it verifies real local generation/download flow and writes runtime artifacts
+- `.\scripts\release-gate.ps1` now means `pytest tests/test_api.py` + `yarn verify` + `yarn test:smoke --workers 1` + `yarn test:runtime`
+- visual snapshots remain a separate approval layer; run `.\scripts\release-gate.ps1 -IncludeVisual` only when UI intentionally changed or snapshot baselines were refreshed, and keep visual approval serial
 
 ## API entry points
 

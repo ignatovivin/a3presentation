@@ -23,7 +23,286 @@
     "title_font_weight": 600,
     "subtitle_font_weight": 400,
     "body_font_weight": 400,
-    "footer_font_weight": 400
+    "footer_font_weight": 400,
+    "table_header_fill_color": "#C6DFFF",
+    "table_header_text_color": "#091E38",
+    "table_border_color": "#C6DFFF",
+    "table_body_fill_transparent": true,
+    "table_preserve_source_fill_colors": false,
+    "table_render_as_shapes": true,
+    "cards_body_font_size_pt": 16,
+    "chart_rank_color_1": "#091E38",
+    "chart_rank_color_2": "#3489F3",
+    "chart_rank_color_3": "#264595",
+    "chart_rank_color_4": "#BFCEF5"
+  },
+  "component_styles": {
+    "cards": {
+      "text_styles": {
+        "title": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 20.0,
+          "font_weight": 600,
+          "bold": true,
+          "color": "#FFFFFF"
+        },
+        "body": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 16.0,
+          "font_weight": 400,
+          "color": "#FFFFFF"
+        },
+        "kpi_value": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 22.0,
+          "font_weight": 600,
+          "bold": true,
+          "color": "#FFFFFF"
+        },
+        "kpi_label": {
+          "font_family": "Mont Regular",
+          "font_size_pt": 12.0,
+          "font_weight": 400,
+          "color": "#E4F1FF"
+        }
+      },
+      "spacing_tokens": {
+        "content_margin_x_emu": 91440,
+        "content_margin_y_emu": 45720,
+        "title_body_gap_emu": 100000,
+        "body_metrics_gap_emu": 180000,
+        "metrics_gap_x_emu": 180000,
+        "metrics_gap_y_emu": 160000
+      },
+      "behavior_tokens": {
+        "kpi_max_metrics": 4,
+        "kpi_value_compact_font_pt": 20,
+        "kpi_value_regular_font_pt": 22
+      }
+    },
+    "text": {
+      "text_styles": {
+        "title": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 35.0,
+          "font_weight": 600,
+          "bold": true,
+          "color": "#081C4F"
+        },
+        "body": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 20.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        },
+        "footer": {
+          "font_family": "Mont Regular",
+          "font_size_pt": 18.0,
+          "font_weight": 400,
+          "color": "#3489F3"
+        }
+      },
+      "spacing_tokens": {
+        "content_margin_x_emu": 91440,
+        "content_margin_y_emu": 45720
+      }
+    },
+    "table": {
+      "text_styles": {
+        "header": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 16.0,
+          "font_weight": 600,
+          "bold": true,
+          "color": "#091E38"
+        },
+        "body": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 16.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        }
+      },
+      "spacing_tokens": {
+        "cell_margin_left_emu": 80000,
+        "cell_margin_right_emu": 80000,
+        "cell_margin_top_emu": 40000,
+        "cell_margin_bottom_emu": 40000
+      },
+      "behavior_tokens": {
+        "header_fill_color": "#C6DFFF",
+        "header_text_color": "#091E38",
+        "border_color": "#C6DFFF",
+        "body_fill_transparent": true,
+        "preserve_source_fill_colors": false,
+        "render_as_shapes": true
+      }
+    },
+    "chart": {
+      "text_styles": {
+        "title": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 35.0,
+          "font_weight": 600,
+          "bold": true,
+          "color": "#081C4F"
+        },
+        "subtitle": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 20.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        }
+      },
+      "shape_style": {
+        "role": "chart",
+        "chart_plot_left_factor": 0.0,
+        "chart_plot_top_factor": 0.0,
+        "chart_plot_width_factor": 1.0,
+        "chart_plot_height_factor": 1.0
+      },
+      "behavior_tokens": {
+        "rank_color_1": "#091E38",
+        "rank_color_2": "#3489F3",
+        "rank_color_3": "#264595",
+        "rank_color_4": "#BFCEF5"
+      }
+    },
+    "image": {
+      "text_styles": {
+        "title": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 35.0,
+          "font_weight": 600,
+          "bold": true,
+          "color": "#081C4F"
+        },
+        "subtitle": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 18.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        },
+        "body": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 20.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        },
+        "footer": {
+          "font_family": "Mont Regular",
+          "font_size_pt": 18.0,
+          "font_weight": 400,
+          "color": "#3489F3"
+        }
+      },
+      "spacing_tokens": {
+        "content_margin_x_emu": 91440,
+        "content_margin_y_emu": 45720,
+        "title_content_gap_emu": 180000,
+        "title_body_gap_no_subtitle_emu": 300000,
+        "content_footer_gap_emu": 180000,
+        "min_image_height_emu": 1200000,
+        "secondary_min_height_emu": 700000,
+        "secondary_reserved_image_gap_emu": 900000
+      }
+    },
+    "cover": {
+      "text_styles": {
+        "title": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 46.0,
+          "font_weight": 600,
+          "bold": true,
+          "color": "#F5F9FE"
+        },
+        "meta": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 22.0,
+          "font_weight": 400,
+          "color": "#F5F9FE"
+        },
+        "footer": {
+          "font_family": "Mont Regular",
+          "font_size_pt": 14.0,
+          "font_weight": 400,
+          "color": "#F5F9FE"
+        }
+      },
+      "spacing_tokens": {
+        "title_top_emu": 651176,
+        "title_left_emu": 444249,
+        "title_width_emu": 10693901,
+        "title_min_height_emu": 1422646,
+        "meta_left_emu": 444249,
+        "meta_top_emu": 2438400,
+        "meta_width_emu": 8200000,
+        "meta_min_height_emu": 700000,
+        "meta_gap_emu": 220000,
+        "bottom_limit_emu": 6200000
+      }
+    },
+    "list_with_icons": {
+      "text_styles": {
+        "title": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 35.0,
+          "font_weight": 600,
+          "bold": true,
+          "color": "#081C4F"
+        },
+        "subtitle": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 18.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        },
+        "left": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 20.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        },
+        "right": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 20.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        },
+        "footer": {
+          "font_family": "Mont Regular",
+          "font_size_pt": 18.0,
+          "font_weight": 400,
+          "color": "#3489F3"
+        }
+      },
+      "spacing_tokens": {
+        "title_content_gap_emu": 180000,
+        "title_body_gap_no_subtitle_emu": 300000,
+        "content_footer_gap_emu": 180000
+      }
+    },
+    "contacts": {
+      "text_styles": {
+        "primary": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 18.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        },
+        "secondary": {
+          "font_family": "Mont SemiBold",
+          "font_size_pt": 14.0,
+          "font_weight": 400,
+          "color": "#081C4F"
+        }
+      },
+      "behavior_tokens": {
+        "primary_threshold_chars": 60,
+        "secondary_threshold_chars": 40,
+        "font_decrement_pt": 2.0
+      }
+    }
   },
   "theme": {
     "color_scheme": {

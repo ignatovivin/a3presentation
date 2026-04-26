@@ -10,6 +10,10 @@ export type PlaceholderSpec = {
   idx?: number | null;
   shape_name?: string | null;
   binding?: string | null;
+  editable_role?: string | null;
+  editable_capabilities: string[];
+  slot_group?: string | null;
+  slot_group_order?: number | null;
   max_chars?: number | null;
   left_emu?: number | null;
   top_emu?: number | null;
@@ -28,6 +32,7 @@ export type LayoutSpec = {
   slide_layout_index: number;
   preview_path?: string | null;
   supported_slide_kinds: string[];
+  representation_hints: string[];
   placeholders: PlaceholderSpec[];
 };
 
@@ -35,6 +40,10 @@ export type PrototypeTokenSpec = {
   token: string;
   binding: string;
   shape_name?: string | null;
+  editable_role?: string | null;
+  editable_capabilities: string[];
+  slot_group?: string | null;
+  slot_group_order?: number | null;
   left_emu?: number | null;
   top_emu?: number | null;
   width_emu?: number | null;
@@ -50,7 +59,12 @@ export type PrototypeSlideSpec = {
   name: string;
   source_slide_index: number;
   supported_slide_kinds: string[];
+  representation_hints: string[];
   tokens: PrototypeTokenSpec[];
+};
+
+export type TemplateThemeSpec = {
+  color_scheme: Record<string, string>;
 };
 
 export type TemplateManifest = {
@@ -60,18 +74,120 @@ export type TemplateManifest = {
   description?: string | null;
   generation_mode: "layout" | "prototype";
   default_layout_key?: string | null;
+  design_tokens: Record<string, string | number | boolean | null>;
+  theme: TemplateThemeSpec;
   layouts: LayoutSpec[];
   prototype_slides: PrototypeSlideSpec[];
+};
+
+export type InventoryTargetSummary = {
+  key: string;
+  name: string;
+  source: "layout" | "prototype";
+  source_label?: string | null;
+  supported_slide_kinds: string[];
+  representation_hints: string[];
+  editable_slot_count: number;
+  editable_roles: string[];
+};
+
+export type TemplateInventorySummary = {
+  generation_mode: "layout" | "prototype";
+  usability_status: "usable" | "usable_with_degradation" | "not_safely_editable";
+  has_usable_layout_inventory: boolean;
+  has_prototype_inventory: boolean;
+  degradation_mode?: string | null;
+  warnings: string[];
+  layout_target_count: number;
+  prototype_target_count: number;
+  targets: InventoryTargetSummary[];
+};
+
+export type EditableTargetSummary = {
+  key: string;
+  name: string;
+  source: "layout" | "prototype";
+  source_label?: string | null;
+  runtime_profile_key?: string | null;
+  supported_slide_kinds: string[];
+  representation_hints: string[];
+  editable_slot_count: number;
+  editable_roles: string[];
+};
+
+export type DetectedComponentSummary = {
+  component_id: string;
+  source_kind: "layout" | "slide";
+  source_index: number;
+  source_name?: string | null;
+  shape_name?: string | null;
+  component_type: string;
+  role: string;
+  binding?: string | null;
+  confidence: "high" | "medium" | "low";
+  editability: "editable" | "semi_editable" | "decorative" | "unsafe";
+  capabilities: string[];
+  geometry: {
+    left_emu?: number | null;
+    top_emu?: number | null;
+    width_emu?: number | null;
+    height_emu?: number | null;
+    margin_left_emu?: number | null;
+    margin_right_emu?: number | null;
+    margin_top_emu?: number | null;
+    margin_bottom_emu?: number | null;
+  };
+  text_excerpt?: string | null;
+  child_component_ids: string[];
 };
 
 export type TemplateDetailsResponse = {
   manifest: TemplateManifest;
   has_template_file: boolean;
+  inventory_summary: TemplateInventorySummary;
+  editable_targets: EditableTargetSummary[];
+  detected_components: DetectedComponentSummary[];
 };
 
 export type AnalyzeTemplateResponse = {
   template_id: string;
   manifest_path: string;
+  inventory_summary: TemplateInventorySummary;
+  editable_targets: EditableTargetSummary[];
+  detected_components: DetectedComponentSummary[];
+};
+
+export type PlanWithTemplateResponse = {
+  plan: PresentationPlan;
+  manifest: TemplateManifest;
+  inventory_summary: TemplateInventorySummary;
+  editable_targets: EditableTargetSummary[];
+  detected_components: DetectedComponentSummary[];
+  slide_layout_reviews: SlideLayoutReview[];
+};
+
+export type SlideLayoutOption = {
+  key: string;
+  name: string;
+  source: "layout" | "prototype";
+  source_label?: string | null;
+  runtime_profile_key?: string | null;
+  supported_slide_kinds: string[];
+  representation_hints: string[];
+  editable_slot_count: number;
+  editable_roles: string[];
+  supports_current_slide_kind: boolean;
+  estimated_text_capacity_chars?: number | null;
+  match_summary?: string | null;
+  recommendation_label?: string | null;
+  recommendation_reasons: string[];
+};
+
+export type SlideLayoutReview = {
+  slide_index: number;
+  current_layout_key?: string | null;
+  current_runtime_profile_key?: string | null;
+  available_layouts: SlideLayoutOption[];
 };
 
 export type GeneratePresentationResponse = {
@@ -85,6 +201,9 @@ export type AutoUploadTemplateResponse = {
   manifest_path: string;
   template_path: string;
   analyzed: boolean;
+  inventory_summary: TemplateInventorySummary;
+  editable_targets: EditableTargetSummary[];
+  detected_components: DetectedComponentSummary[];
 };
 
 export type ExtractTextResponse = {
@@ -220,6 +339,7 @@ export type SlideSpec = {
   source_table_id?: string | null;
   notes?: string | null;
   preferred_layout_key?: string | null;
+  runtime_profile_key?: string | null;
   image_base64?: string | null;
   image_content_type?: string | null;
 };

@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "test:e2e": "playwright test",
     "test:smoke": "playwright test --grep @smoke",
-    "test:visual": "playwright test --grep @visual"
+    "test:runtime": "playwright test e2e/runtime-chart.spec.ts --workers 1",
+    "test:visual": "playwright test --grep @visual --workers 1"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

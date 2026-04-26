@@ -89,6 +89,7 @@ storage/
 7. [deck_audit.py](../src/a3presentation/services/deck_audit.py) и [layout_capacity.py](../src/a3presentation/services/layout_capacity.py) держат planner/generator согласованными по capacity, geometry и mixed-content order.
 8. [run_quality_contracts.py](../scripts/run_quality_contracts.py) является выделенным quality gate для generated decks.
 9. Production delivery обеспечивается GitHub Actions, [deploy_server.sh](../scripts/deploy_server.sh) и [docker-compose.server.yml](../docker-compose.server.yml).
+10. Для второго шага review source of truth должен проходить через backend render pipeline из [slide-review-render-contract.md](slide-review-render-contract.md): `plan -> pptx -> slide previews`, а не через локальную HTML-аппроксимацию.
 
 ## 1. Извлечение документа
 
@@ -254,6 +255,7 @@ Generator рендерит `PresentationPlan` в реальный `.pptx`.
 - переключение chartable tables между `table` и `chart`
 - preview поддерживаемых chart layouts до генерации
 - сохранение выбранного chart type и hidden series в `chart_overrides`
+- display backend-rendered previews на втором шаге после генерации
 
 ## Текущие слои проверки
 
@@ -292,6 +294,7 @@ Generator рендерит `PresentationPlan` в реальный `.pptx`.
 - дальше расширять deck-audit для более тонких layout-specific geometry rules
 - расширять visual snapshots для frontend и generated-slide scenarios
 - вводить template-specific typography rules на уровне layout
+- расширять `TemplateManifest.component_styles` дальше до полного component grammar layer; runtime-охват уже есть для `cards/text/table/chart/image/cover/list_with_icons/contacts`, включая geometry/behavior contracts для `table/chart/image/cover/list_with_icons/contacts`, и следующий шаг - переносить туда остальные PowerPoint-компоненты и layout-specific rules
 - добавлять export previews
 - расширять parity и quality checks вокруг secondary value axis и mixed-unit chart scenarios
 

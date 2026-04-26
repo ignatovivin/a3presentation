@@ -145,6 +145,8 @@ class PptxGenerator:
         self._active_manifest = manifest
         if manifest.generation_mode == GenerationMode.PROTOTYPE and manifest.prototype_slides:
             presentation = self._generate_from_prototypes(template_path, manifest, plan)
+        elif self._should_use_direct_shape_binding(manifest, plan):
+            presentation = self._generate_from_direct_shape_bindings(template_path, manifest, plan)
         else:
             presentation = self._generate_from_layouts(template_path, manifest, plan)
         self._active_presentation = presentation
@@ -157,6 +159,11 @@ class PptxGenerator:
         presentation.save(str(output_path))
         self._validate_output_file(output_path, expected_slide_count=len(plan.slides))
         return output_path
+
+    def _should_use_direct_shape_binding(self, manifest: TemplateManifest, plan: PresentationPlan) -> bool:
+        if manifest.inventory.degradation_mode == "direct_shape_binding" and manifest.inventory.slides:
+            return True
+        return any(self._target_type_for_slide(slide) == "direct_shape_binding" for slide in plan.slides)
 
     def _build_output_stem(self, title: str, timestamp: str) -> str:
         normalized = re.sub(r"\s+", " ", (title or "").strip())
@@ -203,6 +210,79 @@ class PptxGenerator:
             self._fill_slide_from_layout(slide, slide_spec, layout, plan.title)
 
         return presentation
+
+    def _generate_from_direct_shape_bindings(self, template_path: Path, manifest: TemplateManifest, plan: PresentationPlan) -> Presentation:
+        output_presentation = Presentation(str(template_path))
+        source_slides = [output_presentation.slides[index] for index in range(len(output_presentation.slides))]
+        self._remove_all_slides(output_presentation)
+
+        for slide_spec in plan.slides:
+            direct_target = self._resolve_direct_shape_binding_target(manifest, slide_spec)
+            if direct_target is None:
+                continue
+            source_slide = source_slides[direct_target["source_index"]]
+            target_slide = self._clone_slide(output_presentation, source_slide)
+            self._fill_direct_shape_binding_slide(target_slide, slide_spec, plan.title, direct_target["components"])
+
+        return output_presentation
+
+    def _resolve_direct_shape_binding_target(self, manifest: TemplateManifest, slide_spec: SlideSpec) -> dict | None:
+        components_by_id = {component.component_id: component for component in manifest.inventory.components}
+        slide_targets = []
+        for slide_inventory in manifest.inventory.slides:
+            key = f"direct_slide_{slide_inventory.source_index}"
+            components = [
+                components_by_id[component_id]
+                for component_id in slide_inventory.component_ids
+                if component_id in components_by_id
+                and getattr(components_by_id[component_id], "binding", None)
+                and getattr(components_by_id[component_id], "shape_name", None)
+            ]
+            if not components:
+                continue
+            slide_targets.append(
+                {
+                    "key": key,
+                    "source_index": slide_inventory.source_index,
+                    "supported_slide_kinds": list(slide_inventory.supported_slide_kinds),
+                    "components": components,
+                }
+            )
+
+        target_key = self._target_key_for_slide(slide_spec)
+        if target_key:
+            preferred = next((item for item in slide_targets if item["key"] == target_key), None)
+            if preferred is not None:
+                return preferred
+        return next((item for item in slide_targets if slide_spec.kind.value in item["supported_slide_kinds"]), slide_targets[0] if slide_targets else None)
+
+    def _fill_direct_shape_binding_slide(self, slide, slide_spec: SlideSpec, presentation_title: str, components: list[object]) -> None:
+        runtime_profile_key = self._runtime_profile_key_for_slide(slide_spec)
+        layout_profile = profile_for_layout(runtime_profile_key)
+        used_shape_names: set[str] = set()
+        for component in components:
+            shape_name = getattr(component, "shape_name", None)
+            binding = getattr(component, "binding", None)
+            if not shape_name or not binding:
+                continue
+            target_shape = next((shape for shape in slide.shapes if getattr(shape, "name", None) == shape_name), None)
+            if target_shape is None:
+                continue
+            shape_profile = self._capacity_profile_for_shape(runtime_profile_key, target_shape, layout_profile)
+            self._fill_shape_by_binding(
+                target_shape,
+                binding,
+                slide_spec,
+                presentation_title,
+                shape_profile,
+            )
+            used_shape_names.add(shape_name)
+
+        for shape in slide.shapes:
+            if getattr(shape, "name", None) in used_shape_names:
+                continue
+            if getattr(shape, "has_text_frame", False):
+                self._clear_placeholder(shape)
 
     def _apply_core_properties(self, presentation: Presentation, plan: PresentationPlan) -> None:
         props = presentation.core_properties

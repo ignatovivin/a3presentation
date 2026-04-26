@@ -12,7 +12,15 @@ class Settings:
     templates_dir: Path
     outputs_dir: Path
     bundled_templates_dir: Path
+    seed_bundled_templates: bool
     cors_origins: tuple[str, ...]
+
+
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_cors_origins() -> tuple[str, ...]:
@@ -39,5 +47,6 @@ def get_settings() -> Settings:
         templates_dir=templates_dir,
         outputs_dir=outputs_dir,
         bundled_templates_dir=(project_root / "storage" / "templates").resolve(),
+        seed_bundled_templates=_parse_bool_env("SEED_BUNDLED_TEMPLATES", default=False),
         cors_origins=_parse_cors_origins(),
     )

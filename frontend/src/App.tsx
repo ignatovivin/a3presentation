@@ -1,6 +1,6 @@
-import { ChangeEvent, useEffect, useState, useTransition } from "react";
+import { ChangeEvent, type CSSProperties, useEffect, useState, useTransition } from "react";
 
-import { buildDownloadUrl, buildPlan, extractTextFromDocument, fetchTemplates, generatePresentation } from "@/api";
+import { buildDownloadUrl, buildPlan, buildPlanWithTemplate, extractTextFromDocument, fetchTemplate, fetchTemplates, generatePresentation, generatePresentationWithTemplate } from "@/api";
 import { ChartPreview } from "@/components/chart-preview";
 import { StructureDrawer } from "@/components/structure-drawer";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,12 +13,21 @@ import type {
   DocumentBlock,
   GeneratePresentationResponse,
   PresentationPlan,
+  SlideLayoutReview,
   SlideSpec,
   TableBlock,
+  TemplateManifest,
   TemplateSummary,
 } from "@/types";
 
-const PRIMARY_TEMPLATE_ID = "corp_light_v1";
+type ManifestCardSlot = {
+  editable_role?: string | null;
+  editable_capabilities: string[];
+  left_emu?: number | null;
+  top_emu?: number | null;
+  width_emu?: number | null;
+  height_emu?: number | null;
+};
 
 const initialText = `Вставьте текст или загрузите документ в формате docx для презентации`;
 
@@ -44,6 +53,148 @@ const assessmentHintLabels: Record<string, string> = {
   "contains summary rows": "В таблице есть итоговые строки, которые могут искажать график.",
   "contains annotations in value cells": "В ячейках есть комментарии рядом с числами, поэтому данные требуют осторожной интерпретации.",
 };
+
+const editableRoleLabels: Record<string, string> = {
+  title: "заголовки",
+  subtitle: "подзаголовки",
+  body: "текст",
+  bullet_list: "списки",
+  bullet_item: "пункты",
+  image: "изображения",
+  table: "таблицы",
+  chart: "графики",
+};
+
+const representationHintLabels: Record<string, string> = {
+  cards: "карточки",
+  table: "таблица",
+  chart: "график",
+  image: "изображение",
+  contacts: "контакты",
+  two_column: "две колонки",
+};
+
+const slideKindLabels: Record<string, string> = {
+  title: "титульный",
+  text: "текст",
+  bullets: "список",
+  table: "таблица",
+  chart: "график",
+  image: "изображение",
+  two_column: "две колонки",
+};
+
+function displayLayoutSourceLabel(source: "layout" | "prototype", sourceLabel?: string | null): string {
+  const normalized = sourceLabel?.trim().toLowerCase() ?? "";
+  if (normalized.startsWith("prototype slide ")) {
+    return `Прототипный слайд ${sourceLabel?.trim().slice("prototype slide ".length)}`;
+  }
+  if (normalized.startsWith("layout ")) {
+    return `Макет ${sourceLabel?.trim().slice("layout ".length)}`;
+  }
+  if (sourceLabel?.trim()) {
+    return sourceLabel.trim();
+  }
+  return source === "prototype" ? "Прототипный слайд" : "Макет";
+}
+
+function displayLayoutSourceType(source: "layout" | "prototype"): string {
+  return source === "prototype" ? "Прототип" : "Макет";
+}
+
+function templateOriginBadgeLabel(hasAttachedTemplate: boolean, hasManifest: boolean): string | null {
+  if (hasAttachedTemplate) {
+    return "Пользовательский шаблон";
+  }
+  if (hasManifest) {
+    return "Шаблон из каталога";
+  }
+  return null;
+}
+
+function layoutPurposeLabel(option: {
+  representation_hints: string[];
+  editable_roles: string[];
+  supports_current_slide_kind: boolean;
+}): string | null {
+  const hint = option.representation_hints[0];
+  if (hint) {
+    return representationHintLabels[hint] ?? hint;
+  }
+  const role = option.editable_roles[0];
+  if (role) {
+    return editableRoleLabels[role] ?? role;
+  }
+  if (option.supports_current_slide_kind) {
+    return "подходит по типу слайда";
+  }
+  return null;
+}
+
+function layoutOptionMeta(option: {
+  source: "layout" | "prototype";
+  source_label?: string | null;
+  representation_hints: string[];
+  editable_roles: string[];
+  supports_current_slide_kind: boolean;
+  estimated_text_capacity_chars?: number | null;
+  match_summary?: string | null;
+  recommendation_label?: string | null;
+}): string {
+  const parts = [
+    option.recommendation_label,
+    displayLayoutSourceLabel(option.source, option.source_label),
+    layoutPurposeLabel(option),
+    option.estimated_text_capacity_chars ? `до ~${option.estimated_text_capacity_chars} символов текста` : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function layoutRecommendationText(option: {
+  recommendation_label?: string | null;
+  recommendation_reasons: string[];
+  match_summary?: string | null;
+}): string {
+  if (option.recommendation_reasons.length) {
+    return option.recommendation_reasons.slice(0, 2).join(" ");
+  }
+  if (option.match_summary?.trim()) {
+    return option.match_summary.trim();
+  }
+  return "Сервис отсортировал варианты по типу слайда, смыслу и запасу по вместимости.";
+}
+
+function resolveTemplateUiVars(manifest: TemplateManifest | null): CSSProperties {
+  if (!manifest) {
+    return {};
+  }
+
+  const tokens = manifest.design_tokens ?? {};
+  const scheme = manifest.theme?.color_scheme ?? {};
+  const primary = String(tokens.primary_color ?? scheme.accent3 ?? "#679aea");
+  const accent = String(tokens.accent_color ?? scheme.accent4 ?? primary);
+  const background = String(tokens.background_color ?? scheme.lt1 ?? "#f9f9f9");
+  const surface = String(tokens.surface_color ?? scheme.accent1 ?? "#f5f7fb");
+  const text = String(tokens.text_color ?? scheme.dk1 ?? "#171717");
+  const muted = String(tokens.muted_text_color ?? scheme.dk2 ?? primary);
+  const border = String(tokens.table_border_color ?? scheme.accent2 ?? "#dbe3f1");
+  const title = String(tokens.title_color ?? text);
+  const subtitle = String(tokens.subtitle_color ?? text);
+
+  return {
+    "--template-ui-primary": primary,
+    "--template-ui-primary-strong": accent,
+    "--template-ui-background": background,
+    "--template-ui-surface": surface,
+    "--template-ui-text": text,
+    "--template-ui-muted": muted,
+    "--template-ui-border": border,
+    "--template-ui-title": title,
+    "--template-ui-subtitle": subtitle,
+    "--template-ui-primary-soft": `${primary}14`,
+    "--template-ui-accent-soft": `${accent}12`,
+  } as CSSProperties;
+}
 
 function isSystemHint(hint: string): boolean {
   return hint.startsWith("classified as ") || hint.startsWith("detected ") || hint.startsWith("generated ");
@@ -71,12 +222,283 @@ function chartControlType(spec: ChartSpec): string {
   return spec.chart_type === "combo" ? "column" : spec.chart_type;
 }
 
+function transientTemplateIdFromFilename(fileName: string): string {
+  const stem = fileName.replace(/\.[^.]+$/, "").trim().toLowerCase();
+  const normalized = stem
+    .replace(/[^a-z0-9а-яё_-]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+  return `uploaded_${normalized || "template"}`;
+}
+
+function summarizeEditableSlots(manifest: TemplateManifest): {
+  total: number;
+  grouped: number;
+  roleLines: string[];
+} {
+  const roleCounts = new Map<string, number>();
+  let total = 0;
+  let grouped = 0;
+
+  const registerSlot = (role?: string | null, capabilities?: string[], slotGroup?: string | null) => {
+    if (!role && (!capabilities || capabilities.length === 0)) {
+      return;
+    }
+    total += 1;
+    if (slotGroup) {
+      grouped += 1;
+    }
+    const normalizedRole = role ?? "body";
+    roleCounts.set(normalizedRole, (roleCounts.get(normalizedRole) ?? 0) + 1);
+  };
+
+  manifest.layouts.forEach((layout) => {
+    layout.placeholders.forEach((placeholder) => {
+      registerSlot(placeholder.editable_role, placeholder.editable_capabilities, placeholder.slot_group);
+    });
+  });
+  manifest.prototype_slides.forEach((slide) => {
+    slide.tokens.forEach((token) => {
+      registerSlot(token.editable_role, token.editable_capabilities, token.slot_group);
+    });
+  });
+
+  const roleLines = Array.from(roleCounts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 4)
+    .map(([role, count]) => `${editableRoleLabels[role] ?? role}: ${count}`);
+
+  return { total, grouped, roleLines };
+}
+
+function summarizeRepresentationHints(manifest: TemplateManifest): string[] {
+  const counts = new Map<string, number>();
+  const registerHints = (hints: string[]) => {
+    hints.forEach((hint) => {
+      counts.set(hint, (counts.get(hint) ?? 0) + 1);
+    });
+  };
+
+  manifest.layouts.forEach((layout) => registerHints(layout.representation_hints));
+  manifest.prototype_slides.forEach((slide) => registerHints(slide.representation_hints));
+
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([hint, count]) => `${representationHintLabels[hint] ?? hint}: ${count} вариантов`);
+}
+
+function summarizeDetectedLayouts(manifest: TemplateManifest): string[] {
+  return manifest.layouts
+    .slice(0, 8)
+    .map((layout) => {
+      const hints = layout.representation_hints.length
+        ? layout.representation_hints.map((hint) => representationHintLabels[hint] ?? hint).join(", ")
+        : layout.supported_slide_kinds.join(", ");
+      return hints ? `${layout.name} (${hints})` : layout.name;
+    });
+}
+
+function isCardTextSlot(slot: ManifestCardSlot): boolean {
+  if (slot.editable_role === "body" || slot.editable_role === "bullet_item" || slot.editable_role === "bullet_list") {
+    return true;
+  }
+  if (slot.editable_role === "title" || slot.editable_role === "subtitle" || slot.editable_role === "image" || slot.editable_role === "table" || slot.editable_role === "chart") {
+    return false;
+  }
+  return slot.editable_capabilities.includes("text") || slot.editable_capabilities.includes("list_item");
+}
+
+function scoreCardSlotCollection(slots: ManifestCardSlot[]): number | null {
+  const textSlots = slots.filter(
+    (slot) =>
+      isCardTextSlot(slot) &&
+      typeof slot.left_emu === "number" &&
+      typeof slot.top_emu === "number" &&
+      typeof slot.width_emu === "number" &&
+      typeof slot.height_emu === "number" &&
+      slot.width_emu > 0 &&
+      slot.height_emu > 0,
+  );
+  if (textSlots.length < 2) {
+    return null;
+  }
+
+  let bestScore: number | null = null;
+  for (const baseSlot of textSlots) {
+    const sameRow = textSlots.filter((slot) => {
+      const topDelta = Math.abs((slot.top_emu ?? 0) - (baseSlot.top_emu ?? 0));
+      const heightReference = Math.max(slot.height_emu ?? 0, baseSlot.height_emu ?? 0);
+      return topDelta <= heightReference * 0.45;
+    });
+    if (sameRow.length < 2 || sameRow.length > 4) {
+      continue;
+    }
+
+    const widths = sameRow.map((slot) => slot.width_emu ?? 0);
+    const heights = sameRow.map((slot) => slot.height_emu ?? 0);
+    const lefts = sameRow.map((slot) => slot.left_emu ?? 0).sort((left, right) => left - right);
+    const tops = sameRow.map((slot) => slot.top_emu ?? 0);
+    const widthSpread = Math.max(...widths) / Math.max(Math.min(...widths), 1);
+    const heightSpread = Math.max(...heights) / Math.max(Math.min(...heights), 1);
+    const topSpread = Math.max(...tops) - Math.min(...tops);
+    const distinctColumns = new Set(lefts.map((value) => Math.round(value / 10000))).size;
+
+    if (distinctColumns < sameRow.length) {
+      continue;
+    }
+    if (widthSpread > 1.8 || heightSpread > 1.8) {
+      continue;
+    }
+
+    const score =
+      sameRow.length * 12 -
+      Math.abs(sameRow.length - 3) * 4 -
+      Math.round(widthSpread * 3) -
+      Math.round(heightSpread * 2) -
+      Math.round(topSpread / 100000);
+    if (bestScore === null || score > bestScore) {
+      bestScore = score;
+    }
+  }
+  return bestScore;
+}
+
+function findCardCapableLayoutKey(manifest: TemplateManifest): string | null {
+  const candidates: Array<{ key: string; score: number }> = [];
+
+  manifest.layouts.forEach((layout) => {
+    if (!layout.supported_slide_kinds.includes("bullets") && !layout.supported_slide_kinds.includes("text")) {
+      return;
+    }
+    if (layout.representation_hints.includes("cards")) {
+      candidates.push({ key: layout.key, score: 100 });
+      return;
+    }
+    const score = scoreCardSlotCollection(layout.placeholders);
+    if (score === null) {
+      return;
+    }
+    candidates.push({ key: layout.key, score });
+  });
+
+  manifest.prototype_slides.forEach((slide) => {
+    if (!slide.supported_slide_kinds.includes("bullets") && !slide.supported_slide_kinds.includes("text")) {
+      return;
+    }
+    if (slide.representation_hints.includes("cards")) {
+      candidates.push({ key: slide.key, score: 101 });
+      return;
+    }
+    const score = scoreCardSlotCollection(slide.tokens);
+    if (score === null) {
+      return;
+    }
+    candidates.push({ key: slide.key, score: score + 1 });
+  });
+
+  candidates.sort((left, right) => right.score - left.score || left.key.localeCompare(right.key));
+  return candidates[0]?.key ?? null;
+}
+
+function manifestSlideTarget(manifest: TemplateManifest, layoutKey: string) {
+  if (!layoutKey) {
+    return null;
+  }
+  return manifest.layouts.find((layout) => layout.key === layoutKey)
+    ?? manifest.prototype_slides.find((slide) => slide.key === layoutKey)
+    ?? null;
+}
+
+function targetSupportsDataRepresentation(manifest: TemplateManifest | null, layoutKey: string): boolean {
+  if (!manifest || !layoutKey) {
+    return false;
+  }
+  const target = manifestSlideTarget(manifest, layoutKey);
+  if (!target) {
+    return false;
+  }
+  if (target.representation_hints.includes("table") || target.representation_hints.includes("chart") || target.representation_hints.includes("image")) {
+    return true;
+  }
+  if (target.supported_slide_kinds.includes("table") || target.supported_slide_kinds.includes("chart") || target.supported_slide_kinds.includes("image")) {
+    return true;
+  }
+  if ("placeholders" in target) {
+    return target.placeholders.some((placeholder) => (
+      placeholder.editable_role === "table"
+      || placeholder.editable_role === "chart"
+      || placeholder.editable_role === "image"
+      || placeholder.editable_capabilities.includes("table")
+      || placeholder.editable_capabilities.includes("chart")
+      || placeholder.editable_capabilities.includes("image")
+    ));
+  }
+  return target.tokens.some((token) => (
+    token.editable_role === "table"
+    || token.editable_role === "chart"
+    || token.editable_role === "image"
+    || token.editable_capabilities.includes("table")
+    || token.editable_capabilities.includes("chart")
+    || token.editable_capabilities.includes("image")
+  ));
+}
+
+function currentLayoutOption(review: SlideLayoutReview | null, slide: SlideSpec) {
+  if (!review?.available_layouts.length) {
+    return null;
+  }
+  const key = slide.preferred_layout_key ?? review.current_layout_key ?? review.available_layouts[0]?.key ?? "";
+  return review.available_layouts.find((option) => option.key === key) ?? review.available_layouts[0] ?? null;
+}
+
+function inventoryTargetRuntimeProfileKey(manifest: TemplateManifest | null, targetKey: string | null): string | null {
+  if (!manifest || !targetKey) {
+    return null;
+  }
+  const layout = manifest.layouts.find((item) => item.key === targetKey);
+  const prototype = manifest.prototype_slides.find((item) => item.key === targetKey);
+  const representationHints = new Set(layout?.representation_hints ?? prototype?.representation_hints ?? []);
+  const editableRoles = new Set(
+    layout
+      ? layout.placeholders.map((item) => item.editable_role).filter((item): item is string => Boolean(item))
+      : (prototype?.tokens.map((item) => item.editable_role).filter((item): item is string => Boolean(item)) ?? []),
+  );
+  const supportedKinds = new Set(layout?.supported_slide_kinds ?? prototype?.supported_slide_kinds ?? []);
+
+  if (representationHints.has("contacts")) {
+    return "contacts";
+  }
+  if (representationHints.has("cards")) {
+    return editableRoles.has("metric_value") ? "cards_kpi" : "cards_3";
+  }
+  if (representationHints.has("two_column")) {
+    return editableRoles.has("icon") ? "list_with_icons" : "two_column";
+  }
+  if (representationHints.has("table") || editableRoles.has("table") || editableRoles.has("chart")) {
+    return "table";
+  }
+  if (representationHints.has("image") || editableRoles.has("image")) {
+    return "image_text";
+  }
+  if (editableRoles.has("bullet_list") || editableRoles.has("bullet_item")) {
+    return representationHints.has("icons") ? "list_with_icons" : "list_full_width";
+  }
+  if (supportedKinds.has("title")) {
+    return "cover";
+  }
+  return "text_full_width";
+}
+
 export function App() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState(PRIMARY_TEMPLATE_ID);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [rawText, setRawText] = useState("");
   const [attachedDocumentName, setAttachedDocumentName] = useState("");
   const [attachedDocumentText, setAttachedDocumentText] = useState("");
+  const [attachedTemplateFile, setAttachedTemplateFile] = useState<File | null>(null);
+  const [attachedTemplateName, setAttachedTemplateName] = useState("");
+  const [attachedTemplateManifest, setAttachedTemplateManifest] = useState<TemplateManifest | null>(null);
+  const [selectedTemplateManifest, setSelectedTemplateManifest] = useState<TemplateManifest | null>(null);
   const [documentTables, setDocumentTables] = useState<TableBlock[]>([]);
   const [documentBlocks, setDocumentBlocks] = useState<DocumentBlock[]>([]);
   const [chartAssessments, setChartAssessments] = useState<ChartabilityAssessment[]>([]);
@@ -87,6 +509,7 @@ export function App() {
   const [savedChartModeByTableId, setSavedChartModeByTableId] = useState<Record<string, "table" | "chart">>({});
   const [savedHiddenSeriesByTableId, setSavedHiddenSeriesByTableId] = useState<Record<string, string[]>>({});
   const [reviewPlan, setReviewPlan] = useState<PresentationPlan | null>(null);
+  const [slideLayoutReviews, setSlideLayoutReviews] = useState<SlideLayoutReview[]>([]);
   const [cardSlideIndexes, setCardSlideIndexes] = useState<number[]>([]);
   const [isPreparingReviewPlan, setIsPreparingReviewPlan] = useState(false);
   const [isGeneratingPresentation, setIsGeneratingPresentation] = useState(false);
@@ -113,10 +536,6 @@ export function App() {
         .then((items) => {
           setTemplates(items);
           setShowLoadingNotice(false);
-          if (items.some((item) => item.template_id === PRIMARY_TEMPLATE_ID)) {
-            setSelectedTemplateId(PRIMARY_TEMPLATE_ID);
-            return;
-          }
           if (items[0]?.template_id) {
             setSelectedTemplateId(items[0].template_id);
           }
@@ -128,9 +547,46 @@ export function App() {
     });
   }, []);
 
+  useEffect(() => {
+    if (!selectedTemplateId || attachedTemplateFile) {
+      return;
+    }
+
+    let isActive = true;
+    fetchTemplate(selectedTemplateId)
+      .then((response) => {
+        if (!isActive) {
+          return;
+        }
+        setSelectedTemplateManifest(response.manifest);
+      })
+      .catch(() => {
+        if (!isActive) {
+          return;
+        }
+        setSelectedTemplateManifest(null);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [attachedTemplateFile, selectedTemplateId]);
+
+  const effectiveTemplateId = attachedTemplateFile
+    ? transientTemplateIdFromFilename(attachedTemplateFile.name)
+    : selectedTemplateId;
+  const effectiveTemplateManifest = attachedTemplateManifest ?? selectedTemplateManifest;
+  const selectedTemplateSummary = templates.find((item) => item.template_id === selectedTemplateId) ?? null;
+  const templateUiVars = resolveTemplateUiVars(effectiveTemplateManifest);
+
   function handleTextFileUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) {
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".docx")) {
+      setError("Загрузите документ в формате .docx.");
+      event.target.value = "";
       return;
     }
 
@@ -154,6 +610,7 @@ export function App() {
           setAttachedDocumentName(result.file_name || file.name);
           setAttachedDocumentText(result.text);
           setReviewPlan(null);
+          setSlideLayoutReviews([]);
           setCardSlideIndexes([]);
           setDocumentTables(result.tables);
           setDocumentBlocks(result.blocks);
@@ -177,6 +634,32 @@ export function App() {
     event.target.value = "";
   }
 
+  function handleTemplateUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".pptx")) {
+      setError("Загрузите шаблон в формате .pptx.");
+      event.target.value = "";
+      return;
+    }
+
+    setError("");
+    setGenerationResult(null);
+    setAttachedTemplateFile(file);
+    setAttachedTemplateName(file.name);
+    setAttachedTemplateManifest(null);
+    setSelectedTemplateManifest(null);
+    event.target.value = "";
+  }
+
+  function generateCurrentPlan(plan: PresentationPlan): Promise<GeneratePresentationResponse> {
+    return attachedTemplateFile
+      ? generatePresentationWithTemplate(plan, attachedTemplateFile)
+      : generatePresentation(plan);
+  }
+
   function handleGenerate() {
     if (isGeneratingPresentation || isPreparingReviewPlan) {
       return;
@@ -186,7 +669,7 @@ export function App() {
       setGenerationResult(null);
       setIsGeneratingPresentation(true);
       startTransition(() => {
-        generatePresentation(applyCardSlideChoices(reviewPlan, cardSlideIndexes))
+        generateCurrentPlan(applyCardSlideChoices(reviewPlan, cardSlideIndexes, cardTargetLayoutKey, effectiveTemplateManifest))
           .then((result) => setGenerationResult(result))
           .catch((err: Error) => setError(err.message))
           .finally(() => setIsGeneratingPresentation(false));
@@ -207,6 +690,10 @@ export function App() {
     const normalizedText = (attachedDocumentText || rawText).trim();
     if (!normalizedText) {
       setError("Введите текст или загрузите документ.");
+      return;
+    }
+    if (!effectiveTemplateId) {
+      setError("Выберите шаблон или загрузите .pptx шаблон.");
       return;
     }
 
@@ -235,20 +722,34 @@ export function App() {
         };
       });
 
-      buildPlan({
-        template_id: selectedTemplateId || PRIMARY_TEMPLATE_ID,
+      const planRequest = {
+        template_id: effectiveTemplateId,
         raw_text: normalizedText,
         title: "A3 Presentation",
         tables: documentTables,
         blocks: documentBlocks,
         chart_overrides: chartOverrides,
-      })
+      };
+
+      const buildPlanPromise = attachedTemplateFile
+        ? buildPlanWithTemplate(planRequest, attachedTemplateFile).then((response) => {
+            setAttachedTemplateManifest(response.manifest);
+            setSlideLayoutReviews(response.slide_layout_reviews ?? []);
+            return response.plan;
+          })
+        : buildPlan(planRequest).then((plan) => {
+            setAttachedTemplateManifest(null);
+            setSlideLayoutReviews([]);
+            return plan;
+          });
+
+      buildPlanPromise
         .then((plan: PresentationPlan) => {
           setReviewPlan(plan);
           setCardSlideIndexes([]);
           if (generateAfter) {
             setIsGeneratingPresentation(true);
-            return generatePresentation(plan).then((result) => {
+            return generateCurrentPlan(plan).then((result) => {
               setGenerationResult(result);
             }).finally(() => setIsGeneratingPresentation(false));
           }
@@ -264,6 +765,7 @@ export function App() {
 
   function resetReviewPlan() {
     setReviewPlan(null);
+    setSlideLayoutReviews([]);
     setCardSlideIndexes([]);
   }
 
@@ -282,6 +784,13 @@ export function App() {
     setIsStructureDrawerOpen(false);
     setShowAllTablesInDrawer(false);
     resetReviewPlan();
+  }
+
+  function clearAttachedTemplate() {
+    setAttachedTemplateFile(null);
+    setAttachedTemplateName("");
+    setAttachedTemplateManifest(null);
+    setGenerationResult(null);
   }
 
   function selectedChartSpec(
@@ -327,7 +836,18 @@ export function App() {
     JSON.stringify(hiddenSeriesByTableId) !== JSON.stringify(savedHiddenSeriesByTableId);
   const chartableAssessments = chartAssessments.filter((assessment) => assessment.chartable);
   const visibleAssessments = showAllTablesInDrawer ? chartAssessments : chartableAssessments;
-  const cardSlideChoices = reviewPlan ? eligibleCardSlides(reviewPlan) : [];
+  const cardTargetLayoutKey = effectiveTemplateManifest ? findCardCapableLayoutKey(effectiveTemplateManifest) : null;
+  const cardSlideChoices = reviewPlan ? eligibleCardSlides(reviewPlan, cardTargetLayoutKey, effectiveTemplateManifest) : [];
+  const attachedTemplateSlotSummary = effectiveTemplateManifest ? summarizeEditableSlots(effectiveTemplateManifest) : null;
+  const activeTemplateRepresentationSummary = effectiveTemplateManifest ? summarizeRepresentationHints(effectiveTemplateManifest) : [];
+  const detectedLayoutSummary = effectiveTemplateManifest ? summarizeDetectedLayouts(effectiveTemplateManifest) : [];
+  const activeSlideLayoutReviews = reviewPlan
+    ? reviewPlan.slides.map((slide, index) => ({
+        index,
+        slide,
+        review: slideLayoutReviews.find((item) => item.slide_index === index) ?? null,
+      }))
+    : [];
 
   function handleSaveStructureChoices() {
     const shouldRebuildReviewPlan = hasUnsavedStructureChanges;
@@ -341,10 +861,43 @@ export function App() {
     setIsStructureDrawerOpen(false);
   }
 
+  function handleSlideLayoutChange(slideIndex: number, layoutKey: string) {
+    const selectedReview = slideLayoutReviews.find((review) => review.slide_index === slideIndex) ?? null;
+    const selectedOption = selectedReview?.available_layouts.find((option) => option.key === layoutKey) ?? null;
+    const runtimeProfileKey = selectedOption?.runtime_profile_key
+      ?? inventoryTargetRuntimeProfileKey(effectiveTemplateManifest, layoutKey);
+    setReviewPlan((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        slides: current.slides.map((slide, index) => (
+          index === slideIndex
+            ? {
+              ...slide,
+              preferred_layout_key: layoutKey || null,
+              runtime_profile_key: runtimeProfileKey ?? slide.runtime_profile_key ?? null,
+            }
+            : slide
+        )),
+      };
+    });
+    setSlideLayoutReviews((current) => current.map((review) => (
+      review.slide_index === slideIndex
+        ? {
+          ...review,
+          current_layout_key: layoutKey || null,
+          current_runtime_profile_key: runtimeProfileKey ?? review.current_runtime_profile_key ?? null,
+        }
+        : review
+    )));
+  }
+
   function editableCardItems(slide: SlideSpec): string[] {
     const explicitBullets = (slide.bullets ?? []).map((item) => item.trim()).filter(Boolean);
     if (explicitBullets.length >= 2) {
-      return explicitBullets.slice(0, 3);
+      return explicitBullets.slice(0, 4);
     }
 
     const blockItems = (slide.content_blocks ?? []).flatMap((block) => {
@@ -354,7 +907,7 @@ export function App() {
       return block.text ? [block.text] : [];
     }).map((item) => item.trim()).filter(Boolean);
     if (blockItems.length >= 2) {
-      return blockItems.slice(0, 3);
+      return blockItems.slice(0, 4);
     }
 
     const text = (slide.text ?? "").replace(/\s+/g, " ").trim();
@@ -364,10 +917,10 @@ export function App() {
 
     const sentences = text.match(/[^.!?。！？]+[.!?。！？]?/g)?.map((item) => item.trim()).filter(Boolean) ?? [text];
     if (sentences.length >= 2) {
-      return compactCardItems(sentences, 3);
+      return compactCardItems(sentences, 4);
     }
     if (text.length >= 90) {
-      return compactCardItems(text.split(/[,;:]\s+|\s+-\s+/).map((item) => item.trim()).filter(Boolean), 3);
+      return compactCardItems(text.split(/[,;:]\s+|\s+-\s+/).map((item) => item.trim()).filter(Boolean), 4);
     }
     return [];
   }
@@ -388,6 +941,13 @@ export function App() {
 
   function splitCardItem(item: string): { title: string; description: string } {
     const normalized = item.replace(/\s+/g, " ").trim();
+    const metricMatch = normalized.match(
+      /^([<>~≈]?\s*\d+(?:[.,]\d+)?(?:\s*(?:%|‰|млн|млрд|тыс|трлн|сек(?:унд[аы]?)?|с|мин|ч|дн(?:ей|я)?|₽|руб(?:\.|лей|ля|ль)?))*)\s+(.+)$/iu,
+    );
+    if (metricMatch) {
+      return { title: metricMatch[1].replace(/\s+/g, " ").trim(), description: metricMatch[2].trim() };
+    }
+
     const colonMatch = normalized.match(/^(.{4,54}?):\s+(.{12,})$/);
     if (colonMatch) {
       return { title: colonMatch[1].trim(), description: colonMatch[2].trim() };
@@ -402,8 +962,20 @@ export function App() {
   }
 
   function encodeCardItem(item: string): string {
+    const multiline = item.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (multiline.length >= 2) {
+      return multiline.join("\n");
+    }
     const { title, description } = splitCardItem(item);
     return description ? `${title}\n${description}` : title;
+  }
+
+  function numericCardSignals(items: string[]): number {
+    return items.map(splitCardItem).filter(({ title, description }) => /\d/.test(title) && description.length >= 3).length;
+  }
+
+  function hasNumericCardLayout(items: string[]): boolean {
+    return numericCardSignals(items) >= 2;
   }
 
   function scoreCardSlide(slide: SlideSpec, items: string[]): { fit: CardSlideFit | null; reason: string } {
@@ -424,7 +996,8 @@ export function App() {
     const hasDenseNarrative = text.length > 420 && !hasListBlocks && !hasExplicitBullets;
     const hasLongItems = longest > 150 || average > 115;
     const hasUnevenItems = spread > 3.2 && longest > 110;
-    const numericSignals = items.filter((item) => /\d/.test(item)).length;
+    const numericSignals = numericCardSignals(items);
+    const isNumericLayout = numericSignals >= 2;
 
     let score = 0;
     if (items.length === 3) score += 3;
@@ -436,18 +1009,25 @@ export function App() {
     if (hasDenseNarrative) score -= 4;
     if (hasLongItems) score -= 3;
     if (hasUnevenItems) score -= 2;
-    if (numericSignals >= 2 && !hasExplicitBullets && !hasListBlocks) score -= 2;
+    if (isNumericLayout) score += 3;
 
     if (score >= 7) {
-      return { fit: "high", reason: "Рекомендовано: короткие равноправные тезисы." };
+      return { fit: "high", reason: isNumericLayout ? "Рекомендовано: KPI-карточки с числами." : "Рекомендовано: короткие равноправные тезисы." };
     }
     if (score >= 4) {
-      return { fit: "medium", reason: "Можно разложить на карточки." };
+      return { fit: "medium", reason: isNumericLayout ? "Можно разложить как KPI-карточки." : "Можно разложить на карточки." };
     }
     return { fit: null, reason: "" };
   }
 
-  function eligibleCardSlides(plan: PresentationPlan): CardSlideChoice[] {
+  function eligibleCardSlides(
+    plan: PresentationPlan,
+    targetLayoutKey: string | null,
+    manifest: TemplateManifest | null,
+  ): CardSlideChoice[] {
+    if (!targetLayoutKey) {
+      return [];
+    }
     return plan.slides
       .map((slide, index) => ({ index, slide, items: editableCardItems(slide) }))
       .filter(({ slide, items }) => {
@@ -458,9 +1038,8 @@ export function App() {
           Boolean(slide.table) ||
           Boolean(slide.chart) ||
           Boolean(slide.source_table_id) ||
-          layoutKey.includes("table") ||
-          layoutKey.includes("chart");
-        return slide.kind !== "title" && !isDataSlide && layoutKey !== "cards_3" && items.length >= 2;
+          targetSupportsDataRepresentation(manifest, layoutKey);
+        return slide.kind !== "title" && !isDataSlide && layoutKey !== targetLayoutKey && items.length >= 2;
       })
       .map(({ index, slide, items }) => ({
         index,
@@ -482,7 +1061,12 @@ export function App() {
     });
   }
 
-  function applyCardSlideChoices(plan: PresentationPlan, selectedIndexes: number[]): PresentationPlan {
+  function applyCardSlideChoices(
+    plan: PresentationPlan,
+    selectedIndexes: number[],
+    targetLayoutKey: string | null,
+    manifest: TemplateManifest | null,
+  ): PresentationPlan {
     const selected = new Set(selectedIndexes);
     return {
       ...plan,
@@ -502,7 +1086,8 @@ export function App() {
           content_blocks: [],
           left_bullets: [],
           right_bullets: [],
-          preferred_layout_key: "cards_3",
+          preferred_layout_key: targetLayoutKey ?? slide.preferred_layout_key,
+          runtime_profile_key: inventoryTargetRuntimeProfileKey(manifest, targetLayoutKey) ?? slide.runtime_profile_key ?? "cards_3",
         };
       }),
     };
@@ -620,7 +1205,7 @@ export function App() {
   }
 
   return (
-    <main className="app-shell" data-testid="app-shell">
+    <main className="app-shell" data-testid="app-shell" style={templateUiVars}>
       <section className="hero-block" data-node-id="634:1739">
         <h1 className="hero-title" data-node-id="633:1698">
           Создай свою презентацию
@@ -672,6 +1257,93 @@ export function App() {
 
         <section className={`composer-card${rawText.trim() || attachedDocumentName ? " is-active" : ""}`} data-node-id="633:1701">
           <div className="composer-inner" data-node-id="634:1782">
+            <div className="template-config-panel" data-testid="template-config-panel">
+                <div className="template-config-head">
+                  <div>
+                    <div className="template-config-title">Активный шаблон</div>
+                    <div className="template-config-text">
+                      Можно выбрать системный шаблон или загрузить свой `.pptx`.
+                    </div>
+                  </div>
+                {templateOriginBadgeLabel(Boolean(attachedTemplateFile), Boolean(effectiveTemplateManifest)) ? (
+                  <div className="template-config-badge">
+                    {templateOriginBadgeLabel(Boolean(attachedTemplateFile), Boolean(effectiveTemplateManifest))}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="template-config-controls">
+                <Select
+                  value={selectedTemplateId}
+                  className="template-select"
+                  data-testid="template-select"
+                  onChange={(event) => {
+                    setSelectedTemplateId(event.target.value);
+                    setGenerationResult(null);
+                    resetReviewPlan();
+                  }}
+                  disabled={Boolean(attachedTemplateFile) || templates.length === 0}
+                >
+                  {templates.map((template) => (
+                    <option key={template.template_id} value={template.template_id}>
+                      {template.display_name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              {effectiveTemplateManifest ? (
+                <div className="template-analysis-grid" data-testid="template-analysis-summary">
+                  <div className="template-analysis-card">
+                    <div className="template-analysis-label">Активный шаблон</div>
+                    <div className="template-analysis-value">
+                      {attachedTemplateName || selectedTemplateSummary?.display_name || effectiveTemplateManifest.display_name}
+                    </div>
+                    <div className="template-analysis-meta">
+                      {attachedTemplateFile ? "Загружен пользователем для текущей генерации." : "Выбран из каталога шаблонов."}
+                    </div>
+                  </div>
+                  <div className="template-analysis-card">
+                    <div className="template-analysis-label">Что можно менять</div>
+                    <div className="template-analysis-value">{attachedTemplateSlotSummary?.total ?? 0}</div>
+                    <div className="template-analysis-meta">
+                      {attachedTemplateSlotSummary?.grouped ? `сгруппированных областей: ${attachedTemplateSlotSummary.grouped}` : "Отдельные области без явных групп."}
+                    </div>
+                  </div>
+                  <div className="template-analysis-card">
+                    <div className="template-analysis-label">Карточный режим</div>
+                    <div className="template-analysis-value">{cardTargetLayoutKey ? "Доступен" : "Пока не найден"}</div>
+                    <div className="template-analysis-meta">
+                      {cardSlideChoices.length > 0 ? `Можно применить к ${cardSlideChoices.length} слайдам.` : "Оценка появится после построения плана."}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {attachedTemplateSlotSummary?.roleLines.length || activeTemplateRepresentationSummary.length ? (
+                <div className="template-analysis-lines">
+                  {attachedTemplateSlotSummary?.roleLines.length ? (
+                    <div className="template-analysis-line" data-testid="template-slot-roles">
+                      <span className="template-analysis-line-label">Редактируемые области:</span>
+                      <span>{attachedTemplateSlotSummary.roleLines.join(" · ")}</span>
+                    </div>
+                  ) : null}
+                  {activeTemplateRepresentationSummary.length ? (
+                    <div className="template-analysis-line" data-testid="template-representation-hints">
+                      <span className="template-analysis-line-label">Подходит для:</span>
+                      <span>{activeTemplateRepresentationSummary.slice(0, 5).join(" · ")}</span>
+                    </div>
+                  ) : null}
+                  {detectedLayoutSummary.length ? (
+                    <div className="template-analysis-line" data-testid="template-detected-layouts">
+                      <span className="template-analysis-line-label">Найденные макеты:</span>
+                      <span>{detectedLayoutSummary.join(" · ")}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
             <div className="textarea-wrap" data-node-id="633:3164">
               <textarea
                 value={rawText}
@@ -687,40 +1359,98 @@ export function App() {
             </div>
 
             <div className="actions-row" data-node-id="634:1772">
-              {attachedDocumentName ? (
-                <div className="attached-file" data-testid="attached-document">
-                  <span className="attached-file-name" title={attachedDocumentName}>
-                    {attachedDocumentName}
-                  </span>
-                  <button
-                    type="button"
-                    className="attached-file-remove"
-                    data-testid="remove-attached-document"
-                    aria-label="Удалить файл"
-                    onClick={clearAttachedDocument}
-                  >
-                    ×
-                  </button>
-                </div>
-              ) : (
-                <label className="secondary-button file-button" data-node-id="644:3605" data-testid="upload-document-trigger">
-                  <input
-                    type="file"
-                    accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    className="sr-only"
-                    data-testid="upload-document-input"
-                    aria-label="Загрузить документ"
-                    onChange={handleTextFileUpload}
-                  />
-                  <svg className="file-button-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                    <path
-                      d="M8 2.25a.75.75 0 0 1 .75.75v5.19l1.72-1.72a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 1.06-1.06l1.72 1.72V3A.75.75 0 0 1 8 2.25ZM3.25 12a.75.75 0 0 1 .75.75h8a.75.75 0 0 1 1.5 0V13a1.25 1.25 0 0 1-1.25 1.25h-8.5A1.25 1.25 0 0 1 2.5 13v-.25A.75.75 0 0 1 3.25 12Z"
-                      fill="currentColor"
+              <div className="upload-actions">
+                {attachedDocumentName ? (
+                  <div className="attached-file" data-testid="attached-document">
+                    <span className="attached-file-name" title={attachedDocumentName}>
+                      {attachedDocumentName}
+                    </span>
+                    <button
+                      type="button"
+                      className="attached-file-remove"
+                      data-testid="remove-attached-document"
+                      aria-label="Удалить текстовый документ"
+                      onClick={clearAttachedDocument}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : (
+                  <label className="secondary-button file-button" data-node-id="644:3605" data-testid="upload-document-trigger">
+                    <input
+                      type="file"
+                      accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      className="sr-only"
+                      data-testid="upload-document-input"
+                      aria-label="Загрузить текст"
+                      onChange={handleTextFileUpload}
                     />
-                  </svg>
-                  <span>Файл</span>
-                </label>
-              )}
+                    <svg className="file-button-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                      <path
+                        d="M8 2.25a.75.75 0 0 1 .75.75v5.19l1.72-1.72a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 1.06-1.06l1.72 1.72V3A.75.75 0 0 1 8 2.25ZM3.25 12a.75.75 0 0 1 .75.75h8a.75.75 0 0 1 1.5 0V13a1.25 1.25 0 0 1-1.25 1.25h-8.5A1.25 1.25 0 0 1 2.5 13v-.25A.75.75 0 0 1 3.25 12Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                    <span>Загрузка текста</span>
+                  </label>
+                )}
+
+                {attachedTemplateName ? (
+                  <div className="attached-file" data-testid="attached-template">
+                    <div className="attached-file-text">
+                      <span className="attached-file-name" title={attachedTemplateName}>
+                        {attachedTemplateName}
+                      </span>
+                      {attachedTemplateManifest?.display_name ? (
+                        <span className="attached-file-meta" title={attachedTemplateManifest.display_name}>
+                          {attachedTemplateManifest.display_name}
+                        </span>
+                      ) : null}
+                      {attachedTemplateSlotSummary ? (
+                        <span
+                          className="attached-file-meta attached-file-meta-slots"
+                          title={`Редактируемые слоты: ${attachedTemplateSlotSummary.total}`}
+                        >
+                          {attachedTemplateSlotSummary.total} редактируемых слотов
+                          {attachedTemplateSlotSummary.grouped > 0 ? ` · групп: ${attachedTemplateSlotSummary.grouped}` : ""}
+                        </span>
+                      ) : null}
+                      {attachedTemplateSlotSummary?.roleLines.length ? (
+                        <span className="attached-file-meta attached-file-meta-slots" title={attachedTemplateSlotSummary.roleLines.join(", ")}>
+                          {attachedTemplateSlotSummary.roleLines.join(" · ")}
+                        </span>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="attached-file-remove"
+                      data-testid="remove-attached-template"
+                      aria-label="Удалить шаблон"
+                      onClick={clearAttachedTemplate}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : (
+                  <label className="secondary-button file-button" data-testid="upload-template-trigger">
+                    <input
+                      type="file"
+                      accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                      className="sr-only"
+                      data-testid="upload-template-input"
+                      aria-label="Загрузить шаблон"
+                      onChange={handleTemplateUpload}
+                    />
+                    <svg className="file-button-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                      <path
+                        d="M2.75 3.5A1.75 1.75 0 0 1 4.5 1.75h4.19c.46 0 .9.18 1.24.5l2.82 2.82c.32.33.5.78.5 1.24v6.19a1.75 1.75 0 0 1-1.75 1.75h-7A1.75 1.75 0 0 1 2.75 12.5v-9Zm6.5-.15V5.5c0 .14.11.25.25.25h2.15L9.25 3.35ZM5 8a.75.75 0 0 0 0 1.5h6A.75.75 0 0 0 11 8H5Zm0 2.5A.75.75 0 0 0 5 12h4a.75.75 0 0 0 0-1.5H5Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                    <span>Загрузка шаблона</span>
+                  </label>
+                )}
+              </div>
 
               <div className="actions-group">
                 {chartAssessments.length > 0 ? (
@@ -956,13 +1686,76 @@ export function App() {
                   <div>
                     <div className="slide-review-title">Вид текста</div>
                     <div className="slide-review-text">
-                      Отметь слайды, где текст нужно заменить на карточки.
+                      Выберите вариант оформления для каждого текстового слайда. Самые подходящие макеты показаны сверху, а карточный режим можно включить отдельно.
                     </div>
                   </div>
                   <button type="button" className="secondary-button" onClick={() => setCardSlideIndexes([])}>
                     Сбросить выбор
                   </button>
                 </div>
+
+                {activeSlideLayoutReviews.length > 0 ? (
+                  <div className="slide-choice-list">
+                    {activeSlideLayoutReviews.map(({ index, slide, review }) => (
+                      <div className="slide-choice" data-testid={`layout-slide-choice-${index}`} key={`layout-slide-choice-${index}`}>
+                        <span className="slide-choice-body">
+                          <span className="slide-choice-title">
+                            {index + 1}. {slide.title || "Слайд без заголовка"}
+                          </span>
+                          <span className="slide-choice-meta-row">
+                            <span className="slide-choice-fit">
+                              {slideKindLabels[slide.kind] ?? slide.kind}
+                              {slide.runtime_profile_key ? ` · profile ${slide.runtime_profile_key}` : ""}
+                              {slide.preferred_layout_key ? ` · target ${slide.preferred_layout_key}` : ""}
+                            </span>
+                            {currentLayoutOption(review, slide) ? (
+                              <span
+                                className={`slide-choice-source is-${currentLayoutOption(review, slide)?.source}`}
+                                data-testid={`layout-source-badge-${index}`}
+                                title={displayLayoutSourceLabel(
+                                  currentLayoutOption(review, slide)?.source ?? "layout",
+                                  currentLayoutOption(review, slide)?.source_label,
+                                )}
+                              >
+                                {displayLayoutSourceType(currentLayoutOption(review, slide)?.source ?? "layout")}
+                              </span>
+                            ) : null}
+                          </span>
+                          {currentLayoutOption(review, slide) ? (
+                            <span className="slide-choice-source-label" data-testid={`layout-source-label-${index}`}>
+                              {displayLayoutSourceLabel(
+                                currentLayoutOption(review, slide)?.source ?? "layout",
+                                currentLayoutOption(review, slide)?.source_label,
+                              )}
+                            </span>
+                          ) : null}
+                          {review?.available_layouts.length ? (
+                            <>
+                              <Select
+                                className="chart-type-select"
+                                data-testid={`slide-layout-select-${index}`}
+                                value={slide.preferred_layout_key ?? review.current_layout_key ?? review.available_layouts[0]?.key ?? ""}
+                                onChange={(event) => handleSlideLayoutChange(index, event.target.value)}
+                              >
+                                {review.available_layouts.map((option) => {
+                                  const meta = layoutOptionMeta(option);
+                                  return (
+                                    <option key={`${index}-${option.key}`} value={option.key}>
+                                      {option.name} · {meta || displayLayoutSourceLabel(option.source, option.source_label)}
+                                    </option>
+                                  );
+                                })}
+                              </Select>
+                              <span className="slide-choice-preview">{layoutRecommendationText(currentLayoutOption(review, slide) ?? review.available_layouts[0])}</span>
+                            </>
+                          ) : (
+                            <span className="slide-choice-preview">Для этого слайда пока не нашлось подходящих вариантов макета.</span>
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
 
                 {cardSlideChoices.length > 0 ? (
                   <div className="slide-choice-list">

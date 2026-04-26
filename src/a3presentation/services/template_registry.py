@@ -105,6 +105,7 @@ class TemplateRegistry:
             warnings=list(manifest.inventory.warnings),
             layout_target_count=sum(1 for target in targets if target.source == "layout"),
             prototype_target_count=sum(1 for target in targets if target.source == "prototype"),
+            direct_target_count=sum(1 for target in targets if target.source == "direct_shape_binding"),
             targets=[
                 InventoryTargetSummary(
                     key=target.key,
@@ -184,10 +185,11 @@ class TemplateRegistry:
     def apply_layout_inventory_to_plan(self, manifest: TemplateManifest, plan: PresentationPlan) -> PresentationPlan:
         adapted = plan.model_copy(deep=True)
         for slide in adapted.slides:
+            existing_render_target = slide.render_target.model_copy(deep=True) if slide.render_target is not None else None
             ranked_options = self.layout_options_for_slide(manifest, slide)
             resolved = ranked_options[0].key if ranked_options else self.resolve_layout_key_for_slide(manifest, slide)
             if not resolved:
-                slide.render_target = self._auto_layout_render_target_for_slide(slide)
+                slide.render_target = self._merge_render_targets(existing_render_target, self._auto_layout_render_target_for_slide(slide))
                 continue
             target = self._target_by_key(manifest, resolved)
             if target is not None:
@@ -202,9 +204,9 @@ class TemplateRegistry:
                 slide.right_bullets = normalized_slide.right_bullets
                 slide.notes = normalized_slide.notes
                 slide.runtime_profile_key = normalized_slide.runtime_profile_key
-                slide.render_target = self._render_target_for_inventory_target(target)
+                slide.render_target = self._merge_render_targets(existing_render_target, self._render_target_for_inventory_target(target))
             else:
-                slide.render_target = self._auto_layout_render_target_for_slide(slide)
+                slide.render_target = self._merge_render_targets(existing_render_target, self._auto_layout_render_target_for_slide(slide))
             slide.preferred_layout_key = resolved
         return adapted
 
@@ -215,6 +217,12 @@ class TemplateRegistry:
                 current_layout_key=slide.preferred_layout_key,
                 current_target_key=slide.render_target.key if slide.render_target is not None else slide.preferred_layout_key,
                 current_target_type=slide.render_target.type.value if slide.render_target is not None else None,
+                current_target_source=slide.render_target.source if slide.render_target is not None else None,
+                current_target_explanation=self._target_explanation(slide.render_target),
+                current_target_confidence=slide.render_target.confidence if slide.render_target is not None else None,
+                current_target_degradation_reasons=(
+                    list(slide.render_target.degradation_reasons) if slide.render_target is not None else []
+                ),
                 current_runtime_profile_key=slide.runtime_profile_key,
                 available_layouts=self.layout_options_for_slide(manifest, slide),
             )
@@ -360,6 +368,8 @@ class TemplateRegistry:
                 editable_slot_count=target.editable_slot_count,
                 slots=target.slots,
                 preferred_key=preferred_key,
+                source=target.source,
+                degradation_mode=manifest.inventory.degradation_mode,
             )
             options.append((
                 score,
@@ -385,6 +395,8 @@ class TemplateRegistry:
                         representation_hints=target.representation_hints,
                         estimated_capacity=estimated_capacity,
                         preferred_key=preferred_key,
+                        source=target.source,
+                        degradation_mode=manifest.inventory.degradation_mode,
                     ),
                 ),
             ))
@@ -397,6 +409,19 @@ class TemplateRegistry:
             return slide.render_target.key
         return slide.preferred_layout_key
 
+    def _target_explanation(self, target: SlideRenderTarget | None) -> str | None:
+        if target is None:
+            return None
+        if target.type == RenderTargetType.DIRECT_SHAPE_BINDING:
+            return "Слайд будет заполнен через извлеченные именованные shapes исходной презентации."
+        if target.type == RenderTargetType.AUTO_LAYOUT:
+            return "Слайд идет через fallback-компоновку, потому что безопасный template target не был надежно подтвержден."
+        if target.type == RenderTargetType.PROTOTYPE:
+            return "Слайд будет собран на основе prototype slide из загруженной презентации."
+        if target.type == RenderTargetType.LAYOUT:
+            return "Слайд будет заполнен через layout target из извлеченного inventory."
+        return None
+
     def _score_layout_candidate(
         self,
         *,
@@ -408,6 +433,8 @@ class TemplateRegistry:
         editable_slot_count: int,
         slots: list,
         preferred_key: str | None,
+        source: str,
+        degradation_mode: str | None,
     ) -> tuple[int, int | None, str | None]:
         supports_current_slide_kind = slide.kind in supported_slide_kinds
         score = editable_slot_count
@@ -422,6 +449,9 @@ class TemplateRegistry:
         if supports_current_slide_kind:
             score += 100
             summary_parts.append(slide.kind.value)
+        if degradation_mode == "direct_shape_binding" and source == "direct_shape_binding":
+            score += 160
+            summary_parts.append("direct binding")
         if preferred_key and key == preferred_key:
             score += 250
             summary_parts.append("selected")
@@ -449,6 +479,8 @@ class TemplateRegistry:
         score += capacity_score
         if estimated_capacity:
             summary_parts.append(f"~{estimated_capacity} chars")
+        if source == "direct_shape_binding":
+            summary_parts.append("source shapes")
 
         summary = " · ".join(dict.fromkeys(summary_parts))
         if not summary:
@@ -472,6 +504,8 @@ class TemplateRegistry:
         representation_hints: list[str],
         estimated_capacity: int | None,
         preferred_key: str | None,
+        source: str,
+        degradation_mode: str | None,
     ) -> list[str]:
         reasons: list[str] = []
         hints = set(representation_hints)
@@ -479,6 +513,9 @@ class TemplateRegistry:
 
         if preferred_key and key == preferred_key:
             reasons.append("Этот вариант уже выбран для текущего слайда.")
+        if degradation_mode == "direct_shape_binding" and source == "direct_shape_binding":
+            reasons.append("Использует извлеченные shape bindings исходного слайда без опоры на layout placeholders.")
+            reasons.append("Подходит для degraded режима, где безопасные layout или prototype targets не подтверждены.")
         if slide.kind in supported_slide_kinds:
             reasons.append("Совпадает с текущим типом слайда.")
 
@@ -762,10 +799,70 @@ class TemplateRegistry:
                 )
             )
 
+        if manifest.inventory.degradation_mode == "direct_shape_binding" and manifest.inventory.slides and manifest.inventory.components:
+            components_by_id = {component.component_id: component for component in manifest.inventory.components}
+            for slide_inventory in manifest.inventory.slides:
+                key = f"direct_slide_{slide_inventory.source_index}"
+                if key in seen_keys:
+                    continue
+                editable_components = [
+                    components_by_id[component_id]
+                    for component_id in slide_inventory.component_ids
+                    if component_id in components_by_id
+                    and getattr(components_by_id[component_id], "binding", None)
+                    and getattr(components_by_id[component_id], "shape_name", None)
+                    and getattr(components_by_id[component_id], "capabilities", None)
+                ]
+                if not editable_components:
+                    continue
+                seen_keys.add(key)
+                targets.append(
+                    _InventoryTarget(
+                        key=key,
+                        name=slide_inventory.name or f"Direct Slide {slide_inventory.source_index + 1}",
+                        source="direct_shape_binding",
+                        source_label=f"source slide {slide_inventory.source_index + 1}",
+                        supported_slide_kinds=list(slide_inventory.supported_slide_kinds),
+                        representation_hints=list(slide_inventory.representation_hints),
+                        editable_roles=sorted(
+                            {
+                                component.role.value
+                                for component in editable_components
+                                if getattr(component, "role", None) is not None and component.role.value
+                            }
+                        ),
+                        editable_slot_count=len(editable_components),
+                        slots=editable_components,
+                    )
+                )
+
         return targets
 
     def _target_by_key(self, manifest: TemplateManifest, key: str) -> _InventoryTarget | None:
         return next((target for target in self._inventory_targets(manifest) if target.key == key), None)
+
+    def _merge_render_targets(
+        self,
+        existing: SlideRenderTarget | None,
+        resolved: SlideRenderTarget,
+    ) -> SlideRenderTarget:
+        if existing is None:
+            return resolved
+        merged_source_parts = [part for part in [existing.source, resolved.source] if part]
+        merged_binding_keys = sorted(set(existing.binding_keys) | set(resolved.binding_keys))
+        merged_degradation_reasons = list(dict.fromkeys([*existing.degradation_reasons, *resolved.degradation_reasons]))
+        confidence = resolved.confidence or existing.confidence
+        if existing.confidence == "medium" and resolved.confidence == "high" and existing.degradation_reasons:
+            confidence = existing.confidence
+        return SlideRenderTarget(
+            type=resolved.type,
+            key=resolved.key,
+            label=resolved.label or existing.label,
+            source=" + ".join(dict.fromkeys(merged_source_parts)) if merged_source_parts else None,
+            binding_keys=merged_binding_keys,
+            degradation_reasons=merged_degradation_reasons,
+            confidence=confidence,
+        )
 
     def _render_target_for_inventory_target(self, target: _InventoryTarget) -> SlideRenderTarget:
         binding_keys = sorted(
@@ -775,14 +872,21 @@ class TemplateRegistry:
                 if getattr(slot, "binding", None)
             }
         )
+        degradation_reasons: list[str] = []
+        confidence = "high"
+        if target.source == RenderTargetType.PROTOTYPE.value:
+            degradation_reasons = ["inventory_fallback"]
+        elif target.source == RenderTargetType.DIRECT_SHAPE_BINDING.value:
+            degradation_reasons = ["direct_shape_binding"]
+            confidence = "medium"
         return SlideRenderTarget(
             type=RenderTargetType(target.source),
             key=target.key,
             label=target.name,
             source=target.source_label,
             binding_keys=binding_keys,
-            confidence="high",
-            degradation_reasons=[] if target.source == RenderTargetType.LAYOUT.value else ["inventory_fallback"],
+            confidence=confidence,
+            degradation_reasons=degradation_reasons,
         )
 
     def _auto_layout_render_target_for_slide(self, slide: SlideSpec) -> SlideRenderTarget:

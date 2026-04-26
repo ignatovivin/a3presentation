@@ -18,3 +18,4 @@ src/**/*.egg-info/
 
 storage/generated/
 storage/outputs/
+graphify-out/

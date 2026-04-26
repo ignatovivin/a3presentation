@@ -11,6 +11,8 @@ from a3presentation.settings import get_settings
 
 def _seed_templates_if_needed() -> None:
     settings = get_settings()
+    if not settings.seed_bundled_templates:
+        return
     source_root = settings.bundled_templates_dir
     destination_root = settings.templates_dir
 
@@ -30,7 +32,8 @@ def create_app() -> FastAPI:
     settings = get_settings()
     settings.templates_dir.mkdir(parents=True, exist_ok=True)
     settings.outputs_dir.mkdir(parents=True, exist_ok=True)
-    _seed_templates_if_needed()
+    if settings.seed_bundled_templates:
+        _seed_templates_if_needed()
 
     app = FastAPI(title="A3 Presentation API", version="0.1.0")
     app.add_middleware(

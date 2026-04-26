@@ -120,9 +120,61 @@ class TemplateThemeSpec(BaseModel):
     master_shape_styles: dict[str, TemplateShapeStyleSpec] = Field(default_factory=dict)
 
 
+class TemplateComponentStyleSpec(BaseModel):
+    text_styles: dict[str, TemplateTextStyleSpec] = Field(default_factory=dict)
+    shape_style: TemplateShapeStyleSpec | None = None
+    spacing_tokens: dict[str, int | float] = Field(default_factory=dict)
+    behavior_tokens: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+
 class GenerationMode(str, Enum):
     LAYOUT = "layout"
     PROTOTYPE = "prototype"
+
+
+class InventorySourceKind(str, Enum):
+    LAYOUT = "layout"
+    SLIDE = "slide"
+
+
+class ExtractedComponentType(str, Enum):
+    PLACEHOLDER = "placeholder"
+    TEXT = "text"
+    TABLE = "table"
+    CHART = "chart"
+    IMAGE = "image"
+    GROUP = "group"
+    FOOTER = "footer"
+    BACKGROUND = "background"
+    UNKNOWN = "unknown"
+
+
+class ExtractedComponentRole(str, Enum):
+    TITLE = "title"
+    SUBTITLE = "subtitle"
+    BODY = "body"
+    BULLET_LIST = "bullet_list"
+    BULLET_ITEM = "bullet_item"
+    TABLE = "table"
+    CHART = "chart"
+    IMAGE = "image"
+    FOOTER = "footer"
+    AUXILIARY = "auxiliary"
+    DECORATIVE = "decorative"
+    UNKNOWN = "unknown"
+
+
+class ComponentConfidence(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class ComponentEditability(str, Enum):
+    EDITABLE = "editable"
+    SEMI_EDITABLE = "semi_editable"
+    DECORATIVE = "decorative"
+    UNSAFE = "unsafe"
 
 
 class PlaceholderKind(str, Enum):
@@ -142,6 +194,10 @@ class PlaceholderSpec(BaseModel):
     idx: int | None = None
     shape_name: str | None = None
     binding: str | None = None
+    editable_role: str | None = None
+    editable_capabilities: list[str] = Field(default_factory=list)
+    slot_group: str | None = None
+    slot_group_order: int | None = None
     max_chars: int | None = None
     left_emu: int | None = None
     top_emu: int | None = None
@@ -156,6 +212,59 @@ class PlaceholderSpec(BaseModel):
     shape_style: TemplateShapeStyleSpec | None = None
 
 
+class ComponentGeometry(BaseModel):
+    left_emu: int | None = None
+    top_emu: int | None = None
+    width_emu: int | None = None
+    height_emu: int | None = None
+    margin_left_emu: int | None = None
+    margin_right_emu: int | None = None
+    margin_top_emu: int | None = None
+    margin_bottom_emu: int | None = None
+
+
+class ComponentStyle(BaseModel):
+    text_style: TemplateTextStyleSpec | None = None
+    paragraph_styles: TemplateParagraphStyleCatalog | None = None
+    shape_style: TemplateShapeStyleSpec | None = None
+
+
+class ExtractedComponent(BaseModel):
+    component_id: str
+    source_kind: InventorySourceKind
+    source_index: int
+    source_name: str | None = None
+    shape_name: str | None = None
+    component_type: ExtractedComponentType = ExtractedComponentType.UNKNOWN
+    role: ExtractedComponentRole = ExtractedComponentRole.UNKNOWN
+    binding: str | None = None
+    confidence: ComponentConfidence = ComponentConfidence.LOW
+    editability: ComponentEditability = ComponentEditability.UNSAFE
+    capabilities: list[str] = Field(default_factory=list)
+    geometry: ComponentGeometry = Field(default_factory=ComponentGeometry)
+    style: ComponentStyle = Field(default_factory=ComponentStyle)
+    text_excerpt: str | None = None
+    child_component_ids: list[str] = Field(default_factory=list)
+
+
+class ExtractedSlideInventory(BaseModel):
+    source_kind: InventorySourceKind
+    source_index: int
+    name: str | None = None
+    component_ids: list[str] = Field(default_factory=list)
+    supported_slide_kinds: list[str] = Field(default_factory=list)
+    representation_hints: list[str] = Field(default_factory=list)
+
+
+class ExtractedPresentationInventory(BaseModel):
+    components: list[ExtractedComponent] = Field(default_factory=list)
+    slides: list[ExtractedSlideInventory] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    degradation_mode: str | None = None
+    has_usable_layout_inventory: bool = False
+    has_prototype_inventory: bool = False
+
+
 class LayoutSpec(BaseModel):
     key: str
     name: str
@@ -163,6 +272,7 @@ class LayoutSpec(BaseModel):
     slide_layout_index: int
     preview_path: str | None = None
     supported_slide_kinds: list[str] = Field(default_factory=list)
+    representation_hints: list[str] = Field(default_factory=list)
     placeholders: list[PlaceholderSpec] = Field(default_factory=list)
     background_color: str | None = None
     background_style: TemplateShapeStyleSpec | None = None
@@ -175,6 +285,10 @@ class PrototypeTokenSpec(BaseModel):
     token: str
     binding: str
     shape_name: str | None = None
+    editable_role: str | None = None
+    editable_capabilities: list[str] = Field(default_factory=list)
+    slot_group: str | None = None
+    slot_group_order: int | None = None
     left_emu: int | None = None
     top_emu: int | None = None
     width_emu: int | None = None
@@ -193,6 +307,7 @@ class PrototypeSlideSpec(BaseModel):
     name: str
     source_slide_index: int
     supported_slide_kinds: list[str] = Field(default_factory=list)
+    representation_hints: list[str] = Field(default_factory=list)
     tokens: list[PrototypeTokenSpec] = Field(default_factory=list)
 
 
@@ -204,6 +319,8 @@ class TemplateManifest(BaseModel):
     generation_mode: GenerationMode = GenerationMode.LAYOUT
     default_layout_key: str | None = None
     design_tokens: dict[str, str | float | int | bool | None] = Field(default_factory=dict)
+    component_styles: dict[str, TemplateComponentStyleSpec] = Field(default_factory=dict)
     theme: TemplateThemeSpec = Field(default_factory=TemplateThemeSpec)
     layouts: list[LayoutSpec] = Field(default_factory=list)
     prototype_slides: list[PrototypeSlideSpec] = Field(default_factory=list)
+    inventory: ExtractedPresentationInventory = Field(default_factory=ExtractedPresentationInventory)

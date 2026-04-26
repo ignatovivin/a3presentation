@@ -273,6 +273,13 @@ class ApiContractTests(unittest.TestCase):
         self.assertIsNotNone(text_review)
         self.assertEqual(text_review.current_target_key, response.plan.slides[text_review.slide_index].render_target.key)
         self.assertEqual(text_review.current_target_type, response.plan.slides[text_review.slide_index].render_target.type.value)
+        self.assertEqual(text_review.current_target_source, response.plan.slides[text_review.slide_index].render_target.source)
+        self.assertTrue(text_review.current_target_explanation)
+        self.assertEqual(text_review.current_target_confidence, response.plan.slides[text_review.slide_index].render_target.confidence)
+        self.assertEqual(
+            text_review.current_target_degradation_reasons,
+            response.plan.slides[text_review.slide_index].render_target.degradation_reasons,
+        )
         self.assertEqual(text_review.current_runtime_profile_key, response.plan.slides[text_review.slide_index].runtime_profile_key)
         best_option = text_review.available_layouts[0]
         self.assertTrue(best_option.runtime_profile_key)
@@ -336,6 +343,14 @@ class ApiContractTests(unittest.TestCase):
         self.assertTrue(
             all(
                 review.current_target_key == response.plan.slides[review.slide_index].render_target.key
+                for review in response.slide_layout_reviews
+                if response.plan.slides[review.slide_index].render_target is not None
+            )
+        )
+        self.assertTrue(
+            all(
+                review.current_target_degradation_reasons
+                == response.plan.slides[review.slide_index].render_target.degradation_reasons
                 for review in response.slide_layout_reviews
                 if response.plan.slides[review.slide_index].render_target is not None
             )

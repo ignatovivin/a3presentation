@@ -221,6 +221,9 @@ Current coverage:
   - frontend preview matrix for supported chart layouts
 - `frontend/e2e/app.spec.ts`
   - UI chart selection, hidden-series payload, drawer switch, and select behavior
+- `frontend/e2e/runtime-chart.spec.ts`
+  - local backend runtime parity for `plan -> generate -> download`
+  - mixed-unit market/share combo parity with secondary-axis audit
 
 Current risk:
 

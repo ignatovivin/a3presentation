@@ -124,6 +124,9 @@ class SlideAudit:
     table_overlay_overflow_details: tuple[str, ...] = ()
     runtime_profile_key: str = ""
     geometry: LayoutGeometryPolicy | None = None
+    target_type: str | None = None
+    target_source: str | None = None
+    target_degradation_reasons: tuple[str, ...] = ()
 
     @property
     def fill_ratio(self) -> float:
@@ -193,6 +196,12 @@ class SlideAudit:
         if self.subtitle_top is None or self.subtitle_height is None:
             return None
         return self.subtitle_top + self.subtitle_height
+
+    @property
+    def degraded_but_valid(self) -> bool:
+        if self.target_degradation_reasons:
+            return True
+        return self.target_type in {"auto_layout", "prototype", "direct_shape_binding"}
 
 
 @dataclass(frozen=True)
@@ -467,6 +476,7 @@ def audit_generated_presentation(
                 fallback_font_size = effective_profile.max_font_pt
             if fallback_font_size is not None:
                 fallback_body_font_sizes = (float(fallback_font_size),)
+        render_target = slide_spec.render_target
         audits.append(
             SlideAudit(
                 slide_index=slide_index,
@@ -548,6 +558,9 @@ def audit_generated_presentation(
                 table_overlay_overflow_count=len(table_overlay_overflows),
                 table_overlay_overflow_details=table_overlay_overflows,
                 geometry=resolved_geometry,
+                target_type=render_target.type.value if render_target is not None else None,
+                target_source=render_target.source if render_target is not None else None,
+                target_degradation_reasons=tuple(render_target.degradation_reasons) if render_target is not None else (),
             )
         )
 
@@ -698,6 +711,7 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
     violations: list[CapacityViolation] = []
 
     for audit in audits:
+        strict_layout_contracts = audit.target_type not in {"auto_layout", "direct_shape_binding"}
         geometry = audit.geometry or geometry_policy_for_layout(
             audit.runtime_profile_key or audit.profile.layout_key or audit.layout_key
         )
@@ -912,14 +926,14 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                 )
 
         expected_footer_geometry = None
-        if audit.footer_placeholder_idx is not None:
+        if strict_layout_contracts and audit.footer_placeholder_idx is not None:
             for footer_idx in (audit.footer_placeholder_idx, 15, 17, 21):
                 if footer_idx is None:
                     continue
                 expected_footer_geometry = geometry.placeholders.get(footer_idx)
                 if expected_footer_geometry is not None:
                     break
-        if expected_footer_geometry is not None:
+        if strict_layout_contracts and expected_footer_geometry is not None:
             expected_footer_width = audit.expected_footer_width or expected_footer_geometry.width_emu
             if audit.footer_width is not None and audit.footer_width < expected_footer_width - GEOMETRY_TOLERANCE_EMU:
                 violations.append(
@@ -940,7 +954,7 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
                 )
 
-        if audit.layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"}:
+        if strict_layout_contracts and audit.layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"}:
             if audit.footer_width_ratio and audit.footer_width_ratio < 0.9:
                 violations.append(
                     CapacityViolation(
@@ -1005,7 +1019,7 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     )
                 )
 
-        if audit.layout_key == "image_text" and audit.kind == SlideKind.IMAGE.value:
+        if strict_layout_contracts and audit.layout_key == "image_text" and audit.kind == SlideKind.IMAGE.value:
             if audit.image_width is not None and audit.image_width < geometry.placeholders[16].width_emu - GEOMETRY_TOLERANCE_EMU:
                 violations.append(
                     CapacityViolation(
@@ -1131,7 +1145,7 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                         )
                     )
 
-        if audit.layout_key in {"text_full_width", "dense_text_full_width", "list_full_width", "image_text"}:
+        if strict_layout_contracts and audit.layout_key in {"text_full_width", "dense_text_full_width", "list_full_width", "image_text"}:
             expected_body_geometry = geometry.placeholders.get(audit.body_placeholder_idx or 14)
             expected_body_height = expected_body_geometry.height_emu if expected_body_geometry is not None else None
             minimum_fill_ratio = _minimum_placeholder_body_fill_ratio(audit)
@@ -1218,7 +1232,12 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                         )
                     )
 
-        if audit.expected_subtitle_char_count > 0 and audit.placeholder_char_counts and audit.subtitle_placeholder_idx is not None:
+        if (
+            strict_layout_contracts
+            and audit.expected_subtitle_char_count > 0
+            and audit.placeholder_char_counts
+            and audit.subtitle_placeholder_idx is not None
+        ):
             rendered_subtitle_chars = audit.placeholder_char_counts.get(audit.subtitle_placeholder_idx, 0)
             if rendered_subtitle_chars <= 0:
                 violations.append(

@@ -118,22 +118,48 @@ class TextToPlanService:
     def _text_slide_weight_budget(self) -> float:
         return self.text_profile.max_weight
 
-    def _make_layout_render_target(self, layout_key: str | None) -> SlideRenderTarget | None:
+    def _make_layout_render_target(
+        self,
+        layout_key: str | None,
+        *,
+        target_type: RenderTargetType = RenderTargetType.LAYOUT,
+        source: str = "planner",
+        degradation_reasons: list[str] | None = None,
+        confidence: str = "high",
+    ) -> SlideRenderTarget | None:
         if not layout_key:
             return None
         return SlideRenderTarget(
-            type=RenderTargetType.LAYOUT,
+            type=target_type,
             key=layout_key,
             label=layout_key,
-            source="planner",
+            source=source,
+            degradation_reasons=list(degradation_reasons or []),
+            confidence=confidence,
         )
 
-    def _targeted_slide(self, *, layout_key: str | None = None, runtime_profile_key: str | None = None, **payload) -> SlideSpec:
+    def _targeted_slide(
+        self,
+        *,
+        layout_key: str | None = None,
+        runtime_profile_key: str | None = None,
+        target_type: RenderTargetType = RenderTargetType.LAYOUT,
+        target_source: str = "planner",
+        target_degradation_reasons: list[str] | None = None,
+        target_confidence: str = "high",
+        **payload,
+    ) -> SlideSpec:
         resolved_runtime_profile_key = runtime_profile_key or layout_key
         return SlideSpec(
             runtime_profile_key=resolved_runtime_profile_key,
             preferred_layout_key=layout_key,
-            render_target=self._make_layout_render_target(layout_key),
+            render_target=self._make_layout_render_target(
+                layout_key,
+                target_type=target_type,
+                source=target_source,
+                degradation_reasons=target_degradation_reasons,
+                confidence=target_confidence,
+            ),
             **payload,
         )
 
@@ -1725,6 +1751,10 @@ class TextToPlanService:
                     bullets=summary_items[: self._bullet_slide_item_budget()],
                     content_blocks=[self._list_block(summary_items[: self._bullet_slide_item_budget()])],
                     layout_key="list_full_width",
+                    target_type=RenderTargetType.AUTO_LAYOUT,
+                    target_source="planner fallback",
+                    target_degradation_reasons=["document_fallback"],
+                    target_confidence="medium",
                 )
             )
 
@@ -1739,6 +1769,10 @@ class TextToPlanService:
                     notes=secondary_text,
                     content_blocks=self._paragraph_blocks_from_parts(primary_text, secondary_text),
                     layout_key="text_full_width",
+                    target_type=RenderTargetType.AUTO_LAYOUT,
+                    target_source="planner fallback",
+                    target_degradation_reasons=["document_fallback"],
+                    target_confidence="medium",
                 )
             )
 
@@ -1754,6 +1788,9 @@ class TextToPlanService:
                         subtitle="Ключевые данные из документа",
                         table=table,
                         layout_key="table",
+                        target_source="planner fallback",
+                        target_degradation_reasons=["document_fallback"],
+                        target_confidence="medium",
                     )
                 )
 
@@ -1774,6 +1811,10 @@ class TextToPlanService:
                         notes=secondary_text,
                         content_blocks=self._paragraph_blocks_from_parts(primary_text, secondary_text),
                         layout_key="text_full_width",
+                        target_type=RenderTargetType.AUTO_LAYOUT,
+                        target_source="planner fallback",
+                        target_degradation_reasons=["document_fallback"],
+                        target_confidence="medium",
                     )
                 )
 
@@ -1794,6 +1835,10 @@ class TextToPlanService:
                     bullets=summary_items[: self.RESUME_SUMMARY_MAX_ITEMS],
                     content_blocks=[self._list_block(summary_items[: self.RESUME_SUMMARY_MAX_ITEMS])],
                     layout_key="list_full_width",
+                    target_type=RenderTargetType.AUTO_LAYOUT,
+                    target_source="planner fallback",
+                    target_degradation_reasons=["resume_fallback"],
+                    target_confidence="medium",
                 )
             )
 
@@ -1815,6 +1860,10 @@ class TextToPlanService:
                     notes=secondary_text,
                     content_blocks=self._paragraph_blocks_from_parts(primary_text, secondary_text),
                     layout_key="text_full_width",
+                    target_type=RenderTargetType.AUTO_LAYOUT,
+                    target_source="planner fallback",
+                    target_degradation_reasons=["resume_fallback"],
+                    target_confidence="medium",
                 )
             )
             if len(slides) >= 4:

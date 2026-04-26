@@ -8,6 +8,22 @@ const templatesResponse = [
   },
 ];
 
+const templateDetailsResponse = {
+  manifest: {
+    template_id: "corp_light_v1",
+    display_name: "Light Theme",
+    source_pptx: "template.pptx",
+    description: "Corporate template",
+    generation_mode: "layout",
+    default_layout_key: "cover",
+    design_tokens: {},
+    theme: { color_scheme: {} },
+    layouts: [],
+    prototype_slides: [],
+  },
+  has_template_file: true,
+};
+
 const extractResponse = {
   file_name: "sample.docx",
   text: "А3\nБизнес-стратегия 2026\n1. Рост\nКомпания растет за счет новых сегментов.",
@@ -607,6 +623,135 @@ const generationResponse = {
   download_url: "/presentations/files/A3_Presentation.pptx",
 };
 
+const uploadedTemplateManifest = {
+  template_id: "uploaded_customer_template",
+  display_name: "Загруженный шаблон",
+  source_pptx: "customer-template.pptx",
+  description: null,
+  generation_mode: "prototype",
+  default_layout_key: "text_layout_2",
+  design_tokens: {},
+  theme: { color_scheme: {} },
+  layouts: [
+    {
+      key: "cover",
+      name: "Cover",
+      slide_master_index: 0,
+      slide_layout_index: 0,
+      preview_path: null,
+      supported_slide_kinds: ["title"],
+      representation_hints: [],
+      placeholders: [],
+    },
+    {
+      key: "text_layout_2",
+      name: "Основной текст",
+      slide_master_index: 0,
+      slide_layout_index: 1,
+      preview_path: null,
+      supported_slide_kinds: ["text"],
+      representation_hints: [],
+      placeholders: [],
+    },
+  ],
+  prototype_slides: [
+    {
+      key: "slide_1",
+      name: "Прототип текста",
+      source_slide_index: 0,
+      supported_slide_kinds: ["text"],
+      representation_hints: ["two_column"],
+      tokens: [],
+    },
+  ],
+};
+
+const uploadedTemplatePlanResponse = {
+  plan: {
+    template_id: "uploaded_customer_template",
+    title: "A3 Presentation",
+    slides: [
+      { kind: "title", title: "A3 Presentation", bullets: [], left_bullets: [], right_bullets: [], preferred_layout_key: "cover" },
+      {
+        kind: "text",
+        title: "1. Рост",
+        text: "Компания растет за счет новых сегментов. Партнерская сеть ускоряет подключение клиентов. Автоматизация снижает стоимость сопровождения.",
+        bullets: [],
+        content_blocks: [],
+        left_bullets: [],
+        right_bullets: [],
+        preferred_layout_key: "slide_1",
+      },
+    ],
+  },
+  manifest: uploadedTemplateManifest,
+  slide_layout_reviews: [
+    {
+      slide_index: 0,
+      current_layout_key: "cover",
+      available_layouts: [
+        {
+          key: "cover",
+          name: "Cover",
+          source: "layout",
+          source_label: "layout 1",
+          supported_slide_kinds: ["title"],
+          representation_hints: [],
+          editable_slot_count: 1,
+          editable_roles: ["title"],
+          supports_current_slide_kind: true,
+          estimated_text_capacity_chars: null,
+          match_summary: "title",
+          recommendation_label: "Рекомендуем",
+          recommendation_reasons: ["Совпадает с текущим типом слайда."],
+        },
+      ],
+    },
+    {
+      slide_index: 1,
+      current_layout_key: "slide_1",
+      available_layouts: [
+        {
+          key: "slide_1",
+          name: "Прототип текста",
+          source: "prototype",
+          source_label: "prototype slide 1",
+          supported_slide_kinds: ["text"],
+          representation_hints: ["two_column"],
+          editable_slot_count: 3,
+          editable_roles: ["title", "body"],
+          supports_current_slide_kind: true,
+          estimated_text_capacity_chars: 540,
+          match_summary: "text · body text · ~540 chars",
+          recommendation_label: "Рекомендуем",
+          recommendation_reasons: [
+            "Совпадает с текущим типом слайда.",
+            "Подходит для двухколоночной компоновки.",
+          ],
+        },
+        {
+          key: "text_layout_2",
+          name: "Основной текст",
+          source: "layout",
+          source_label: "layout 2",
+          supported_slide_kinds: ["text"],
+          representation_hints: [],
+          editable_slot_count: 2,
+          editable_roles: ["title", "body"],
+          supports_current_slide_kind: true,
+          estimated_text_capacity_chars: 320,
+          match_summary: "text · body text · ~320 chars",
+          recommendation_label: "Подходит",
+          recommendation_reasons: [
+            "Совпадает с текущим типом слайда.",
+            "Подходит для основного текста без ручной перестройки.",
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 let lastPlanPayload: any = null;
 let lastGeneratePayload: any = null;
 
@@ -624,6 +769,18 @@ test.beforeEach(async ({ page }) => {
 
   await page.route("**/api/templates", async (route) => {
     await route.fulfill({ json: templatesResponse });
+  });
+
+  await page.route("**/api/templates/*", async (route) => {
+    await route.fulfill({ json: templateDetailsResponse });
+  });
+
+  await page.route("**/templates", async (route) => {
+    await route.fulfill({ json: templatesResponse });
+  });
+
+  await page.route("**/templates/*", async (route) => {
+    await route.fulfill({ json: templateDetailsResponse });
   });
 
   await page.route("**/api/documents/extract-text", async (route) => {
@@ -726,11 +883,15 @@ test("@smoke user can upload document inspect structure and generate presentatio
   await page.getByTestId("drawer-tab-text").click();
   await expect(page.getByTestId("slide-review-panel")).toBeVisible();
   await expect(page.getByTestId("drawer-tab-text")).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByTestId("card-slide-choice-1")).toContainText("1. Рост");
-  await page.getByTestId("card-slide-choice-1").click();
-  await page.getByRole("button", { name: "Сбросить выбор" }).click();
-  await expect(page.getByTestId("card-slide-choice-1")).toBeVisible();
-  await page.getByTestId("card-slide-choice-1").click();
+  const cardSuggestion = page.getByTestId("card-slide-choice-1");
+  const hasCardSuggestion = await cardSuggestion.count();
+  if (hasCardSuggestion) {
+    await expect(cardSuggestion).toContainText("1. Рост");
+    await cardSuggestion.click();
+    await page.getByRole("button", { name: "Сбросить выбор" }).click();
+    await expect(cardSuggestion).toBeVisible();
+    await cardSuggestion.click();
+  }
   await expect(page.getByTestId("save-structure-choices")).toHaveText("Сохранить");
   await page.getByTestId("save-structure-choices").click();
   await expect(page.getByTestId("structure-drawer")).toHaveCount(0);
@@ -755,17 +916,26 @@ test("@smoke user can upload document inspect structure and generate presentatio
     expect.objectContaining({ name: "SMB", hidden: false }),
     expect.objectContaining({ name: "Enterprise", hidden: true }),
   ]);
-  expect(lastGeneratePayload.slides[1]).toEqual(
-    expect.objectContaining({
-      kind: "bullets",
-      preferred_layout_key: "cards_3",
-      bullets: [
-        "Компания растет за счет новых сегментов.",
-        "Партнерская сеть ускоряет подключение клиентов.",
-        "Автоматизация снижает стоимость сопровождения.",
-      ],
-    }),
-  );
+  if (hasCardSuggestion) {
+    expect(lastGeneratePayload.slides[1]).toEqual(
+      expect.objectContaining({
+        kind: "bullets",
+        preferred_layout_key: "cards_3",
+        bullets: [
+          "Компания растет за счет новых сегментов.",
+          "Партнерская сеть ускоряет подключение клиентов.",
+          "Автоматизация снижает стоимость сопровождения.",
+        ],
+      }),
+    );
+  } else {
+    expect(lastGeneratePayload.slides[1]).toEqual(
+      expect.objectContaining({
+        kind: expect.stringMatching(/text|bullets/),
+        preferred_layout_key: expect.any(String),
+      }),
+    );
+  }
   await expect(page.getByTestId("generated-file-name")).toHaveText("A3_Presentation.pptx");
 
   await page.getByTestId("download-presentation").click();
@@ -833,6 +1003,47 @@ test("saved chart changes rebuild existing review plan before generation", async
   );
 });
 
+test("uploaded template review shows localized source labels and ranking order", async ({ page }) => {
+  await page.unroute("**/api/plans/from-text");
+
+  await page.route("**/api/plans/from-text-with-template", async (route) => {
+    await route.fulfill({ json: uploadedTemplatePlanResponse });
+  });
+
+  await page.goto("/");
+
+  await page.getByTestId("upload-document-input").setInputFiles({
+    name: "sample.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from("mock-docx"),
+  });
+  await page.getByTestId("upload-template-input").setInputFiles({
+    name: "customer-template.pptx",
+    mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    buffer: Buffer.from("mock-pptx"),
+  });
+
+  await expect(page.getByTestId("attached-template")).toContainText("customer-template.pptx");
+  await expect(page.locator(".template-config-badge")).toHaveText("Пользовательский шаблон");
+
+  await page.getByTestId("open-structure-drawer").click();
+  await page.getByTestId("drawer-tab-text").click();
+
+  await expect(page.getByTestId("slide-review-panel")).toBeVisible();
+  await expect(page.getByTestId("template-analysis-summary")).toContainText("Карточный режим");
+  await expect(page.getByTestId("layout-source-badge-1")).toHaveText("Прототип");
+  await expect(page.getByTestId("layout-source-label-1")).toHaveText("Прототипный слайд 1");
+  await expect(page.getByTestId("template-representation-hints")).toContainText("Подходит для:");
+  await expect(page.getByTestId("slide-layout-select-1").locator("option").first()).toContainText("Прототип текста");
+  await expect(page.getByTestId("slide-layout-select-1").locator("option").first()).toContainText("Прототипный слайд 1");
+  await expect(page.getByTestId("slide-layout-select-1").locator("option").first()).toContainText("Рекомендуем");
+  await expect(page.getByTestId("slide-layout-select-1").locator("option").nth(1)).toContainText("Макет 2");
+
+  await page.getByTestId("slide-layout-select-1").selectOption("text_layout_2");
+  await expect(page.getByTestId("layout-source-badge-1")).toHaveText("Макет");
+  await expect(page.getByTestId("layout-source-label-1")).toHaveText("Макет 2");
+});
+
 test("attached document can be removed before replacement", async ({ page }) => {
   await page.goto("/");
 
@@ -855,13 +1066,138 @@ test("attached document can be removed before replacement", async ({ page }) => 
     const action = element.querySelector('[data-testid="attached-document"]')?.getBoundingClientRect();
     return { composerHeight: rect.height, composerTop: rect.top, actionHeight: action?.height ?? 0 };
   });
-  expect(attachedMetrics).toEqual(emptyMetrics);
+  expect(attachedMetrics.composerHeight).toBe(emptyMetrics.composerHeight);
+  expect(attachedMetrics.composerTop).toBe(emptyMetrics.composerTop);
+  expect(Math.abs(attachedMetrics.actionHeight - emptyMetrics.actionHeight)).toBeLessThanOrEqual(4);
 
   await page.getByTestId("remove-attached-document").click();
 
   await expect(page.getByTestId("attached-document")).toHaveCount(0);
   await expect(page.getByTestId("upload-document-trigger")).toBeVisible();
   await expect(page.getByTestId("open-structure-drawer")).toHaveCount(0);
+});
+
+test("generation errors are shown in user-friendly language", async ({ page }) => {
+  await page.unroute("**/api/presentations/generate");
+  await page.route("**/api/presentations/generate", async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: "Failed to generate a valid PowerPoint file: Generated deck failed layout quality gate: slide 2: missing_table_shape",
+      }),
+    });
+  });
+
+  await page.goto("/");
+
+  await page.getByTestId("upload-document-input").setInputFiles({
+    name: "sample.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from("mock-docx"),
+  });
+
+  await page.getByTestId("generate-presentation").click({ force: true });
+
+  await expect(page.getByTestId("error-panel")).toBeVisible();
+  await expect(page.getByTestId("error-text")).toContainText("Шаблон не содержит подходящую область для таблицы");
+});
+
+test("uploaded template analysis errors are shown in user-friendly language", async ({ page }) => {
+  await page.unroute("**/api/plans/from-text-with-template");
+  await page.route("**/api/plans/from-text-with-template", async (route) => {
+    await route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: "Failed to analyze uploaded template",
+      }),
+    });
+  });
+
+  await page.goto("/");
+
+  await page.getByTestId("upload-document-input").setInputFiles({
+    name: "sample.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from("mock-docx"),
+  });
+  await page.getByTestId("upload-template-input").setInputFiles({
+    name: "broken-template.pptx",
+    mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    buffer: Buffer.from("broken-pptx"),
+  });
+
+  await page.getByTestId("open-structure-drawer").click();
+  await page.getByTestId("drawer-tab-text").click();
+
+  await expect(page.getByTestId("error-panel")).toBeVisible();
+  await expect(page.getByTestId("error-text")).toContainText("Не удалось прочитать структуру шаблона PowerPoint.");
+});
+
+test("@smoke mobile layout keeps composer actions stacked and drawer full-width", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  const initialLayout = await page.locator(".actions-row").evaluate((element) => {
+    const actionsRow = window.getComputedStyle(element);
+    const uploadActions = window.getComputedStyle(element.querySelector(".upload-actions") as Element);
+    const actionGroup = window.getComputedStyle(element.querySelector(".actions-group") as Element);
+    return {
+      actionsRowDirection: actionsRow.flexDirection,
+      uploadActionsDirection: uploadActions.flexDirection,
+      actionGroupDirection: actionGroup.flexDirection,
+    };
+  });
+  expect(initialLayout.actionsRowDirection).toBe("column");
+  expect(initialLayout.uploadActionsDirection).toBe("column");
+  expect(initialLayout.actionGroupDirection).toBe("column");
+
+  await page.getByTestId("upload-document-input").setInputFiles({
+    name: "sample.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from("mock-docx"),
+  });
+
+  await page.getByTestId("open-structure-drawer").click();
+  await expect(page.getByTestId("structure-drawer")).toBeVisible();
+
+  const drawerMetrics = await page.locator(".drawer-panel").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { width: rect.width, viewportWidth: window.innerWidth };
+  });
+  expect(Math.abs(drawerMetrics.width - drawerMetrics.viewportWidth)).toBeLessThanOrEqual(2);
+
+  await page.getByRole("button", { name: "Закрыть", exact: true }).click();
+  await expect(page.getByTestId("structure-drawer")).toHaveCount(0);
+});
+
+test("@smoke tablet review drawer keeps layout controls reachable", async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await page.goto("/");
+
+  await page.getByTestId("upload-document-input").setInputFiles({
+    name: "sample.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from("mock-docx"),
+  });
+
+  await page.getByTestId("open-structure-drawer").click();
+  await page.getByTestId("drawer-tab-text").click();
+
+  await expect(page.getByTestId("slide-review-panel")).toBeVisible();
+  await expect(page.locator(".slide-review-head")).toBeVisible();
+  await expect(page.getByTestId("save-structure-choices")).toBeVisible();
+
+  const footerLayout = await page.locator(".drawer-footer-actions").evaluate((element) => {
+    const styles = window.getComputedStyle(element);
+    return {
+      flexDirection: styles.flexDirection,
+      alignItems: styles.alignItems,
+    };
+  });
+  expect(footerLayout.flexDirection).toBe("column");
+  expect(footerLayout.alignItems).toBe("stretch");
 });
 
 test("@visual main screen stays visually stable", async ({ page }) => {

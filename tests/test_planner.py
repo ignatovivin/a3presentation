@@ -107,6 +107,59 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertTrue(all(slide.render_target is not None for slide in plan.slides))
         self.assertTrue(all((slide.render_target.key or "").strip() for slide in plan.slides if slide.render_target is not None))
 
+    def test_safe_fallback_planner_marks_render_target_as_degraded(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="paragraph", text="Сводный операционный отчёт"),
+            DocumentBlock(kind="table", table=TableBlock(headers=["Показатель", "Значение"], rows=[["GMV", "100"]])),
+            DocumentBlock(kind="table", table=TableBlock(headers=["Показатель", "Значение"], rows=[["MAU", "200"]])),
+            DocumentBlock(kind="table", table=TableBlock(headers=["Показатель", "Значение"], rows=[["NPS", "65"]])),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title=None,
+            tables=[],
+            blocks=blocks,
+        )
+
+        degraded_targets = [slide.render_target for slide in plan.slides[1:] if slide.render_target is not None]
+        self.assertTrue(degraded_targets)
+        self.assertTrue(any("document_fallback" in target.degradation_reasons for target in degraded_targets))
+        self.assertTrue(any(target.type == RenderTargetType.AUTO_LAYOUT for target in degraded_targets))
+
+    def test_resume_fallback_planner_marks_render_target_as_degraded(self) -> None:
+        service = TextToPlanService()
+        blocks = [
+            DocumentBlock(kind="paragraph", text="Иван Игнатов"),
+            DocumentBlock(kind="paragraph", text="ivan@example.com"),
+            DocumentBlock(kind="paragraph", text="+7 999 000-00-00"),
+            DocumentBlock(kind="paragraph", text="ОПЫТ РАБОТЫ"),
+            DocumentBlock(
+                kind="paragraph",
+                text="Руководил командой из десяти человек, запускал внутренние продукты, выстраивал процессы аналитики и координировал кросс-функциональные проекты.",
+            ),
+            DocumentBlock(kind="paragraph", text="ОБРАЗОВАНИЕ"),
+            DocumentBlock(
+                kind="paragraph",
+                text="Высшее техническое образование, дополнительная программа по продуктовому менеджменту и регулярные курсы по аналитике данных.",
+            ),
+        ]
+
+        plan = service.build_plan(
+            template_id="corp_light_v1",
+            raw_text="\n".join(block.text or "" for block in blocks),
+            title=None,
+            tables=[],
+            blocks=blocks,
+        )
+
+        degraded_targets = [slide.render_target for slide in plan.slides[1:] if slide.render_target is not None]
+        self.assertTrue(degraded_targets)
+        self.assertTrue(any("resume_fallback" in target.degradation_reasons for target in degraded_targets))
+        self.assertTrue(any(target.type == RenderTargetType.AUTO_LAYOUT for target in degraded_targets))
+
     def test_planner_splits_dense_bullets_by_content_weight(self) -> None:
         service = TextToPlanService()
         bullets = [
