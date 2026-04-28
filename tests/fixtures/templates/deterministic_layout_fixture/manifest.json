@@ -30,56 +30,12 @@
     "table_body_fill_transparent": true,
     "table_preserve_source_fill_colors": false,
     "table_render_as_shapes": true,
-    "cards_body_font_size_pt": 16,
     "chart_rank_color_1": "#091E38",
     "chart_rank_color_2": "#3489F3",
     "chart_rank_color_3": "#264595",
     "chart_rank_color_4": "#BFCEF5"
   },
   "component_styles": {
-    "cards": {
-      "text_styles": {
-        "title": {
-          "font_family": "Mont SemiBold",
-          "font_size_pt": 20.0,
-          "font_weight": 600,
-          "bold": true,
-          "color": "#FFFFFF"
-        },
-        "body": {
-          "font_family": "Mont SemiBold",
-          "font_size_pt": 16.0,
-          "font_weight": 400,
-          "color": "#FFFFFF"
-        },
-        "metric_value": {
-          "font_family": "Mont SemiBold",
-          "font_size_pt": 22.0,
-          "font_weight": 600,
-          "bold": true,
-          "color": "#FFFFFF"
-        },
-        "metric_label": {
-          "font_family": "Mont Regular",
-          "font_size_pt": 12.0,
-          "font_weight": 400,
-          "color": "#E4F1FF"
-        }
-      },
-      "spacing_tokens": {
-        "content_margin_x_emu": 91440,
-        "content_margin_y_emu": 45720,
-        "title_body_gap_emu": 100000,
-        "body_metrics_gap_emu": 180000,
-        "metrics_gap_x_emu": 180000,
-        "metrics_gap_y_emu": 160000
-      },
-      "behavior_tokens": {
-        "metric_max_items": 4,
-        "metric_value_compact_font_pt": 20,
-        "metric_value_regular_font_pt": 22
-      }
-    },
     "text": {
       "text_styles": {
         "title": {
@@ -240,67 +196,6 @@
         "meta_min_height_emu": 700000,
         "meta_gap_emu": 220000,
         "bottom_limit_emu": 6200000
-      }
-    },
-    "list_with_icons": {
-      "text_styles": {
-        "title": {
-          "font_family": "Mont SemiBold",
-          "font_size_pt": 35.0,
-          "font_weight": 600,
-          "bold": true,
-          "color": "#081C4F"
-        },
-        "subtitle": {
-          "font_family": "Mont SemiBold",
-          "font_size_pt": 18.0,
-          "font_weight": 400,
-          "color": "#081C4F"
-        },
-        "left": {
-          "font_family": "Mont SemiBold",
-          "font_size_pt": 20.0,
-          "font_weight": 400,
-          "color": "#081C4F"
-        },
-        "right": {
-          "font_family": "Mont SemiBold",
-          "font_size_pt": 20.0,
-          "font_weight": 400,
-          "color": "#081C4F"
-        },
-        "footer": {
-          "font_family": "Mont Regular",
-          "font_size_pt": 18.0,
-          "font_weight": 400,
-          "color": "#3489F3"
-        }
-      },
-      "spacing_tokens": {
-        "title_content_gap_emu": 180000,
-        "title_body_gap_no_subtitle_emu": 300000,
-        "content_footer_gap_emu": 180000
-      }
-    },
-    "contacts": {
-      "text_styles": {
-        "primary": {
-          "font_family": "Mont SemiBold",
-          "font_size_pt": 18.0,
-          "font_weight": 400,
-          "color": "#081C4F"
-        },
-        "secondary": {
-          "font_family": "Mont SemiBold",
-          "font_size_pt": 14.0,
-          "font_weight": 400,
-          "color": "#081C4F"
-        }
-      },
-      "behavior_tokens": {
-        "primary_threshold_chars": 60,
-        "secondary_threshold_chars": 40,
-        "font_decrement_pt": 2.0
       }
     }
   },
@@ -1244,126 +1139,6 @@
           "kind": "body",
           "idx": 17,
           "binding": "presentation_name"
-        }
-      ]
-    },
-    {
-      "key": "cards_3",
-      "name": "Слайд с карточками",
-      "slide_master_index": 0,
-      "slide_layout_index": 2,
-      "preview_path": null,
-      "supported_slide_kinds": [
-        "bullets"
-      ],
-      "placeholders": [
-        {
-          "name": "Title 1",
-          "kind": "title",
-          "idx": 0,
-          "binding": "title"
-        },
-        {
-          "name": "Text Placeholder 2",
-          "kind": "body",
-          "idx": 11,
-          "binding": "card_1"
-        },
-        {
-          "name": "Text Placeholder 3",
-          "kind": "body",
-          "idx": 12,
-          "binding": "card_2"
-        },
-        {
-          "name": "Text Placeholder 4",
-          "kind": "body",
-          "idx": 13,
-          "binding": "card_3"
-        },
-        {
-          "name": "Text Placeholder 5",
-          "kind": "body",
-          "idx": 15,
-          "binding": "presentation_name"
-        }
-      ]
-    },
-    {
-      "key": "list_with_icons",
-      "name": "Слайд с перечислением",
-      "slide_master_index": 0,
-      "slide_layout_index": 3,
-      "preview_path": null,
-      "supported_slide_kinds": [
-        "two_column"
-      ],
-      "placeholders": [
-        {
-          "name": "Title 1",
-          "kind": "title",
-          "idx": 0,
-          "binding": "title"
-        },
-        {
-          "name": "Text Placeholder 2",
-          "kind": "body",
-          "idx": 13,
-          "binding": "subtitle"
-        },
-        {
-          "name": "Text Placeholder 3",
-          "kind": "body",
-          "idx": 12,
-          "binding": "left_text"
-        },
-        {
-          "name": "Text Placeholder 4",
-          "kind": "body",
-          "idx": 14,
-          "binding": "right_list"
-        },
-        {
-          "name": "Text Placeholder 11",
-          "kind": "body",
-          "idx": 21,
-          "binding": "presentation_name"
-        }
-      ]
-    },
-    {
-      "key": "contacts",
-      "name": "Контакты",
-      "slide_master_index": 1,
-      "slide_layout_index": 4,
-      "preview_path": null,
-      "supported_slide_kinds": [
-        "text"
-      ],
-      "placeholders": [
-        {
-          "name": "Text Placeholder 1",
-          "kind": "body",
-          "idx": 10,
-          "binding": "contact_title"
-        },
-        {
-          "name": "Text Placeholder 2",
-          "kind": "body",
-          "idx": 11,
-          "binding": "contact_role"
-        },
-        {
-          "name": "Text Placeholder 3",
-          "kind": "body",
-          "idx": 12,
-          "binding": "contact_phone"
-        },
-        {
-          "name": "Text Placeholder 4",
-          "kind": "body",
-          "idx": 13,
-          "binding": "contact_email"
         }
       ]
     }
