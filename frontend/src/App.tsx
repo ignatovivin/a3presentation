@@ -12,6 +12,7 @@ import type {
   ChartSpec,
   DocumentBlock,
   GeneratePresentationResponse,
+  SlideLayoutOption,
   PresentationPlan,
   SlideLayoutReview,
   SlideSpec,
@@ -348,7 +349,7 @@ function currentLayoutOption(review: SlideLayoutReview | null, slide: SlideSpec)
   if (!review?.available_layouts.length) {
     return null;
   }
-  const key = slide.preferred_layout_key ?? review.current_target_key ?? review.available_layouts[0]?.key ?? "";
+  const key = slide.render_target?.key ?? slide.preferred_layout_key ?? review.current_target_key ?? review.available_layouts[0]?.key ?? "";
   return review.available_layouts.find((option) => option.key === key) ?? review.available_layouts[0] ?? null;
 }
 
@@ -382,6 +383,21 @@ function inventoryTargetRuntimeProfileKey(manifest: TemplateManifest | null, tar
     return "cover";
   }
   return "text_full_width";
+}
+
+function renderTargetForLayoutOption(option: SlideLayoutOption | null) {
+  if (!option) {
+    return null;
+  }
+  return {
+    type: option.source,
+    key: option.key,
+    label: option.name,
+    source: option.source_label ?? option.source,
+    binding_keys: option.editable_roles,
+    degradation_reasons: option.source === "direct_shape_binding" ? ["direct_shape_binding"] : [],
+    confidence: option.supports_current_slide_kind ? "high" : "medium",
+  };
 }
 
 export function App() {
@@ -746,6 +762,7 @@ export function App() {
     const selectedOption = selectedReview?.available_layouts.find((option) => option.key === layoutKey) ?? null;
     const runtimeProfileKey = selectedOption?.runtime_profile_key
       ?? inventoryTargetRuntimeProfileKey(effectiveTemplateManifest, layoutKey);
+    const renderTarget = renderTargetForLayoutOption(selectedOption);
     setReviewPlan((current) => {
       if (!current) {
         return current;
@@ -758,6 +775,7 @@ export function App() {
               ...slide,
               preferred_layout_key: layoutKey || null,
               runtime_profile_key: runtimeProfileKey ?? slide.runtime_profile_key ?? null,
+              render_target: renderTarget ?? slide.render_target ?? null,
             }
             : slide
         )),
@@ -768,6 +786,10 @@ export function App() {
         ? {
           ...review,
           current_target_key: layoutKey || null,
+          current_target_type: renderTarget?.type ?? review.current_target_type ?? null,
+          current_target_source: renderTarget?.source ?? review.current_target_source ?? null,
+          current_target_confidence: renderTarget?.confidence ?? review.current_target_confidence ?? null,
+          current_target_degradation_reasons: renderTarget?.degradation_reasons ?? review.current_target_degradation_reasons,
           current_runtime_profile_key: runtimeProfileKey ?? review.current_runtime_profile_key ?? null,
         }
         : review

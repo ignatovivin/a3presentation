@@ -23,6 +23,9 @@ export type PlaceholderSpec = {
   margin_right_emu?: number | null;
   margin_top_emu?: number | null;
   margin_bottom_emu?: number | null;
+  text_style?: TemplateTextStyleSpec | null;
+  paragraph_styles?: TemplateParagraphStyleCatalog | null;
+  shape_style?: TemplateShapeStyleSpec | null;
 };
 
 export type LayoutSpec = {
@@ -34,6 +37,11 @@ export type LayoutSpec = {
   supported_slide_kinds: string[];
   representation_hints: string[];
   placeholders: PlaceholderSpec[];
+  background_color?: string | null;
+  background_style?: TemplateShapeStyleSpec | null;
+  background_xml?: string | null;
+  background_image_base64?: string | null;
+  background_image_content_type?: string | null;
 };
 
 export type PrototypeTokenSpec = {
@@ -52,6 +60,9 @@ export type PrototypeTokenSpec = {
   margin_right_emu?: number | null;
   margin_top_emu?: number | null;
   margin_bottom_emu?: number | null;
+  text_style?: TemplateTextStyleSpec | null;
+  paragraph_styles?: TemplateParagraphStyleCatalog | null;
+  shape_style?: TemplateShapeStyleSpec | null;
 };
 
 export type PrototypeSlideSpec = {
@@ -65,6 +76,145 @@ export type PrototypeSlideSpec = {
 
 export type TemplateThemeSpec = {
   color_scheme: Record<string, string>;
+  font_scheme: Record<string, string>;
+  master_text_styles: Record<string, TemplateTextStyleSpec>;
+  master_paragraph_styles: Record<string, TemplateParagraphStyleCatalog>;
+  master_shape_styles: Record<string, TemplateShapeStyleSpec>;
+};
+
+export type TemplateTextStyleSpec = {
+  source?: string | null;
+  role?: string | null;
+  font_family?: string | null;
+  font_size_pt?: number | null;
+  font_weight?: number | null;
+  bold?: boolean | null;
+  italic?: boolean | null;
+  underline?: boolean | null;
+  color?: string | null;
+  alignment?: string | null;
+  vertical_anchor?: string | null;
+  word_wrap?: boolean | null;
+  auto_size?: string | null;
+  line_spacing?: number | null;
+  space_before_pt?: number | null;
+  space_after_pt?: number | null;
+  margin_left_emu?: number | null;
+  margin_right_emu?: number | null;
+  indent_emu?: number | null;
+  default_tab_size_emu?: number | null;
+  rtl?: boolean | null;
+  bullet_type?: string | null;
+  bullet_font?: string | null;
+  bullet_char?: string | null;
+  hanging_emu?: number | null;
+  level?: number | null;
+  kerning_pt?: number | null;
+};
+
+export type TemplateParagraphStyleCatalog = {
+  level_styles: Record<string, TemplateTextStyleSpec>;
+};
+
+export type TemplateShapeStyleSpec = {
+  role?: string | null;
+  fill_type?: string | null;
+  fill_color?: string | null;
+  fill_transparency?: number | null;
+  line_color?: string | null;
+  line_width_pt?: number | null;
+  line_transparency?: number | null;
+  line_compound?: string | null;
+  line_cap?: string | null;
+  line_join?: string | null;
+  geometry_preset?: string | null;
+  rotation?: number | null;
+  inset_left_emu?: number | null;
+  inset_right_emu?: number | null;
+  inset_top_emu?: number | null;
+  inset_bottom_emu?: number | null;
+  vertical_anchor?: string | null;
+  horizontal_anchor?: string | null;
+  shadow_type?: string | null;
+  shadow_color?: string | null;
+  glow_radius_pt?: number | null;
+  soft_edge_radius_pt?: number | null;
+  reflection_type?: string | null;
+  effect_list: string[];
+  theme_fill_ref?: string | null;
+  theme_line_ref?: string | null;
+  table_cell_margin_left_emu?: number | null;
+  table_cell_margin_right_emu?: number | null;
+  table_cell_margin_top_emu?: number | null;
+  table_cell_margin_bottom_emu?: number | null;
+  chart_plot_left_factor?: number | null;
+  chart_plot_top_factor?: number | null;
+  chart_plot_width_factor?: number | null;
+  chart_plot_height_factor?: number | null;
+  chart_legend_offset_x_emu?: number | null;
+  chart_legend_offset_y_emu?: number | null;
+  chart_category_axis_label_offset?: number | null;
+  chart_value_axis_label_offset?: number | null;
+};
+
+export type TemplateComponentStyleSpec = {
+  text_styles: Record<string, TemplateTextStyleSpec>;
+  shape_style?: TemplateShapeStyleSpec | null;
+  spacing_tokens: Record<string, string | number | boolean | null>;
+  behavior_tokens: Record<string, string | number | boolean | null>;
+};
+
+export type ComponentGeometry = {
+  left_emu?: number | null;
+  top_emu?: number | null;
+  width_emu?: number | null;
+  height_emu?: number | null;
+  margin_left_emu?: number | null;
+  margin_right_emu?: number | null;
+  margin_top_emu?: number | null;
+  margin_bottom_emu?: number | null;
+};
+
+export type ComponentStyle = {
+  text_style?: TemplateTextStyleSpec | null;
+  paragraph_styles?: TemplateParagraphStyleCatalog | null;
+  shape_style?: TemplateShapeStyleSpec | null;
+};
+
+export type ExtractedComponent = {
+  component_id: string;
+  source_kind: "layout" | "slide";
+  source_index: number;
+  source_name?: string | null;
+  shape_name?: string | null;
+  component_type: string;
+  role: string;
+  binding?: string | null;
+  confidence: "high" | "medium" | "low";
+  editability: "editable" | "semi_editable" | "decorative" | "unsafe";
+  capabilities: string[];
+  geometry: ComponentGeometry;
+  style: ComponentStyle;
+  text_excerpt?: string | null;
+  child_component_ids: string[];
+};
+
+export type ExtractedSlideInventory = {
+  source_kind: "layout" | "slide";
+  source_index: number;
+  name?: string | null;
+  component_ids: string[];
+  supported_slide_kinds: string[];
+  representation_hints: string[];
+};
+
+export type ExtractedPresentationInventory = {
+  components: ExtractedComponent[];
+  slides: ExtractedSlideInventory[];
+  warnings: string[];
+  degradation_mode?: string | null;
+  has_usable_layout_inventory: boolean;
+  has_prototype_inventory: boolean;
 };
 
 export type TemplateManifest = {
@@ -75,9 +225,11 @@ export type TemplateManifest = {
   generation_mode: "layout" | "prototype";
   default_layout_key?: string | null;
   design_tokens: Record<string, string | number | boolean | null>;
+  component_styles: Record<string, TemplateComponentStyleSpec>;
   theme: TemplateThemeSpec;
   layouts: LayoutSpec[];
   prototype_slides: PrototypeSlideSpec[];
+  inventory: ExtractedPresentationInventory;
 };
 
 export type InventoryTargetSummary = {
@@ -128,16 +280,7 @@ export type DetectedComponentSummary = {
   confidence: "high" | "medium" | "low";
   editability: "editable" | "semi_editable" | "decorative" | "unsafe";
   capabilities: string[];
-  geometry: {
-    left_emu?: number | null;
-    top_emu?: number | null;
-    width_emu?: number | null;
-    height_emu?: number | null;
-    margin_left_emu?: number | null;
-    margin_right_emu?: number | null;
-    margin_top_emu?: number | null;
-    margin_bottom_emu?: number | null;
-  };
+  geometry: ComponentGeometry;
   text_excerpt?: string | null;
   child_component_ids: string[];
 };
@@ -331,6 +474,16 @@ export type SlideContentBlock = {
   items: string[];
 };
 
+export type SlideRenderTarget = {
+  type: "layout" | "prototype" | "direct_shape_binding" | "auto_layout";
+  key?: string | null;
+  label?: string | null;
+  source?: string | null;
+  binding_keys: string[];
+  degradation_reasons: string[];
+  confidence?: string | null;
+};
+
 export type SlideSpec = {
   kind: string;
   title?: string | null;
@@ -346,6 +499,9 @@ export type SlideSpec = {
   notes?: string | null;
   preferred_layout_key?: string | null;
   runtime_profile_key?: string | null;
+  render_target?: SlideRenderTarget | null;
+  background_only?: boolean;
+  background_xml?: string | null;
   image_base64?: string | null;
   image_content_type?: string | null;
 };

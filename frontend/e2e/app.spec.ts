@@ -631,7 +631,14 @@ const uploadedTemplateManifest = {
   generation_mode: "prototype",
   default_layout_key: "text_layout_2",
   design_tokens: {},
-  theme: { color_scheme: {} },
+  component_styles: {},
+  theme: {
+    color_scheme: {},
+    font_scheme: {},
+    master_text_styles: {},
+    master_paragraph_styles: {},
+    master_shape_styles: {},
+  },
   layouts: [
     {
       key: "cover",
@@ -664,6 +671,14 @@ const uploadedTemplateManifest = {
       tokens: [],
     },
   ],
+  inventory: {
+    components: [],
+    slides: [],
+    warnings: [],
+    degradation_mode: null,
+    has_usable_layout_inventory: true,
+    has_prototype_inventory: true,
+  },
 };
 
 const uploadedTemplatePlanResponse = {
@@ -685,10 +700,95 @@ const uploadedTemplatePlanResponse = {
     ],
   },
   manifest: uploadedTemplateManifest,
+  inventory_summary: {
+    generation_mode: "prototype",
+    usability_status: "usable",
+    has_usable_layout_inventory: true,
+    has_prototype_inventory: true,
+    degradation_mode: null,
+    warnings: [],
+    layout_target_count: 2,
+    prototype_target_count: 1,
+    direct_target_count: 0,
+    targets: [
+      {
+        key: "cover",
+        name: "Cover",
+        source: "layout",
+        source_label: "layout 1",
+        supported_slide_kinds: ["title"],
+        representation_hints: [],
+        editable_slot_count: 1,
+        editable_roles: ["title"],
+      },
+      {
+        key: "text_layout_2",
+        name: "Основной текст",
+        source: "layout",
+        source_label: "layout 2",
+        supported_slide_kinds: ["text"],
+        representation_hints: [],
+        editable_slot_count: 2,
+        editable_roles: ["title", "body"],
+      },
+      {
+        key: "slide_1",
+        name: "Прототип текста",
+        source: "prototype",
+        source_label: "prototype slide 1",
+        supported_slide_kinds: ["text"],
+        representation_hints: ["two_column"],
+        editable_slot_count: 3,
+        editable_roles: ["title", "body"],
+      },
+    ],
+  },
+  editable_targets: [
+    {
+      key: "cover",
+      name: "Cover",
+      source: "layout",
+      source_label: "layout 1",
+      runtime_profile_key: null,
+      supported_slide_kinds: ["title"],
+      representation_hints: [],
+      editable_slot_count: 1,
+      editable_roles: ["title"],
+    },
+    {
+      key: "text_layout_2",
+      name: "Основной текст",
+      source: "layout",
+      source_label: "layout 2",
+      runtime_profile_key: null,
+      supported_slide_kinds: ["text"],
+      representation_hints: [],
+      editable_slot_count: 2,
+      editable_roles: ["title", "body"],
+    },
+    {
+      key: "slide_1",
+      name: "Прототип текста",
+      source: "prototype",
+      source_label: "prototype slide 1",
+      runtime_profile_key: null,
+      supported_slide_kinds: ["text"],
+      representation_hints: ["two_column"],
+      editable_slot_count: 3,
+      editable_roles: ["title", "body"],
+    },
+  ],
+  detected_components: [],
   slide_layout_reviews: [
     {
       slide_index: 0,
       current_target_key: "cover",
+      current_target_type: "layout",
+      current_target_source: "layout 1",
+      current_target_explanation: "Слайд будет заполнен через layout target из извлеченного inventory.",
+      current_target_confidence: "high",
+      current_target_degradation_reasons: [],
+      current_runtime_profile_key: null,
       available_layouts: [
         {
           key: "cover",
@@ -710,6 +810,12 @@ const uploadedTemplatePlanResponse = {
     {
       slide_index: 1,
       current_target_key: "slide_1",
+      current_target_type: "prototype",
+      current_target_source: "prototype slide 1",
+      current_target_explanation: "Слайд будет заполнен через prototype target из извлеченного inventory.",
+      current_target_confidence: "high",
+      current_target_degradation_reasons: [],
+      current_runtime_profile_key: null,
       available_layouts: [
         {
           key: "slide_1",
@@ -755,6 +861,11 @@ const uploadedTemplatePlanResponse = {
 let lastPlanPayload: any = null;
 let lastGeneratePayload: any = null;
 
+function readMultipartJsonField(body: string, fieldName: string) {
+  const match = body.match(new RegExp(`name="${fieldName}"\\r?\\n\\r?\\n([\\s\\S]*?)\\r?\\n--`));
+  return match ? JSON.parse(match[1]) : null;
+}
+
 test.beforeEach(async ({ page }) => {
   lastPlanPayload = null;
   lastGeneratePayload = null;
@@ -794,6 +905,11 @@ test.beforeEach(async ({ page }) => {
 
   await page.route("**/api/presentations/generate", async (route) => {
     lastGeneratePayload = await route.request().postDataJSON();
+    await route.fulfill({ json: generationResponse });
+  });
+
+  await page.route("**/api/presentations/generate-with-template", async (route) => {
+    lastGeneratePayload = readMultipartJsonField(route.request().postData() ?? "", "plan_json");
     await route.fulfill({ json: generationResponse });
   });
 
@@ -1019,6 +1135,22 @@ test("uploaded template review shows localized source labels and ranking order",
   await page.getByTestId("slide-layout-select-1").selectOption("text_layout_2");
   await expect(page.getByTestId("layout-source-badge-1")).toHaveText("Макет");
   await expect(page.getByTestId("layout-source-label-1")).toHaveText("Макет 2");
+
+  await page.getByTestId("save-structure-choices").click();
+  await page.getByTestId("generate-presentation").click();
+
+  await expect(page.getByTestId("generation-success")).toBeVisible();
+  expect(lastGeneratePayload.slides[1]).toEqual(
+    expect.objectContaining({
+      preferred_layout_key: "text_layout_2",
+      render_target: expect.objectContaining({
+        type: "layout",
+        key: "text_layout_2",
+        source: "layout 2",
+        binding_keys: ["title", "body"],
+      }),
+    }),
+  );
 });
 
 test("attached document can be removed before replacement", async ({ page }) => {
