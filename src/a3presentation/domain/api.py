@@ -109,7 +109,6 @@ class SlideLayoutOption(BaseModel):
 
 class SlideLayoutReview(BaseModel):
     slide_index: int
-    current_layout_key: str | None = None
     current_target_key: str | None = None
     current_target_type: str | None = Field(default=None, pattern="^(layout|prototype|direct_shape_binding|auto_layout)$")
     current_target_source: str | None = None

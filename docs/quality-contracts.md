@@ -33,7 +33,7 @@
   он не должен оставлять устаревшие `editable_role/capabilities`
 - тот же принцип теперь относится и к `representation_hints`:
   analyzer-derived hints для card-like layouts/prototypes не должны теряться при загрузке существующего `manifest.json`
-- это уже относится не только к `cards`, но и к `table` / `image` / `contacts` semantics,
+- это относится к `table` / `image` и другим generic representation semantics,
   которые могут появляться или уточняться на normalize-этапе после binding sync
 - представительные классы документов:
   - text-only
@@ -134,19 +134,9 @@
 - quality gate теперь отдельно подтверждает continuation-balance для narrative stress-case с длинным title, явным subtitle и многочастным body; subtitle должен оставаться только на первом слайде continuation-group
 - quality gate теперь дополнительно подтверждает, что source-heavy reference-tail не попадает в main deck даже в stress-case с длинным title, явным subtitle и continuation
 - `deck_audit` теперь проверяет body underfill как placeholder-level fill contract и использует явную footer geometry там, где footer привязан к реальному placeholder idx
-- `deck_audit` теперь дополнительно ловит аномально большой разрыв между `title/subtitle` и `body`, но делает это как runtime-эвристику для реального layout-контракта, не штрафуя штатный стандартный gap встроенного и uploaded template path'ов
+- `deck_audit` теперь дополнительно ловит аномально большой разрыв между `title/subtitle` и `body`, но делает это как runtime-эвристику для реального layout-контракта, не штрафуя штатный gap manifest-derived uploaded template path'ов
 - для prototype templates footer geometry теперь тоже проходит через synthetic footer idx в `deck_audit`, поэтому проверки `narrow_footer` и `footer_left_misalignment` больше не ограничены только обычными placeholder-layout путями
-- placeholder-aware fill contract расширен и на детерминированный auxiliary text placeholder в `list_with_icons`;
-  если ожидаемый payload левой колонки потерялся при рендере, `deck_audit` теперь возвращает `underfilled_auxiliary_placeholder_fill`
-- placeholder-aware fill contract расширен и на обе детерминированные текстовые колонки `list_with_icons`:
-  `deck_audit` теперь дополнительно проверяет payload правой колонки по placeholder idx `14`
-  через `underfilled_two_column_placeholder_fill`, даже если runtime-path резолвит этот slot как body, а не auxiliary
-- placeholder-aware fill contract расширен и на `contacts` layout:
-  `deck_audit` теперь проверяет loss имени, роли, телефона и email по конкретным placeholder idx `10/11/12/13`
-  и возвращает `underfilled_contact_placeholder_fill`, если один из подтверждённых contact-slots потерял payload
-- placeholder-aware fill contract расширен и на `cards_3`:
-  `deck_audit` теперь проверяет loss карточного payload по placeholder idx `11/12/13`
-  и возвращает `underfilled_card_placeholder_fill`, если один из card-slots потерял текст
+- placeholder-aware fill contract больше не закрепляет старые preset layouts; проверки должны строиться от manifest-derived slot expectations
 - placeholder-aware fill contract расширен и на обычный `subtitle` stack для content-slides:
   если `subtitle` должен существовать как отдельный placeholder, а не быть намеренно очищен как duplicate body intro,
   `deck_audit` теперь возвращает `underfilled_subtitle_placeholder_fill`
@@ -155,7 +145,7 @@
   но compaction не имеет права схлопывать subtitle-bearing stress-case обратно в один слайд
 - template-aware chart contract расширен на prototype templates с `chart_image` binding:
   generator обязан рендерить реальный chart shape, применять chart title/subtitle contract `28/18 pt`,
-  а `deck_audit` обязан выбирать тот же chart prototype, что и generator, и сравнивать chart/footer width с template slot, а не с full-width встроенным layout
+  а `deck_audit` обязан выбирать тот же chart prototype, что и generator, и сравнивать chart/footer width с template slot, а не с full-width fallback layout
 
 Смежные frontend-проверки:
 

@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import path from "node:path";
 
 function parsePort(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -18,6 +19,7 @@ if (backendPort === frontendPort) {
 
 const backendOrigin = `http://127.0.0.1:${backendPort}`;
 const frontendOrigin = `http://127.0.0.1:${frontendPort}`;
+const testTemplatesDir = path.resolve(process.cwd(), "../tests/fixtures/templates");
 
 export default defineConfig({
   testDir: "./e2e",
@@ -40,6 +42,10 @@ export default defineConfig({
   webServer: [
     {
       command: `..\\.venv\\Scripts\\python.exe -m uvicorn a3presentation.main:app --app-dir ..\\src --host 127.0.0.1 --port ${backendPort}`,
+      env: {
+        ...process.env,
+        TEMPLATES_DIR: testTemplatesDir,
+      },
       port: backendPort,
       reuseExistingServer: true,
       timeout: 30_000,

@@ -13,7 +13,7 @@
 ## Архитектурный принцип
 
 - проект не должен опираться на один эталонный шаблон как на модель правильного поведения
-- `corp_light_v1` или любой другой registry template допустим только как временный reference smoke anchor
+- test fixture template допустим только как временный reference smoke anchor и не должен попадать в runtime flow
 - целевой контракт системы: извлекать usable inventory из произвольного `.pptx`, а не воспроизводить поведение одного template id
 - analyzer/generator/review должны опираться на общие возможности PowerPoint:
   text/body/title placeholders, tables, charts, images, footer/aux slots, geometry, margins, component roles
@@ -25,11 +25,11 @@
 - устойчивый `docx -> plan -> pptx` pipeline
 - template-aware generator/analyzer path
 - первый generic editable-slot metadata contract в analyzer/manifest path для user-uploaded templates
-- review-step начал использовать analyzer-derived manifest metadata для representation targeting вместо жёсткого `cards_3`
+- review-step начал использовать analyzer-derived manifest metadata для representation targeting вместо жёстких preset layout keys
 - analyzer/manifest path получил первый representation-level hint layer (`representation_hints`) для layout/prototype targeting
 - frontend review path начал использовать manifest metadata и для registry-selected templates, а не только для uploaded template flow
 - review-step начал убирать layout-name heuristics и в текстовом structure flow: data-slide detection теперь идёт через manifest lookup
-- representation-level analyzer contract расширен дальше: `representation_hints` теперь покрывают не только `cards`, но и `table` / `image` / `contacts`
+- representation-level analyzer contract должен покрывать generic `table` / `image` / text semantics без возврата к старым presets
 - появился ручной testable UI slice для нового template-driven flow:
   active template analysis виден в composer screen без чтения backend логов
 - plan/build path начал использовать реальный layout inventory шаблона:
@@ -37,7 +37,7 @@
 - quality contracts и regression corpus по основным классам документов
 - backend chart render contract и deck-audit для chart semantics
 - второй шаг review уже переведён в editable/template-aware flow и backend-preview path
-- placeholder-aware audit уже покрывает body area, `list_with_icons`, `contacts`
+- placeholder-aware audit покрывает body area и должен дальше переходить на manifest-derived slot expectations
 
 ## Что ещё нужно закрыть
 

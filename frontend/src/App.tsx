@@ -20,15 +20,6 @@ import type {
   TemplateSummary,
 } from "@/types";
 
-type ManifestCardSlot = {
-  editable_role?: string | null;
-  editable_capabilities: string[];
-  left_emu?: number | null;
-  top_emu?: number | null;
-  width_emu?: number | null;
-  height_emu?: number | null;
-};
-
 const initialText = `Вставьте текст или загрузите документ в формате docx для презентации`;
 
 const chartTypeLabels: Record<string, string> = {
@@ -66,11 +57,9 @@ const editableRoleLabels: Record<string, string> = {
 };
 
 const representationHintLabels: Record<string, string> = {
-  cards: "карточки",
   table: "таблица",
   chart: "график",
   image: "изображение",
-  contacts: "контакты",
   two_column: "две колонки",
 };
 
@@ -84,7 +73,9 @@ const slideKindLabels: Record<string, string> = {
   two_column: "две колонки",
 };
 
-function displayLayoutSourceLabel(source: "layout" | "prototype", sourceLabel?: string | null): string {
+type InventorySource = "layout" | "prototype" | "direct_shape_binding";
+
+function displayLayoutSourceLabel(source: InventorySource, sourceLabel?: string | null): string {
   const normalized = sourceLabel?.trim().toLowerCase() ?? "";
   if (normalized.startsWith("prototype slide ")) {
     return `Прототипный слайд ${sourceLabel?.trim().slice("prototype slide ".length)}`;
@@ -95,11 +86,23 @@ function displayLayoutSourceLabel(source: "layout" | "prototype", sourceLabel?: 
   if (sourceLabel?.trim()) {
     return sourceLabel.trim();
   }
-  return source === "prototype" ? "Прототипный слайд" : "Макет";
+  if (source === "prototype") {
+    return "Прототипный слайд";
+  }
+  if (source === "direct_shape_binding") {
+    return "Именованные shapes";
+  }
+  return "Макет";
 }
 
-function displayLayoutSourceType(source: "layout" | "prototype"): string {
-  return source === "prototype" ? "Прототип" : "Макет";
+function displayLayoutSourceType(source: InventorySource): string {
+  if (source === "prototype") {
+    return "Прототип";
+  }
+  if (source === "direct_shape_binding") {
+    return "Shapes";
+  }
+  return "Макет";
 }
 
 function templateOriginBadgeLabel(hasAttachedTemplate: boolean, hasManifest: boolean): string | null {
@@ -132,7 +135,7 @@ function layoutPurposeLabel(option: {
 }
 
 function layoutOptionMeta(option: {
-  source: "layout" | "prototype";
+  source: InventorySource;
   source_label?: string | null;
   representation_hints: string[];
   editable_roles: string[];
@@ -298,108 +301,6 @@ function summarizeDetectedLayouts(manifest: TemplateManifest): string[] {
     });
 }
 
-function isCardTextSlot(slot: ManifestCardSlot): boolean {
-  if (slot.editable_role === "body" || slot.editable_role === "bullet_item" || slot.editable_role === "bullet_list") {
-    return true;
-  }
-  if (slot.editable_role === "title" || slot.editable_role === "subtitle" || slot.editable_role === "image" || slot.editable_role === "table" || slot.editable_role === "chart") {
-    return false;
-  }
-  return slot.editable_capabilities.includes("text") || slot.editable_capabilities.includes("list_item");
-}
-
-function scoreCardSlotCollection(slots: ManifestCardSlot[]): number | null {
-  const textSlots = slots.filter(
-    (slot) =>
-      isCardTextSlot(slot) &&
-      typeof slot.left_emu === "number" &&
-      typeof slot.top_emu === "number" &&
-      typeof slot.width_emu === "number" &&
-      typeof slot.height_emu === "number" &&
-      slot.width_emu > 0 &&
-      slot.height_emu > 0,
-  );
-  if (textSlots.length < 2) {
-    return null;
-  }
-
-  let bestScore: number | null = null;
-  for (const baseSlot of textSlots) {
-    const sameRow = textSlots.filter((slot) => {
-      const topDelta = Math.abs((slot.top_emu ?? 0) - (baseSlot.top_emu ?? 0));
-      const heightReference = Math.max(slot.height_emu ?? 0, baseSlot.height_emu ?? 0);
-      return topDelta <= heightReference * 0.45;
-    });
-    if (sameRow.length < 2 || sameRow.length > 4) {
-      continue;
-    }
-
-    const widths = sameRow.map((slot) => slot.width_emu ?? 0);
-    const heights = sameRow.map((slot) => slot.height_emu ?? 0);
-    const lefts = sameRow.map((slot) => slot.left_emu ?? 0).sort((left, right) => left - right);
-    const tops = sameRow.map((slot) => slot.top_emu ?? 0);
-    const widthSpread = Math.max(...widths) / Math.max(Math.min(...widths), 1);
-    const heightSpread = Math.max(...heights) / Math.max(Math.min(...heights), 1);
-    const topSpread = Math.max(...tops) - Math.min(...tops);
-    const distinctColumns = new Set(lefts.map((value) => Math.round(value / 10000))).size;
-
-    if (distinctColumns < sameRow.length) {
-      continue;
-    }
-    if (widthSpread > 1.8 || heightSpread > 1.8) {
-      continue;
-    }
-
-    const score =
-      sameRow.length * 12 -
-      Math.abs(sameRow.length - 3) * 4 -
-      Math.round(widthSpread * 3) -
-      Math.round(heightSpread * 2) -
-      Math.round(topSpread / 100000);
-    if (bestScore === null || score > bestScore) {
-      bestScore = score;
-    }
-  }
-  return bestScore;
-}
-
-function findCardCapableLayoutKey(manifest: TemplateManifest): string | null {
-  const candidates: Array<{ key: string; score: number }> = [];
-
-  manifest.layouts.forEach((layout) => {
-    if (!layout.supported_slide_kinds.includes("bullets") && !layout.supported_slide_kinds.includes("text")) {
-      return;
-    }
-    if (layout.representation_hints.includes("cards")) {
-      candidates.push({ key: layout.key, score: 100 });
-      return;
-    }
-    const score = scoreCardSlotCollection(layout.placeholders);
-    if (score === null) {
-      return;
-    }
-    candidates.push({ key: layout.key, score });
-  });
-
-  manifest.prototype_slides.forEach((slide) => {
-    if (!slide.supported_slide_kinds.includes("bullets") && !slide.supported_slide_kinds.includes("text")) {
-      return;
-    }
-    if (slide.representation_hints.includes("cards")) {
-      candidates.push({ key: slide.key, score: 101 });
-      return;
-    }
-    const score = scoreCardSlotCollection(slide.tokens);
-    if (score === null) {
-      return;
-    }
-    candidates.push({ key: slide.key, score: score + 1 });
-  });
-
-  candidates.sort((left, right) => right.score - left.score || left.key.localeCompare(right.key));
-  return candidates[0]?.key ?? null;
-}
-
 function manifestSlideTarget(manifest: TemplateManifest, layoutKey: string) {
   if (!layoutKey) {
     return null;
@@ -447,7 +348,7 @@ function currentLayoutOption(review: SlideLayoutReview | null, slide: SlideSpec)
   if (!review?.available_layouts.length) {
     return null;
   }
-  const key = slide.preferred_layout_key ?? review.current_layout_key ?? review.available_layouts[0]?.key ?? "";
+  const key = slide.preferred_layout_key ?? review.current_target_key ?? review.available_layouts[0]?.key ?? "";
   return review.available_layouts.find((option) => option.key === key) ?? review.available_layouts[0] ?? null;
 }
 
@@ -465,14 +366,8 @@ function inventoryTargetRuntimeProfileKey(manifest: TemplateManifest | null, tar
   );
   const supportedKinds = new Set(layout?.supported_slide_kinds ?? prototype?.supported_slide_kinds ?? []);
 
-  if (representationHints.has("contacts")) {
-    return "contacts";
-  }
-  if (representationHints.has("cards")) {
-    return editableRoles.has("metric_value") ? "cards_kpi" : "cards_3";
-  }
   if (representationHints.has("two_column")) {
-    return editableRoles.has("icon") ? "list_with_icons" : "two_column";
+    return editableRoles.has("bullet_list") || editableRoles.has("bullet_item") ? "list_full_width" : "text_full_width";
   }
   if (representationHints.has("table") || editableRoles.has("table") || editableRoles.has("chart")) {
     return "table";
@@ -481,7 +376,7 @@ function inventoryTargetRuntimeProfileKey(manifest: TemplateManifest | null, tar
     return "image_text";
   }
   if (editableRoles.has("bullet_list") || editableRoles.has("bullet_item")) {
-    return representationHints.has("icons") ? "list_with_icons" : "list_full_width";
+    return "list_full_width";
   }
   if (supportedKinds.has("title")) {
     return "cover";
@@ -510,7 +405,6 @@ export function App() {
   const [savedHiddenSeriesByTableId, setSavedHiddenSeriesByTableId] = useState<Record<string, string[]>>({});
   const [reviewPlan, setReviewPlan] = useState<PresentationPlan | null>(null);
   const [slideLayoutReviews, setSlideLayoutReviews] = useState<SlideLayoutReview[]>([]);
-  const [cardSlideIndexes, setCardSlideIndexes] = useState<number[]>([]);
   const [isPreparingReviewPlan, setIsPreparingReviewPlan] = useState(false);
   const [isGeneratingPresentation, setIsGeneratingPresentation] = useState(false);
   const [generationResult, setGenerationResult] = useState<GeneratePresentationResponse | null>(null);
@@ -520,15 +414,6 @@ export function App() {
   const [showAllTablesInDrawer, setShowAllTablesInDrawer] = useState(false);
   const [drawerTab, setDrawerTab] = useState<"charts" | "text">("charts");
   const [isPending, startTransition] = useTransition();
-
-  type CardSlideFit = "high" | "medium";
-  type CardSlideChoice = {
-    index: number;
-    slide: SlideSpec;
-    items: string[];
-    fit: CardSlideFit;
-    reason: string;
-  };
 
   useEffect(() => {
     startTransition(() => {
@@ -611,7 +496,6 @@ export function App() {
           setAttachedDocumentText(result.text);
           setReviewPlan(null);
           setSlideLayoutReviews([]);
-          setCardSlideIndexes([]);
           setDocumentTables(result.tables);
           setDocumentBlocks(result.blocks);
           setChartAssessments(result.chart_assessments);
@@ -669,7 +553,7 @@ export function App() {
       setGenerationResult(null);
       setIsGeneratingPresentation(true);
       startTransition(() => {
-        generateCurrentPlan(applyCardSlideChoices(reviewPlan, cardSlideIndexes, cardTargetLayoutKey, effectiveTemplateManifest))
+        generateCurrentPlan(reviewPlan)
           .then((result) => setGenerationResult(result))
           .catch((err: Error) => setError(err.message))
           .finally(() => setIsGeneratingPresentation(false));
@@ -746,7 +630,6 @@ export function App() {
       buildPlanPromise
         .then((plan: PresentationPlan) => {
           setReviewPlan(plan);
-          setCardSlideIndexes([]);
           if (generateAfter) {
             setIsGeneratingPresentation(true);
             return generateCurrentPlan(plan).then((result) => {
@@ -766,7 +649,6 @@ export function App() {
   function resetReviewPlan() {
     setReviewPlan(null);
     setSlideLayoutReviews([]);
-    setCardSlideIndexes([]);
   }
 
   function clearAttachedDocument() {
@@ -836,8 +718,6 @@ export function App() {
     JSON.stringify(hiddenSeriesByTableId) !== JSON.stringify(savedHiddenSeriesByTableId);
   const chartableAssessments = chartAssessments.filter((assessment) => assessment.chartable);
   const visibleAssessments = showAllTablesInDrawer ? chartAssessments : chartableAssessments;
-  const cardTargetLayoutKey = effectiveTemplateManifest ? findCardCapableLayoutKey(effectiveTemplateManifest) : null;
-  const cardSlideChoices = reviewPlan ? eligibleCardSlides(reviewPlan, cardTargetLayoutKey, effectiveTemplateManifest) : [];
   const attachedTemplateSlotSummary = effectiveTemplateManifest ? summarizeEditableSlots(effectiveTemplateManifest) : null;
   const activeTemplateRepresentationSummary = effectiveTemplateManifest ? summarizeRepresentationHints(effectiveTemplateManifest) : [];
   const detectedLayoutSummary = effectiveTemplateManifest ? summarizeDetectedLayouts(effectiveTemplateManifest) : [];
@@ -887,210 +767,11 @@ export function App() {
       review.slide_index === slideIndex
         ? {
           ...review,
-          current_layout_key: layoutKey || null,
+          current_target_key: layoutKey || null,
           current_runtime_profile_key: runtimeProfileKey ?? review.current_runtime_profile_key ?? null,
         }
         : review
     )));
-  }
-
-  function editableCardItems(slide: SlideSpec): string[] {
-    const explicitBullets = (slide.bullets ?? []).map((item) => item.trim()).filter(Boolean);
-    if (explicitBullets.length >= 2) {
-      return explicitBullets.slice(0, 4);
-    }
-
-    const blockItems = (slide.content_blocks ?? []).flatMap((block) => {
-      if (block.kind === "bullet_list") {
-        return block.items;
-      }
-      return block.text ? [block.text] : [];
-    }).map((item) => item.trim()).filter(Boolean);
-    if (blockItems.length >= 2) {
-      return blockItems.slice(0, 4);
-    }
-
-    const text = (slide.text ?? "").replace(/\s+/g, " ").trim();
-    if (!text) {
-      return [];
-    }
-
-    const sentences = text.match(/[^.!?。！？]+[.!?。！？]?/g)?.map((item) => item.trim()).filter(Boolean) ?? [text];
-    if (sentences.length >= 2) {
-      return compactCardItems(sentences, 4);
-    }
-    if (text.length >= 90) {
-      return compactCardItems(text.split(/[,;:]\s+|\s+-\s+/).map((item) => item.trim()).filter(Boolean), 4);
-    }
-    return [];
-  }
-
-  function compactCardItems(items: string[], maxItems: number): string[] {
-    const cleaned = items.map((item) => item.trim()).filter(Boolean);
-    if (cleaned.length <= maxItems) {
-      return cleaned;
-    }
-
-    const buckets = Array.from({ length: maxItems }, () => "");
-    cleaned.forEach((item, index) => {
-      const bucketIndex = Math.min(maxItems - 1, Math.floor((index * maxItems) / cleaned.length));
-      buckets[bucketIndex] = `${buckets[bucketIndex]} ${item}`.trim();
-    });
-    return buckets.filter(Boolean);
-  }
-
-  function splitCardItem(item: string): { title: string; description: string } {
-    const normalized = item.replace(/\s+/g, " ").trim();
-    const metricMatch = normalized.match(
-      /^([<>~≈]?\s*\d+(?:[.,]\d+)?(?:\s*(?:%|‰|млн|млрд|тыс|трлн|сек(?:унд[аы]?)?|с|мин|ч|дн(?:ей|я)?|₽|руб(?:\.|лей|ля|ль)?))*)\s+(.+)$/iu,
-    );
-    if (metricMatch) {
-      return { title: metricMatch[1].replace(/\s+/g, " ").trim(), description: metricMatch[2].trim() };
-    }
-
-    const colonMatch = normalized.match(/^(.{4,54}?):\s+(.{12,})$/);
-    if (colonMatch) {
-      return { title: colonMatch[1].trim(), description: colonMatch[2].trim() };
-    }
-
-    const dashMatch = normalized.match(/^(.{4,54}?)\s+[—-]\s+(.{12,})$/);
-    if (dashMatch) {
-      return { title: dashMatch[1].trim(), description: dashMatch[2].trim() };
-    }
-
-    return { title: normalized, description: "" };
-  }
-
-  function encodeCardItem(item: string): string {
-    const multiline = item.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    if (multiline.length >= 2) {
-      return multiline.join("\n");
-    }
-    const { title, description } = splitCardItem(item);
-    return description ? `${title}\n${description}` : title;
-  }
-
-  function numericCardSignals(items: string[]): number {
-    return items.map(splitCardItem).filter(({ title, description }) => /\d/.test(title) && description.length >= 3).length;
-  }
-
-  function hasNumericCardLayout(items: string[]): boolean {
-    return numericCardSignals(items) >= 2;
-  }
-
-  function scoreCardSlide(slide: SlideSpec, items: string[]): { fit: CardSlideFit | null; reason: string } {
-    if (items.length < 2 || items.length > 4) {
-      return { fit: null, reason: "" };
-    }
-
-    const title = (slide.title ?? "").toLowerCase();
-    const text = (slide.text ?? "").replace(/\s+/g, " ").trim();
-    const lengths = items.map((item) => item.length);
-    const longest = Math.max(...lengths);
-    const shortest = Math.min(...lengths);
-    const average = lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
-    const spread = longest / Math.max(shortest, 1);
-    const hasListBlocks = (slide.content_blocks ?? []).some((block) => block.kind === "bullet_list");
-    const hasExplicitBullets = (slide.bullets ?? []).filter((item) => item.trim()).length >= 2;
-    const hasCardTitleCue = /фактор|преимуществ|этап|шаг|риск|направлен|принцип|драйвер|причин|задач|решени|сценари|вариант|метрик|эффект/.test(title);
-    const hasDenseNarrative = text.length > 420 && !hasListBlocks && !hasExplicitBullets;
-    const hasLongItems = longest > 150 || average > 115;
-    const hasUnevenItems = spread > 3.2 && longest > 110;
-    const numericSignals = numericCardSignals(items);
-    const isNumericLayout = numericSignals >= 2;
-
-    let score = 0;
-    if (items.length === 3) score += 3;
-    if (items.length === 2 || items.length === 4) score += 2;
-    if (hasExplicitBullets || hasListBlocks) score += 3;
-    if (hasCardTitleCue) score += 2;
-    if (average >= 18 && average <= 95) score += 2;
-    if (spread <= 2.4) score += 1;
-    if (hasDenseNarrative) score -= 4;
-    if (hasLongItems) score -= 3;
-    if (hasUnevenItems) score -= 2;
-    if (isNumericLayout) score += 3;
-
-    if (score >= 7) {
-      return { fit: "high", reason: isNumericLayout ? "Рекомендовано: KPI-карточки с числами." : "Рекомендовано: короткие равноправные тезисы." };
-    }
-    if (score >= 4) {
-      return { fit: "medium", reason: isNumericLayout ? "Можно разложить как KPI-карточки." : "Можно разложить на карточки." };
-    }
-    return { fit: null, reason: "" };
-  }
-
-  function eligibleCardSlides(
-    plan: PresentationPlan,
-    targetLayoutKey: string | null,
-    manifest: TemplateManifest | null,
-  ): CardSlideChoice[] {
-    if (!targetLayoutKey) {
-      return [];
-    }
-    return plan.slides
-      .map((slide, index) => ({ index, slide, items: editableCardItems(slide) }))
-      .filter(({ slide, items }) => {
-        const layoutKey = slide.preferred_layout_key ?? "";
-        const isDataSlide =
-          slide.kind === "table" ||
-          slide.kind === "chart" ||
-          Boolean(slide.table) ||
-          Boolean(slide.chart) ||
-          Boolean(slide.source_table_id) ||
-          targetSupportsDataRepresentation(manifest, layoutKey);
-        return slide.kind !== "title" && !isDataSlide && layoutKey !== targetLayoutKey && items.length >= 2;
-      })
-      .map(({ index, slide, items }) => ({
-        index,
-        slide,
-        items,
-        ...scoreCardSlide(slide, items),
-      }))
-      .filter((choice): choice is CardSlideChoice => {
-        return choice.fit !== null;
-      });
-  }
-
-  function toggleCardSlide(index: number) {
-    setCardSlideIndexes((current) => {
-      if (current.includes(index)) {
-        return current.filter((item) => item !== index);
-      }
-      return [...current, index].sort((left, right) => left - right);
-    });
-  }
-
-  function applyCardSlideChoices(
-    plan: PresentationPlan,
-    selectedIndexes: number[],
-    targetLayoutKey: string | null,
-    manifest: TemplateManifest | null,
-  ): PresentationPlan {
-    const selected = new Set(selectedIndexes);
-    return {
-      ...plan,
-      slides: plan.slides.map((slide, index) => {
-        if (!selected.has(index)) {
-          return slide;
-        }
-        const cardItems = editableCardItems(slide).map(encodeCardItem);
-        if (cardItems.length < 2) {
-          return slide;
-        }
-        return {
-          ...slide,
-          kind: "bullets",
-          text: null,
-          bullets: cardItems,
-          content_blocks: [],
-          left_bullets: [],
-          right_bullets: [],
-          preferred_layout_key: targetLayoutKey ?? slide.preferred_layout_key,
-          runtime_profile_key: inventoryTargetRuntimeProfileKey(manifest, targetLayoutKey) ?? slide.runtime_profile_key ?? "cards_3",
-        };
-      }),
-    };
   }
 
   function renderTablePreview(assessment: ChartabilityAssessment) {
@@ -1262,7 +943,7 @@ export function App() {
                   <div>
                     <div className="template-config-title">Активный шаблон</div>
                     <div className="template-config-text">
-                      Можно выбрать системный шаблон или загрузить свой `.pptx`.
+                      Выберите загруженный шаблон или добавьте свой `.pptx`.
                     </div>
                   </div>
                 {templateOriginBadgeLabel(Boolean(attachedTemplateFile), Boolean(effectiveTemplateManifest)) ? (
@@ -1308,13 +989,6 @@ export function App() {
                     <div className="template-analysis-value">{attachedTemplateSlotSummary?.total ?? 0}</div>
                     <div className="template-analysis-meta">
                       {attachedTemplateSlotSummary?.grouped ? `сгруппированных областей: ${attachedTemplateSlotSummary.grouped}` : "Отдельные области без явных групп."}
-                    </div>
-                  </div>
-                  <div className="template-analysis-card">
-                    <div className="template-analysis-label">Карточный режим</div>
-                    <div className="template-analysis-value">{cardTargetLayoutKey ? "Доступен" : "Пока не найден"}</div>
-                    <div className="template-analysis-meta">
-                      {cardSlideChoices.length > 0 ? `Можно применить к ${cardSlideChoices.length} слайдам.` : "Оценка появится после построения плана."}
                     </div>
                   </div>
                 </div>
@@ -1488,7 +1162,7 @@ export function App() {
             open={isStructureDrawerOpen}
             onOpenChange={setIsStructureDrawerOpen}
             title="Структура слайдов"
-            description={`Таблиц: ${chartAssessments.length}. Текстовых вариантов: ${cardSlideChoices.length}.`}
+            description={`Таблиц: ${chartAssessments.length}. Слайдов в плане: ${reviewPlan?.slides.length ?? 0}.`}
             footer={
               <div className="drawer-footer-actions">
                 <div className="drawer-footer-note">
@@ -1686,12 +1360,9 @@ export function App() {
                   <div>
                     <div className="slide-review-title">Вид текста</div>
                     <div className="slide-review-text">
-                      Выберите вариант оформления для каждого текстового слайда. Самые подходящие макеты показаны сверху, а карточный режим можно включить отдельно.
+                      Выберите вариант оформления для каждого текстового слайда. Варианты берутся только из загруженного шаблона.
                     </div>
                   </div>
-                  <button type="button" className="secondary-button" onClick={() => setCardSlideIndexes([])}>
-                    Сбросить выбор
-                  </button>
                 </div>
 
                 {activeSlideLayoutReviews.length > 0 ? (
@@ -1734,7 +1405,7 @@ export function App() {
                               <Select
                                 className="chart-type-select"
                                 data-testid={`slide-layout-select-${index}`}
-                                value={slide.preferred_layout_key ?? review.current_layout_key ?? review.available_layouts[0]?.key ?? ""}
+                                value={slide.preferred_layout_key ?? review.current_target_key ?? review.available_layouts[0]?.key ?? ""}
                                 onChange={(event) => handleSlideLayoutChange(index, event.target.value)}
                               >
                                 {review.available_layouts.map((option) => {
@@ -1757,40 +1428,15 @@ export function App() {
                   </div>
                 ) : null}
 
-                {cardSlideChoices.length > 0 ? (
-                  <div className="slide-choice-list">
-                    {cardSlideChoices.map(({ index, slide, items, fit, reason }) => {
-                      const previewItems = items.map(splitCardItem);
-                      return (
-                        <label className="slide-choice" data-testid={`card-slide-choice-${index}`} key={`slide-choice-${index}`}>
-                          <Input
-                            type="checkbox"
-                            className="slide-choice-input"
-                            checked={cardSlideIndexes.includes(index)}
-                            onChange={() => toggleCardSlide(index)}
-                          />
-                          <span className="slide-choice-body">
-                            <span className="slide-choice-title">
-                              {index + 1}. {slide.title || "Слайд без заголовка"}
-                            </span>
-                            <span className={`slide-choice-fit is-${fit}`}>{reason}</span>
-                            <span className="slide-choice-preview">
-                              {previewItems.map(({ title, description }) => description ? `${title}: ${description}` : title).join(" · ")}
-                            </span>
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                ) : isPreparingReviewPlan ? (
-                  <div className="slide-review-text" data-testid="preparing-card-slide-choices">
+                {activeSlideLayoutReviews.length === 0 && isPreparingReviewPlan ? (
+                  <div className="slide-review-text" data-testid="preparing-text-layout-choices">
                     Подготавливаю текстовые слайды...
                   </div>
-                ) : (
-                  <div className="slide-review-text" data-testid="no-card-slide-choices">
-                    В плане нет текстовых слайдов, которые можно безопасно разложить на карточки.
+                ) : activeSlideLayoutReviews.length === 0 ? (
+                  <div className="slide-review-text" data-testid="no-text-layout-choices">
+                    В плане пока нет текстовых слайдов для выбора макета.
                   </div>
-                )}
+                ) : null}
               </section>
             )}
           </StructureDrawer>

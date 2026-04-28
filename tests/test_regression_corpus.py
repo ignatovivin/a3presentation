@@ -31,8 +31,8 @@ class RegressionCorpusTests(unittest.TestCase):
         cls.fixtures_dir = Path(__file__).parent / "fixtures" / "regression"
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        cls.manifest = registry.get_template("corp_light_v1")
-        cls.template_path = registry.get_template_pptx_path("corp_light_v1")
+        cls.manifest = registry.get_template("deterministic_layout_fixture")
+        cls.template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
 
     def test_fixture_text_documents_generate_non_empty_presentations(self) -> None:
         cases = [
@@ -46,7 +46,7 @@ class RegressionCorpusTests(unittest.TestCase):
             with self.subTest(case=label):
                 content = (self.fixtures_dir / fixture_name).read_bytes()
                 text, tables, blocks = extractor.extract(fixture_name, content)
-                plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+                plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
                 self.assertGreaterEqual(len(plan.slides), 2)
                 self.assertTrue(any((slide.title or "").strip() for slide in plan.slides[1:]))
@@ -67,7 +67,7 @@ class RegressionCorpusTests(unittest.TestCase):
 
         content = (self.fixtures_dir / "strategy_report.md").read_bytes()
         text, tables, blocks = extractor.extract("strategy_report.md", content)
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -88,7 +88,7 @@ class RegressionCorpusTests(unittest.TestCase):
 
         content = (self.fixtures_dir / "mixed_notes.txt").read_bytes()
         text, tables, blocks = extractor.extract("mixed_notes.txt", content)
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -135,7 +135,7 @@ class RegressionCorpusTests(unittest.TestCase):
             DocumentBlock(kind="paragraph", text="Короткий завершающий блок нужен для фиксации границы между секциями."),
         ]
         raw_text = "\n".join(block.text or "" for block in blocks)
-        plan = planner.build_plan("corp_light_v1", raw_text, None, [], blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", raw_text, None, [], blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -183,7 +183,7 @@ class RegressionCorpusTests(unittest.TestCase):
             DocumentBlock(kind="paragraph", text="Короткая отбивка следующего раздела."),
         ]
         raw_text = "\n".join(block.text or "" for block in blocks)
-        plan = planner.build_plan("corp_light_v1", raw_text, None, [], blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", raw_text, None, [], blocks)
 
         flattened = []
         for slide in plan.slides:
@@ -219,7 +219,7 @@ class RegressionCorpusTests(unittest.TestCase):
         for filename, content in cases:
             with self.subTest(case=filename):
                 text, tables, blocks = extractor.extract(filename, content)
-                plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+                plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
                 self.assertGreaterEqual(len(plan.slides), 2)
                 self.assertFalse(all(slide.kind.value == "title" for slide in plan.slides))
@@ -249,7 +249,7 @@ class RegressionCorpusTests(unittest.TestCase):
         for filename, content, required_kinds in cases:
             with self.subTest(case=filename):
                 text, tables, blocks = extractor.extract(filename, content)
-                plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+                plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
                 self.assertGreaterEqual(len(plan.slides), 1)
                 if required_kinds is not None:
@@ -273,7 +273,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("form.docx", self._build_form_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -293,7 +293,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("resume.docx", self._build_resume_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -313,7 +313,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("table-heavy.docx", self._build_table_heavy_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -338,7 +338,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("fact-only.docx", self._build_fact_only_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -370,7 +370,7 @@ class RegressionCorpusTests(unittest.TestCase):
             DocumentBlock(kind="paragraph", text="Иллюстрация подтверждает узкие места и точки автоматизации."),
         ]
         raw_text = "\n".join(block.text or "" for block in blocks)
-        plan = planner.build_plan("corp_light_v1", raw_text, None, [], blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", raw_text, None, [], blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -404,7 +404,7 @@ class RegressionCorpusTests(unittest.TestCase):
             DocumentBlock(kind="paragraph", text="Иллюстрация подтверждает узкие места и точки автоматизации."),
         ]
 
-        plan = planner.build_plan("corp_light_v1", "\n".join(block.text or "" for block in blocks), None, [], blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", "\n".join(block.text or "" for block in blocks), None, [], blocks)
 
         self.assertTrue(any(slide.kind == SlideKind.IMAGE for slide in plan.slides))
         self.assertTrue(any((slide.title or "").startswith("1. Схема процесса") for slide in plan.slides))
@@ -414,7 +414,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("report.docx", self._build_report_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         self.assertGreaterEqual(len(plan.slides), 2)
         self.assertNotEqual(plan.slides[1].title, "A3")
@@ -425,7 +425,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("strategy-edge.docx", self._build_strategy_edge_case_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         self.assertFalse(any(slide.title == "А3" for slide in plan.slides[1:]))
         self.assertTrue(any((slide.title or "").startswith("1.4 Показатели 2025") for slide in plan.slides))
@@ -454,7 +454,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("strategy-edge.docx", self._build_strategy_edge_case_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -474,7 +474,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("report.docx", self._build_report_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(
@@ -493,7 +493,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("narrative-report.docx", self._build_narrative_report_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         narrative_slides = [slide for slide in plan.slides if (slide.title or "").startswith("1. Контекст рынка")]
         self.assertTrue(narrative_slides)
@@ -505,7 +505,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("source-heavy-report.docx", self._build_report_with_reference_tail_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         payload = "\n".join(
             " ".join(
@@ -544,7 +544,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("question-callout.docx", self._build_question_callout_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         target_slides = [slide for slide in plan.slides if (slide.title or "").startswith("FAQ и выводы")]
         self.assertTrue(target_slides)
@@ -569,7 +569,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("long-title-stress.docx", self._build_long_title_layout_stress_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         self.assertTrue(
             any(
@@ -597,7 +597,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("appendix-heavy.docx", self._build_appendix_heavy_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         appendix_slides = [slide for slide in plan.slides if "Приложение" in (slide.title or "")]
         self.assertTrue(appendix_slides)
@@ -630,7 +630,7 @@ class RegressionCorpusTests(unittest.TestCase):
             "long-title-subtitle-stress.docx",
             self._build_long_title_with_subtitle_layout_stress_docx(),
         )
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         target_slides = [
             slide
@@ -660,7 +660,7 @@ class RegressionCorpusTests(unittest.TestCase):
             "long-title-subtitle-dense-continuation.docx",
             self._build_long_title_with_subtitle_dense_continuation_docx(),
         )
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         target_slides = [
             slide
@@ -691,7 +691,7 @@ class RegressionCorpusTests(unittest.TestCase):
             "long-title-subtitle-reference-tail.docx",
             self._build_long_title_with_subtitle_reference_tail_docx(),
         )
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         target_slides = [
             slide
@@ -730,7 +730,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("report-with-refs.docx", self._build_report_with_reference_tail_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         payload = "\n".join(
             part
@@ -747,7 +747,7 @@ class RegressionCorpusTests(unittest.TestCase):
         planner = TextToPlanService()
 
         text, tables, blocks = extractor.extract("report-with-refs.docx", self._build_report_with_reference_tail_docx())
-        plan = planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         self.assertFalse(any("Приложение" in (slide.title or "") for slide in plan.slides))
 
@@ -760,7 +760,7 @@ class RegressionCorpusTests(unittest.TestCase):
         self.assertGreaterEqual(len(tables), 1)
 
         plan = planner.build_plan(
-            "corp_light_v1",
+            "deterministic_layout_fixture",
             text,
             None,
             tables,
@@ -829,7 +829,7 @@ class RegressionCorpusTests(unittest.TestCase):
         ]
 
         plan = planner.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="A3 Presentation",
             blocks=blocks,
@@ -867,7 +867,7 @@ class RegressionCorpusTests(unittest.TestCase):
         ]
 
         plan = planner.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="A3 Presentation",
             blocks=blocks,
@@ -911,7 +911,7 @@ class RegressionCorpusTests(unittest.TestCase):
         ]
 
         plan = planner.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="A3 Presentation",
             blocks=blocks,

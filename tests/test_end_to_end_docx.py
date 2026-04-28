@@ -42,12 +42,12 @@ class EndToEndDocxPipelineTests(unittest.TestCase):
 
         extractor = DocumentTextExtractor()
         text, tables, blocks = extractor.extract("report.docx", content)
-        plan = TextToPlanService().build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = TextToPlanService().build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        manifest = registry.get_template("corp_light_v1")
-        template_path = registry.get_template_pptx_path("corp_light_v1")
+        manifest = registry.get_template("deterministic_layout_fixture")
+        template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = PptxGenerator().generate(

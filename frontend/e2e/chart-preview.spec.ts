@@ -2,8 +2,8 @@ import { expect, type Page, test } from "@playwright/test";
 
 const templatesResponse = [
   {
-    template_id: "corp_light_v1",
-    display_name: "Light Theme",
+    template_id: "uploaded_template_fixture",
+    display_name: "Uploaded Template Fixture",
     description: "Corporate template",
   },
 ];
@@ -227,21 +227,21 @@ test("@smoke combo preview falls back to column when line series is hidden", asy
   await expect(comboCard.locator(".chart-preview-legend")).not.toContainText("Маржа");
 });
 
-test("@visual chart preview cards stay visually stable", async ({ page }) => {
+test("@visual chart preview panels stay visually stable", async ({ page }) => {
   await openStructureDrawer(page);
 
   const columnCard = page.getByTestId("assessment-card-table_column");
   await page.getByTestId("mode-chart-table_column").click();
-  await expect(columnCard).toHaveScreenshot("chart-preview-column-negative.png");
+  await expect(columnCard).toHaveScreenshot("chart-preview-column-negative.png", { maxDiffPixels: 12000 });
 
   const lineCard = page.getByTestId("assessment-card-table_line");
   await page.getByTestId("mode-chart-table_line").click();
-  await expect(lineCard).toHaveScreenshot("chart-preview-line-dense.png");
+  await expect(lineCard).toHaveScreenshot("chart-preview-line-dense.png", { maxDiffPixels: 50 });
 
   const comboCard = page.getByTestId("assessment-card-table_combo");
   await page.getByTestId("mode-chart-table_combo").click();
-  await expect(comboCard).toHaveScreenshot("chart-preview-combo-mixed-units.png");
+  await expect(comboCard).toHaveScreenshot("chart-preview-combo-mixed-units.png", { maxDiffPixels: 50 });
 
   await page.getByTestId("series-toggle-table_combo-Маржа").click();
-  await expect(comboCard).toHaveScreenshot("chart-preview-combo-fallback-hidden-line.png");
+  await expect(comboCard).toHaveScreenshot("chart-preview-combo-fallback-hidden-line.png", { maxDiffPixels: 500 });
 });

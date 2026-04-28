@@ -21,7 +21,7 @@ Recommended flow:
 - Semantic pipeline: extract -> classify -> normalize -> plan -> render
 - Fallback logic for weakly structured, form-like, resume, and table-heavy documents
 - Chart and image slide support in the planning and rendering pipeline
-- Template registry in `storage/templates`
+- Template registry for user-uploaded templates
 - Regression, contract, and quality backend tests
 - Frontend smoke and visual checks with Playwright
 - Deck-level quality contracts for capacity, geometry, and mixed-content order
@@ -36,10 +36,10 @@ src/a3presentation/
   services/            Extractor, normalizer, planner, PPTX generator
   settings.py          Paths and app configuration
 storage/
-  templates/           Versioned template manifests and source PPTX files
   generated/           Local generated artifacts, not tracked by git
   outputs/             Runtime output files, not tracked by git
 tests/                 Unit, regression, and end-to-end tests
+  fixtures/templates/  Test-only template fixtures
 examples/              Example manifests and presentation plans
 ```
 
@@ -136,8 +136,7 @@ Main command on the server:
 bash scripts/deploy_server.sh
 ```
 
-On Timeweb server deploys, backend reads versioned templates directly from `/app/storage/templates` inside the image.
-Only runtime outputs stay on the persistent host volume.
+On Timeweb server deploys, backend starts without bundled templates. Uploaded templates live in the persistent host volume at `data/templates`, and generated outputs live in `data/outputs`.
 The server compose publishes docker nginx on `127.0.0.1:8080`, because public `80/443` are handled by host nginx with Let's Encrypt.
 Production domain:
 
@@ -227,7 +226,7 @@ curl http://127.0.0.1:8000/templates
 ```bash
 curl -X POST http://127.0.0.1:8000/plans/from-text ^
   -H "Content-Type: application/json" ^
-  -d "{\"template_id\":\"demo_business\",\"title\":\"Demo\",\"raw_text\":\"Intro\n- point 1\n- point 2\"}"
+  -d "{\"template_id\":\"<uploaded_template_id>\",\"title\":\"Demo\",\"raw_text\":\"Intro\n- point 1\n- point 2\"}"
 ```
 
 ```bash
@@ -238,12 +237,11 @@ curl -X POST http://127.0.0.1:8000/presentations/generate ^
 
 ## Template workflow
 
-1. Put a template in `storage/templates/<template_id>/template.pptx`
-2. Store or regenerate `manifest.json` for that template
-3. Use real prototype slides with tags such as `{{title}}`, `{{subtitle}}`, `{{text}}`, `{{bullets}}`
-4. Let the analyzer build layout metadata from the PowerPoint file
-5. Generate a plan from source text or send a prepared plan directly
-6. Render the final `.pptx`
+1. Upload a `.pptx` through the UI or `/templates/auto`.
+2. Let the analyzer build and persist `manifest.json` metadata.
+3. Use real prototype slides with tags such as `{{title}}`, `{{subtitle}}`, `{{text}}`, `{{bullets}}`.
+4. Generate a plan from source text or send a prepared plan directly.
+5. Render the final `.pptx`.
 
 ## Current focus
 

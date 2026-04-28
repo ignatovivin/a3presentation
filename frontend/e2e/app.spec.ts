@@ -2,16 +2,16 @@ import { expect, test } from "@playwright/test";
 
 const templatesResponse = [
   {
-    template_id: "corp_light_v1",
-    display_name: "Light Theme",
+    template_id: "uploaded_template_fixture",
+    display_name: "Uploaded Template Fixture",
     description: "Corporate template",
   },
 ];
 
 const templateDetailsResponse = {
   manifest: {
-    template_id: "corp_light_v1",
-    display_name: "Light Theme",
+    template_id: "uploaded_template_fixture",
+    display_name: "Uploaded Template Fixture",
     source_pptx: "template.pptx",
     description: "Corporate template",
     generation_mode: "layout",
@@ -590,7 +590,7 @@ const extractResponse = {
 };
 
 const planResponse = {
-  template_id: "corp_light_v1",
+  template_id: "uploaded_template_fixture",
   title: "A3 Presentation",
   slides: [
     { kind: "title", title: "A3 Presentation", bullets: [], left_bullets: [], right_bullets: [], preferred_layout_key: "cover" },
@@ -688,7 +688,7 @@ const uploadedTemplatePlanResponse = {
   slide_layout_reviews: [
     {
       slide_index: 0,
-      current_layout_key: "cover",
+      current_target_key: "cover",
       available_layouts: [
         {
           key: "cover",
@@ -709,7 +709,7 @@ const uploadedTemplatePlanResponse = {
     },
     {
       slide_index: 1,
-      current_layout_key: "slide_1",
+      current_target_key: "slide_1",
       available_layouts: [
         {
           key: "slide_1",
@@ -883,15 +883,7 @@ test("@smoke user can upload document inspect structure and generate presentatio
   await page.getByTestId("drawer-tab-text").click();
   await expect(page.getByTestId("slide-review-panel")).toBeVisible();
   await expect(page.getByTestId("drawer-tab-text")).toHaveAttribute("aria-selected", "true");
-  const cardSuggestion = page.getByTestId("card-slide-choice-1");
-  const hasCardSuggestion = await cardSuggestion.count();
-  if (hasCardSuggestion) {
-    await expect(cardSuggestion).toContainText("1. Рост");
-    await cardSuggestion.click();
-    await page.getByRole("button", { name: "Сбросить выбор" }).click();
-    await expect(cardSuggestion).toBeVisible();
-    await cardSuggestion.click();
-  }
+  await expect(page.getByTestId("layout-slide-choice-1")).toContainText("1. Рост");
   await expect(page.getByTestId("save-structure-choices")).toHaveText("Сохранить");
   await page.getByTestId("save-structure-choices").click();
   await expect(page.getByTestId("structure-drawer")).toHaveCount(0);
@@ -916,26 +908,12 @@ test("@smoke user can upload document inspect structure and generate presentatio
     expect.objectContaining({ name: "SMB", hidden: false }),
     expect.objectContaining({ name: "Enterprise", hidden: true }),
   ]);
-  if (hasCardSuggestion) {
-    expect(lastGeneratePayload.slides[1]).toEqual(
-      expect.objectContaining({
-        kind: "bullets",
-        preferred_layout_key: "cards_3",
-        bullets: [
-          "Компания растет за счет новых сегментов.",
-          "Партнерская сеть ускоряет подключение клиентов.",
-          "Автоматизация снижает стоимость сопровождения.",
-        ],
-      }),
-    );
-  } else {
-    expect(lastGeneratePayload.slides[1]).toEqual(
-      expect.objectContaining({
-        kind: expect.stringMatching(/text|bullets/),
-        preferred_layout_key: expect.any(String),
-      }),
-    );
-  }
+  expect(lastGeneratePayload.slides[1]).toEqual(
+    expect.objectContaining({
+      kind: expect.stringMatching(/text|bullets/),
+      preferred_layout_key: expect.any(String),
+    }),
+  );
   await expect(page.getByTestId("generated-file-name")).toHaveText("A3_Presentation.pptx");
 
   await page.getByTestId("download-presentation").click();
@@ -1030,7 +1008,6 @@ test("uploaded template review shows localized source labels and ranking order",
   await page.getByTestId("drawer-tab-text").click();
 
   await expect(page.getByTestId("slide-review-panel")).toBeVisible();
-  await expect(page.getByTestId("template-analysis-summary")).toContainText("Карточный режим");
   await expect(page.getByTestId("layout-source-badge-1")).toHaveText("Прототип");
   await expect(page.getByTestId("layout-source-label-1")).toHaveText("Прототипный слайд 1");
   await expect(page.getByTestId("template-representation-hints")).toContainText("Подходит для:");

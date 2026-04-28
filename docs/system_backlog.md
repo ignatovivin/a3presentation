@@ -10,7 +10,7 @@
 - [document_class_matrix.md](document_class_matrix.md)
 
 Backlog упорядочен по архитектурной значимости, а не по одному проблемному документу.
-Он также исходит из того, что текущий встроенный шаблон не является постоянной константой, а будущие корпоративные шаблоны должны поддерживаться без локальной подгонки.
+Он исходит из того, что runtime работает с загруженными корпоративными `.pptx` и не должен требовать локальной подгонки под встроенный шаблон.
 
 ## 1. Модель вместимости на уровне placeholder
 
@@ -33,7 +33,7 @@ Backlog упорядочен по архитектурной значимост�
 
 - разные placeholder внутри одного layout могут требовать разных fill targets и font bounds
 - грубые ограничения на уровне layout заставляют planner и generator опираться на слишком широкие эвристики
-- будущие корпоративные шаблоны не должны зависеть от того, что геометрия `corp_light_v1` считается константой
+- корпоративные шаблоны не должны зависеть от того, что геометрия какого-либо fixture/template id считается константой
 
 Цель:
 
@@ -97,10 +97,7 @@ Backlog упорядочен по архитектурной значимост�
   - footer geometry через placeholder-aware width/left checks там, где footer привязан к явному placeholder idx
   - аномально большой `title/subtitle -> body` gap, если он выходит за разумный runtime-layout контракт
   - prototype/template-specific footer geometry через synthetic idx path, а не только через обычные placeholders
-  - детерминированный auxiliary text placeholder для `list_with_icons`, если ожидаемый payload левой колонки теряется при рендере
-  - детерминированный правый text placeholder `14` для `list_with_icons`, даже если runtime-path считает его body-slot, а не auxiliary
-  - детерминированные contact placeholders `10/11/12/13` для `contacts`, если при рендере теряется имя, роль, телефон или email
-  - детерминированные card placeholders `11/12/13` для `cards_3`, если при рендере теряется текст одной из карточек
+  - manifest-derived slot expectations для пользовательских шаблонов, если при рендере теряется payload editable slots
   - детерминированный `subtitle` placeholder для обычных content-slides, если он должен жить отдельно от body и не является duplicate intro
 
 Чего ещё не хватает:
@@ -294,9 +291,9 @@ Backlog упорядочен по архитектурной значимост�
 - narrative UX второго шага переведён на direct click-to-edit: `title/subtitle/body/cards` теперь редактируются кликом по самому текстовому блоку внутри live canvas, а overlay-зоны больше не являются основным входом для текстового редактирования; overlay оставлен только для `table/chart`
 - editable canvas стал template-aware по геометрии: `title/subtitle/body/cards/footer` теперь позиционируются через placeholder metadata из `TemplateManifest`, а при неполном manifest используют layout-aware fallback geometry, синхронизированную с backend `layout_capacity` политиками
 - следующий инкремент block-model добавлен и для data-blocks: `table/chart` теперь открывают inline data editor прямо поверх live canvas, редактируют заголовки колонок и строки и маппят изменения обратно в `PresentationPlan`, сохраняя единый regenerate flow
-- следующий инкремент representation presets тоже продвинут: компактные data-blocks теперь могут безопасно переключаться не только `table <-> chart`, но и в `cards/list`, если табличная структура допускает это без смысловой деградации; regenerate path и API contract для `chart override` и `list/cards` representation закреплены отдельными smoke/backend tests
+- следующий инкремент representation layer должен строиться от возможностей загруженного шаблона, а не от preset names; regenerate path и API contract для `chart override` закреплены отдельными smoke/backend tests
 - template-style path второго шага усилен: `TemplateManifest.design_tokens` теперь несёт не только базовые brand colors/font family, но и role-level typography (`title/subtitle/body/footer` colors, font sizes, weights); `TemplateAnalyzer` читает их из theme/master XML `.pptx`, а editable canvas больше не держит собственные hardcoded `28/14/17/12`, а применяет template-driven CSS variables
-- введён следующий уровень manifest contract: `TemplateManifest.component_styles` как reusable component-layer поверх плоских `design_tokens`; scope уже расширен с `cards/text` на `table/chart/image/cover/list_with_icons/contacts`, и generator теперь читает этот слой для card/numeric-card rendering, table cell styling, table render behavior, chart palette/title/geometry, image subtitle/geometry spacing, cover typography/geometry, two-column spacing и contacts font-threshold behavior
+- введён следующий уровень manifest contract: `TemplateManifest.component_styles` как reusable component-layer поверх плоских `design_tokens`; активный runtime scope теперь держится на generic `text/table/chart/image/cover`, без старых preset component layers
 - XML base layer расширен с текста на все основные компоненты шаблона: manifest теперь может хранить `theme color/font scheme`, `master text styles`, `master background styles`, `layout background style`, `placeholder shape styles`, `prototype token shape styles`; analyzer уже тянет `fill/gradient/image fill`, `line`, `shadow`, `rotation`, `geometry preset` и готовит единый style catalog для `text/table/chart/image/background`
 - advanced XML coverage тоже добавлен в base layer: analyzer и manifest уже умеют хранить `paragraph lvl2+`, `bullet type/font/hanging`, `line compound/cap/join`, `glow/softEdge/reflection`, `text inset/anchor`, `theme fill/line refs`, а также catalog для `table cell margins` и `chart placeholder offsets`; это уже не только metadata-path, а частично рабочий generator path для реального `.pptx`
 - этап применения XML в generator расширен: layout `background_style`, placeholder `text_style`, paragraph catalog, `shape_style` (`fill/line/inset/anchor`, `line compound/cap/join`, `theme fill/line refs`) и `table cell margins` уже реально накладываются при генерации слайда; для chart placeholders генератор теперь сохраняет `manualLayout` offsets/size, legend manual offset и axis label offset через Open XML, что закреплено generator contract tests
@@ -342,17 +339,14 @@ Backlog упорядочен по архитектурной значимост�
 - добавить confidence / safe-editable / render-only distinctions
 - добавить richer repeated-group inference вместо только token naming conventions
 - протянуть этот contract в API/frontend review-step и plan mutation mapping
-- убрать remaining hardcoded representation targets во frontend review-step;
-  первый шаг уже сделан для text-to-cards chooser, который теперь выбирает card-capable target layout из manifest metadata, а не только `cards_3`
+- убрать remaining hardcoded representation targets во frontend review-step и держать selection на manifest metadata
 - переносить эту же логику с frontend-эвристик на backend-driven `representation_hints`,
   где analyzer уже умеет помечать хотя бы card-like layouts
 - удерживать единый manifest-driven path и для built-in registry templates:
   review-step уже начал читать manifest не только из uploaded-template response, но и через обычный `/templates/{template_id}`
 - убирать remaining layout-name heuristics из review-step:
   один из таких путей уже убран для data-slide filtering, который теперь смотрит в manifest metadata, а не в `layoutKey.includes(...)`
-- расширять backend-driven `representation_hints` дальше:
-  базовый слой уже покрывает хотя бы `cards`, `table`, `image`, `contacts`,
-  но review-step пока использует это только частично
+- расширять backend-driven `representation_hints` дальше без привязки к старым preset layout names
 - после текущего цикла появился уже и manual-testable UI слой:
   следующий шаг теперь не “сделать хоть что-то видимое”, а расширять, какие transformations разрешаются из manifest contract
 - layout inventory уже начал использоваться и в backend plan path:

@@ -66,14 +66,11 @@ Server deploy script behavior:
 
 The full restart is intentional: docker `nginx` resolves upstream container IPs on startup, so recreating only `backend` and `frontend` can leave stale upstream addresses and produce `502 Bad Gateway`.
 
-## Why templates are not mounted separately
+## Template storage
 
-- `storage/templates` in git is the source of truth
-- backend image already contains `storage/templates`
-- server deployment reads templates directly from `/app/storage/templates`
-- only `data/outputs` stays on the host as persistent runtime storage
-
-This avoids runtime drift between repo templates and production templates and removes the need to copy `template.pptx` into a separate volume on every deploy.
+- backend images do not include bundled templates
+- templates must be uploaded through the application flow or stored in the runtime `TEMPLATES_DIR`
+- `data/templates` and `data/outputs` stay on the host as persistent runtime storage
 
 ## Update project
 

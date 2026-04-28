@@ -30,8 +30,8 @@ class QualityContractTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        cls.manifest = registry.get_template("corp_light_v1")
-        cls.template_path = registry.get_template_pptx_path("corp_light_v1")
+        cls.manifest = registry.get_template("deterministic_layout_fixture")
+        cls.template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
         cls.extractor = DocumentTextExtractor()
         cls.planner = TextToPlanService()
         cls.generator = PptxGenerator()
@@ -50,7 +50,7 @@ class QualityContractTests(unittest.TestCase):
             "- Повысить долю recurring revenue\n"
         )
         text, tables, blocks = self.extractor.extract("strategy.md", raw_text.encode("utf-8"))
-        plan = self.planner.build_plan("corp_light_v1", text, None, tables, blocks)
+        plan = self.planner.build_plan("deterministic_layout_fixture", text, None, tables, blocks)
 
         violations = self._generate_and_audit(plan)
         self.assertEqual(violations, [])
@@ -78,7 +78,7 @@ class QualityContractTests(unittest.TestCase):
             text, tables, blocks = self.extractor.extract(docx_path.name, docx_path.read_bytes())
 
         plan = self.planner.build_plan(
-            "corp_light_v1",
+            "deterministic_layout_fixture",
             text,
             None,
             tables,
@@ -120,20 +120,20 @@ class QualityContractTests(unittest.TestCase):
             self._block("paragraph", "Иллюстрация подтверждает узкие места и точки автоматизации."),
         ]
         raw_text = "\n".join(block.text or "" for block in blocks)
-        plan = self.planner.build_plan("corp_light_v1", raw_text, None, [], blocks)
+        plan = self.planner.build_plan("deterministic_layout_fixture", raw_text, None, [], blocks)
 
         violations = self._generate_and_audit(plan)
         self.assertEqual(violations, [])
 
     def test_uploaded_layout_template_text_document_respects_quality_contract(self) -> None:
-        template_id = "razmeshchenie_soglasiy"
+        template_id = "uploaded_fixture_template"
         template_path = self.settings.templates_dir / template_id / "template.pptx"
         if not template_path.exists():
             self.skipTest(f"optional uploaded template is not installed: {template_id}")
         manifest = self.analyzer.analyze(
             template_id=template_id,
             template_path=template_path,
-            display_name="Размещение согласий",
+            display_name="Uploaded Fixture Template",
         )
         manifest.generation_mode = GenerationMode.LAYOUT
         layout = next(item for item in manifest.layouts if item.key == "титульный_слайд")
@@ -154,7 +154,7 @@ class QualityContractTests(unittest.TestCase):
         self.assertEqual(violations, [])
 
     def test_uploaded_prototype_template_text_document_respects_quality_contract(self) -> None:
-        template_id = "razmeshchenie_soglasiy"
+        template_id = "uploaded_fixture_template"
         if not (self.settings.templates_dir / template_id).exists():
             self.skipTest(f"optional uploaded template is not installed: {template_id}")
         manifest = self.registry.get_template(template_id)
@@ -233,7 +233,7 @@ class QualityContractTests(unittest.TestCase):
                 self.assertEqual(violations, [])
 
     def test_installed_user_templates_keep_optional_quality_matrix_without_fatal_slot_regressions(self) -> None:
-        manifests = [manifest for manifest in self.registry.list_templates() if manifest.template_id != "corp_light_v1"]
+        manifests = [manifest for manifest in self.registry.list_templates() if manifest.template_id != "deterministic_layout_fixture"]
         if not manifests:
             self.skipTest("no optional user templates are installed")
 

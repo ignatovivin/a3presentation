@@ -214,7 +214,6 @@ class TemplateRegistry:
         return [
             SlideLayoutReview(
                 slide_index=index,
-                current_layout_key=slide.preferred_layout_key,
                 current_target_key=slide.render_target.key if slide.render_target is not None else slide.preferred_layout_key,
                 current_target_type=slide.render_target.type.value if slide.render_target is not None else None,
                 current_target_source=slide.render_target.source if slide.render_target is not None else None,
@@ -242,18 +241,9 @@ class TemplateRegistry:
 
         for layout in manifest.layouts:
             is_table_layout = self._layout_looks_like_table(layout)
-            is_contacts_layout = self._layout_looks_like_contacts(layout)
-            contact_binding_map = {
-                10: "contact_name_or_title",
-                11: "contact_role",
-                12: "contact_phone",
-                13: "contact_email",
-            }
             for placeholder in layout.placeholders:
                 if is_table_layout and placeholder.idx == 14 and placeholder.binding is None:
                     placeholder.binding = "table"
-                if is_contacts_layout and placeholder.idx in contact_binding_map and placeholder.binding is None:
-                    placeholder.binding = contact_binding_map[placeholder.idx]
                 if placeholder.idx == 17 and placeholder.kind == PlaceholderKind.UNKNOWN:
                     placeholder.kind = PlaceholderKind.FOOTER
                 self._sync_placeholder_editable_metadata(placeholder)
@@ -531,11 +521,7 @@ class TemplateRegistry:
         elif slide.kind == SlideKind.TWO_COLUMN and "two_column" in hints:
             reasons.append("Подходит для двухколоночной компоновки.")
         elif slide.kind in {SlideKind.TEXT, SlideKind.BULLETS}:
-            if "contacts" in hints:
-                reasons.append("Подходит для контактного или справочного блока.")
-            elif "cards" in hints:
-                reasons.append("Подходит для карточной подачи коротких тезисов.")
-            elif "bullet_list" in roles or "bullet_item" in roles:
+            if "bullet_list" in roles or "bullet_item" in roles:
                 reasons.append("Удобен для списка и коротких пунктов.")
             elif "body" in roles:
                 reasons.append("Подходит для основного текста без ручной перестройки.")
@@ -582,11 +568,6 @@ class TemplateRegistry:
 
         if slide.kind == SlideKind.TWO_COLUMN and "two_column" in hints:
             reward(35, "two-column")
-        if slide.kind in {SlideKind.TEXT, SlideKind.BULLETS} and "cards" in hints:
-            reward(10, "cards")
-        if slide.kind == SlideKind.TEXT and self._looks_like_contacts_slide(slide) and "contacts" in hints:
-            reward(35, "contacts")
-
         if "title" in roles:
             reward(6, "title")
         if slide.subtitle and "subtitle" in roles:
@@ -728,16 +709,6 @@ class TemplateRegistry:
         if slide.left_bullets or slide.right_bullets:
             return len([item for item in [*slide.left_bullets, *slide.right_bullets] if item.strip()])
         return sum(len([item for item in block.items if item.strip()]) for block in slide.content_blocks)
-
-    def _slide_looks_like_kpi_cards(self, slide: SlideSpec) -> bool:
-        items = [*slide.bullets, *slide.left_bullets, *slide.right_bullets]
-        if not items and slide.text:
-            items = [slide.text]
-        numeric_items = 0
-        for item in items[:4]:
-            if any(char.isdigit() for char in item):
-                numeric_items += 1
-        return numeric_items >= 2
 
     def _inventory_targets(self, manifest: TemplateManifest) -> list[_InventoryTarget]:
         targets: list[_InventoryTarget] = []
@@ -909,7 +880,7 @@ class TemplateRegistry:
             slide_kind=slide.kind.value,
         )
 
-        if "contacts" not in hints and (slide.left_bullets or slide.right_bullets):
+        if slide.left_bullets or slide.right_bullets:
             text_parts = [part for part in [slide.text or "", slide.notes or ""] if part.strip()]
             contact_parts = [*slide.left_bullets, *slide.right_bullets]
             if supported == {"bullets"} or ("bullets" in supported and "text" not in supported):
@@ -923,7 +894,7 @@ class TemplateRegistry:
                         "left_bullets": [],
                         "right_bullets": [],
                         "notes": None,
-                        "runtime_profile_key": runtime_profile_key if runtime_profile_key != "contacts" else "list_full_width",
+                        "runtime_profile_key": runtime_profile_key,
                     },
                     deep=True,
                 )
@@ -952,7 +923,7 @@ class TemplateRegistry:
                         "content_blocks": [self._list_block(merged_bullets)] if merged_bullets else [],
                         "left_bullets": [],
                         "right_bullets": [],
-                        "runtime_profile_key": "list_with_icons" if slide.runtime_profile_key == "list_with_icons" else "list_full_width",
+                        "runtime_profile_key": "list_full_width",
                     },
                     deep=True,
                 )
@@ -1037,7 +1008,7 @@ class TemplateRegistry:
         for target in targets:
             if "text" not in target.supported_slide_kinds:
                 continue
-            if any(hint in target.representation_hints for hint in {"table", "chart", "image", "contacts", "cards", "two_column"}):
+            if any(hint in target.representation_hints for hint in {"table", "chart", "image", "two_column"}):
                 continue
             return target
         return next((target for target in targets if "text" in target.supported_slide_kinds), None)
@@ -1046,25 +1017,15 @@ class TemplateRegistry:
         for target in targets:
             if "bullets" not in target.supported_slide_kinds:
                 continue
-            if any(hint in target.representation_hints for hint in {"table", "chart", "image", "contacts", "cards"}):
+            if any(hint in target.representation_hints for hint in {"table", "chart", "image"}):
                 continue
             return target
         return next((target for target in targets if "bullets" in target.supported_slide_kinds), None)
 
-    def _looks_like_contacts_slide(self, slide: SlideSpec) -> bool:
-        text_parts = [slide.title or "", slide.subtitle or "", slide.text or "", slide.notes or "", *slide.bullets]
-        combined = " ".join(part for part in text_parts if part).lower()
-        return "@" in combined or "тел" in combined or "phone" in combined or "email" in combined
-
     def _representation_hints_for_layout(self, layout) -> list[str]:
         hints = list(layout.representation_hints)
         capabilities = {capability for placeholder in layout.placeholders for capability in placeholder.editable_capabilities}
-        bindings = {placeholder.binding for placeholder in layout.placeholders if placeholder.binding}
 
-        if self._layout_looks_like_cards(layout) and "cards" not in hints:
-            hints.append("cards")
-        if self._layout_looks_like_contacts(layout) or {"contact_name_or_title", "contact_role", "contact_phone", "contact_email"} & bindings:
-            hints.append("contacts")
         if "table" in capabilities or self._layout_looks_like_table(layout):
             hints.append("table")
         if "chart" in capabilities or any(placeholder.kind == PlaceholderKind.CHART for placeholder in layout.placeholders):
@@ -1074,22 +1035,6 @@ class TemplateRegistry:
         ):
             hints.append("image")
         return list(dict.fromkeys(hints))
-
-    def _layout_looks_like_cards(self, layout) -> bool:
-        return (
-            "карточ" in layout.name.lower()
-            or "cards" in layout.name.lower()
-            or sum(1 for placeholder in layout.placeholders if placeholder.idx in {11, 12, 13}) >= 3
-        )
-
-    def _layout_looks_like_contacts(self, layout) -> bool:
-        contact_slots = {placeholder.idx for placeholder in layout.placeholders if placeholder.idx in {10, 11, 12, 13}}
-        bindings = {placeholder.binding for placeholder in layout.placeholders if placeholder.binding}
-        return (
-            "конт" in layout.name.lower()
-            or len(contact_slots) >= 2
-            or bool({"contact_name_or_title", "contact_role", "contact_phone", "contact_email"} & bindings)
-        )
 
     def _layout_looks_like_table(self, layout) -> bool:
         bindings = {placeholder.binding for placeholder in layout.placeholders if placeholder.binding}
@@ -1105,23 +1050,6 @@ class TemplateRegistry:
         title_style = theme.master_text_styles.get("title")
         body_style = theme.master_text_styles.get("body")
         other_style = theme.master_text_styles.get("other")
-        cards_body_font = manifest.design_tokens.get("cards_body_font_size_pt")
-        margin_x = 91440
-        margin_y = 45720
-        cards_layout = next((layout for layout in manifest.layouts if layout.key in {"cards_3", "cards_kpi"}), None)
-        if cards_layout is not None:
-            body_placeholder = next((item for item in cards_layout.placeholders if item.idx in {11, 12, 13}), None)
-            if body_placeholder is not None:
-                margin_x = body_placeholder.margin_left_emu or margin_x
-                margin_y = body_placeholder.margin_top_emu or margin_y
-        cards_text_styles = {}
-        if title_style is not None:
-            cards_text_styles["title"] = title_style.model_copy(update={"font_size_pt": min(title_style.font_size_pt or 20.0, 20.0), "color": "#FFFFFF"})
-        if body_style is not None:
-            cards_text_styles["body"] = body_style.model_copy(update={"font_size_pt": float(cards_body_font) if isinstance(cards_body_font, (int, float)) else 16.0, "color": "#FFFFFF"})
-            cards_text_styles["kpi_value"] = body_style.model_copy(update={"font_size_pt": 22.0, "bold": True, "color": "#FFFFFF"})
-        if other_style is not None:
-            cards_text_styles["kpi_label"] = other_style.model_copy(update={"font_size_pt": 12.0, "color": "#E4F1FF"})
         text_text_styles = {}
         if title_style is not None:
             text_text_styles["title"] = title_style
@@ -1153,36 +1081,7 @@ class TemplateRegistry:
             cover_text_styles["meta"] = body_style.model_copy(update={"font_size_pt": 22.0, "color": "#F5F9FE"})
         if other_style is not None:
             cover_text_styles["footer"] = other_style.model_copy(update={"font_size_pt": 14.0, "color": "#F5F9FE"})
-        list_icons_text_styles = {}
-        if title_style is not None:
-            list_icons_text_styles["title"] = title_style
-        if body_style is not None:
-            list_icons_text_styles["subtitle"] = body_style.model_copy(update={"font_size_pt": 18.0})
-            list_icons_text_styles["left"] = body_style
-            list_icons_text_styles["right"] = body_style
-        if other_style is not None:
-            list_icons_text_styles["footer"] = other_style
-        contacts_text_styles = {}
-        if body_style is not None:
-            contacts_text_styles["primary"] = body_style.model_copy(update={"font_size_pt": 18.0})
-            contacts_text_styles["secondary"] = body_style.model_copy(update={"font_size_pt": 14.0})
         return {
-            "cards": TemplateComponentStyleSpec(
-                text_styles=cards_text_styles,
-                spacing_tokens={
-                    "content_margin_x_emu": margin_x,
-                    "content_margin_y_emu": margin_y,
-                    "title_body_gap_emu": 100000,
-                    "body_metrics_gap_emu": 180000,
-                    "metrics_gap_x_emu": 180000,
-                    "metrics_gap_y_emu": 160000,
-                },
-                behavior_tokens={
-                    "kpi_max_metrics": 4,
-                    "kpi_value_compact_font_pt": 20,
-                    "kpi_value_regular_font_pt": 22,
-                },
-            ),
             "text": TemplateComponentStyleSpec(
                 text_styles=text_text_styles,
                 spacing_tokens={
@@ -1251,22 +1150,6 @@ class TemplateRegistry:
                     "meta_min_height_emu": 700000,
                     "meta_gap_emu": 220000,
                     "bottom_limit_emu": 6200000,
-                },
-            ),
-            "list_with_icons": TemplateComponentStyleSpec(
-                text_styles=list_icons_text_styles,
-                spacing_tokens={
-                    "title_content_gap_emu": 180000,
-                    "title_body_gap_no_subtitle_emu": 300000,
-                    "content_footer_gap_emu": 180000,
-                },
-            ),
-            "contacts": TemplateComponentStyleSpec(
-                text_styles=contacts_text_styles,
-                behavior_tokens={
-                    "primary_threshold_chars": 60,
-                    "secondary_threshold_chars": 40,
-                    "font_decrement_pt": 2.0,
                 },
             ),
         }

@@ -374,7 +374,6 @@ def _blocking_generation_violations(violations):
         "missing_chart_shape",
         "missing_image_shape",
         "content_order_mismatch",
-        "card_overlap",
         "two_column_overlap",
         "image_text_overlap",
         "chart_type_mismatch",

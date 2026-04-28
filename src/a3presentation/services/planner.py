@@ -65,9 +65,6 @@ class TextToPlanService:
         r"\b(?:источники?|references?|reference|литература|bibliography|appendix|приложение)\b",
         re.IGNORECASE,
     )
-    CARD_BULLET_MAX_CHARS = 100
-    CARD_BULLET_COUNT = 3
-    KPI_CARD_COUNT = 4
     LIST_BATCH_SIZE = LIST_FULL_WIDTH_PROFILE.max_items
     LIST_SLIDE_MAX_WEIGHT = LIST_FULL_WIDTH_PROFILE.max_weight
     LIST_BULLET_MAX_CHARS = 220
@@ -87,10 +84,6 @@ class TextToPlanService:
         "list_full_width",
         "table",
         "image_text",
-        "cards_3",
-        "cards_kpi",
-        "contacts",
-        "list_with_icons",
     }
 
     def __init__(self) -> None:
@@ -199,7 +192,6 @@ class TextToPlanService:
         table_sequence = 0
 
         content_slides: list[SlideSpec] = []
-        contact_slides: list[SlideSpec] = []
         blocks_have_tables = any(block.kind == "table" and block.table is not None for block in blocks or [])
 
         if document_kind == DocumentKind.RESUME.value:
@@ -220,19 +212,11 @@ class TextToPlanService:
                 if index == 0 and self._is_cover_section(section, cover_title):
                     continue
                 for slide in self._section_to_slides(section):
-                    if slide.runtime_profile_key == "contacts":
-                        contact_slides.append(slide)
-                    else:
-                        content_slides.append(slide)
+                    content_slides.append(slide)
 
         content_slides = self._compress_slides(content_slides)
         content_slides, table_sequence = self._apply_chart_overrides_to_slide_list(
             content_slides,
-            chart_override_map,
-            table_sequence,
-        )
-        contact_slides, table_sequence = self._apply_chart_overrides_to_slide_list(
-            contact_slides,
             chart_override_map,
             table_sequence,
         )
@@ -253,7 +237,6 @@ class TextToPlanService:
                 table_sequence += 1
                 slides.append(self._apply_chart_override(table_slide, f"table_{table_sequence}", chart_override_map))
 
-        slides.extend(contact_slides[:1])
         if len(slides) == 1 and (blocks or tables):
             slides.extend(
                 self._build_safe_fallback_slides(
@@ -677,11 +660,6 @@ class TextToPlanService:
         section_lines = [*section.paragraphs, *[item for bullet_list in section.bullet_lists for item in bullet_list]]
         slides: list[SlideSpec] = []
 
-        if self._looks_like_contacts(section.title, section_lines):
-            slides.append(self._build_contact_slide(section))
-            slides.extend(self._build_table_slides(section))
-            return slides
-
         if any(block.kind == "table" and block.table is not None for block in section.content_blocks):
             slides.extend(self._build_ordered_section_slides(section))
         elif section.paragraphs or section.bullet_lists:
@@ -971,16 +949,9 @@ class TextToPlanService:
         units = self._section_continuation_units(section)
         paragraph_chars = sum(len(unit.text) for unit in units if unit.kind == "paragraph")
         bullet_count = sum(1 for unit in units if unit.kind == "bullet")
-        max_bullet_len = max((len(unit.text) for unit in units if unit.kind == "bullet"), default=0)
         total_chars = sum(len(unit.text) for unit in units)
 
         if paragraph_chars <= self._text_slide_char_budget() and bullet_count == 0:
-            return True
-        if (
-            bullet_count <= self.CARD_BULLET_COUNT
-            and paragraph_chars <= 160
-            and max_bullet_len <= self.CARD_BULLET_MAX_CHARS
-        ):
             return True
         if bullet_count > 0 and bullet_count <= self.list_profile.max_items and total_chars <= self.list_profile.max_chars:
             return True
@@ -990,16 +961,6 @@ class TextToPlanService:
         units = self._section_continuation_units(section)
         text = " ".join(unit.text for unit in units if unit.kind == "paragraph").strip()
         bullets = [unit.text for unit in units if unit.kind == "bullet"]
-        cards_layout_key = self._cards_layout_key(section.title, bullets) if bullets and not text else None
-        if cards_layout_key is not None:
-            return self._targeted_slide(
-                kind=SlideKind.BULLETS,
-                title=section.title,
-                text=" ".join(section.paragraphs).strip() or None,
-                bullets=bullets,
-                content_blocks=self._content_blocks_from_units(units),
-                layout_key=cards_layout_key,
-            )
 
         if bullets:
             return self._build_continuation_slide(section.title, section.subtitle or "", units)
@@ -1584,45 +1545,6 @@ class TextToPlanService:
         normalized_subtitle = (subtitle or "").strip()[:120]
         return normalized_title, normalized_subtitle
 
-    def _cards_layout_key(self, title: str, bullets: list[str]) -> str | None:
-        if self._should_use_cards_layout(title, bullets):
-            return "cards_3"
-        return None
-
-    def _should_use_cards_layout(self, title: str, bullets: list[str]) -> bool:
-        if not bullets or len(bullets) > self.CARD_BULLET_COUNT:
-            return False
-        normalized_title = title.strip().lower()
-        if re.match(r"^(q\d+|question\b|\d+(\.\d+)*)", normalized_title):
-            return False
-        if any(len(item) > 55 for item in bullets):
-            return False
-        if any(any(marker in item for marker in (":", "—", ";", ".")) for item in bullets):
-            return False
-        return all(len(item) <= self.CARD_BULLET_MAX_CHARS for item in bullets)
-
-    def _should_use_kpi_cards_layout(self, title: str, bullets: list[str]) -> bool:
-        if not bullets or len(bullets) > self.KPI_CARD_COUNT:
-            return False
-        normalized_title = title.strip().lower()
-        if re.match(r"^(q\d+|question\b|\d+(\.\d+)*)", normalized_title):
-            return False
-        metric_signals = 0
-        for item in bullets:
-            text = item.strip()
-            if not text:
-                return False
-            normalized = " ".join(text.split())
-            if not re.match(
-                r"^[<>~≈]?\s*\d+(?:[.,]\d+)?(?:\s*(?:%|‰|млн|млрд|тыс|трлн|сек(?:унд[аы]?)?|с|мин|ч|дн(?:ей|я)?|₽|руб(?:\.|лей|ля|ль)?))*(?:\s+.+)?$",
-                normalized,
-                re.IGNORECASE,
-            ):
-                continue
-            if re.search(r"\d", normalized) and re.search(r"\s+\D", normalized):
-                metric_signals += 1
-        return metric_signals >= 2
-
     def _leading_cover_lines(self, blocks: list[DocumentBlock]) -> list[str]:
         lines: list[str] = []
         for block in blocks:
@@ -1714,21 +1636,6 @@ class TextToPlanService:
         if sentence_like_punctuation >= 2:
             return False
         return True
-
-    def _build_contact_slide(self, section: Section) -> SlideSpec:
-        all_lines = [section.title, *(section.paragraphs or []), *[item for group in section.bullet_lists for item in group]]
-        return self._targeted_slide(
-            kind=SlideKind.TEXT,
-            title=section.title,
-            subtitle=section.subtitle or (section.paragraphs[0] if section.paragraphs else ""),
-            text="\n".join(section.paragraphs[1:3]) if len(section.paragraphs) > 1 else "",
-            left_bullets=[self._first_phone(all_lines)],
-            right_bullets=[self._first_email(all_lines)],
-            content_blocks=self._paragraph_blocks_from_parts(
-                "\n".join(section.paragraphs[1:3]) if len(section.paragraphs) > 1 else ""
-            ),
-            layout_key="contacts",
-        )
 
     def _build_safe_fallback_slides(
         self,
@@ -2888,19 +2795,3 @@ class TextToPlanService:
     def _normalize_line(self, line: str) -> str:
         return re.sub(r"\s+", " ", line.strip())
 
-    def _looks_like_contacts(self, heading: str, lines: list[str]) -> bool:
-        joined = "\n".join([heading, *lines]).strip()
-        normalized_heading = heading.lower().strip(" :.-")
-        if normalized_heading in {"контакты", "contacts", "contact"}:
-            return True
-        return bool(self.EMAIL_PATTERN.search(joined) and self.PHONE_PATTERN.search(joined))
-
-    def _first_phone(self, lines: list[str]) -> str:
-        joined = "\n".join(lines)
-        match = self.PHONE_PATTERN.search(joined)
-        return match.group(1).strip() if match else ""
-
-    def _first_email(self, lines: list[str]) -> str:
-        joined = "\n".join(lines)
-        match = self.EMAIL_PATTERN.search(joined)
-        return match.group(0).strip() if match else ""

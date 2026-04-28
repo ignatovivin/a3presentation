@@ -9,13 +9,12 @@
 - review-step с editable canvas
 - analyzer/manifest metadata
 
-Но следующий продуктовый рубеж должен строиться не вокруг built-in layout keys вроде `cards_3`, `contacts`, `list_with_icons`,
+Следующий продуктовый рубеж строится не вокруг built-in layout keys,
 а вокруг общего сценария:
 
 `любой пользовательский .pptx шаблон -> извлечение slot/model/style contract -> editable review -> controlled generation`
 
-Это означает, что built-in layout rules должны остаться как fallback/bootstrap слой,
-но не как главная архитектурная единица продукта.
+Это означает, что старые built-in layout rules не должны участвовать в основном flow.
 
 ## Текущий constrained working set
 
@@ -50,12 +49,12 @@
 - `tests/test_planner.py`
 - `tests/test_quality_contracts.py`
 - `docs/quality-contracts.md`
-- любые правки, завязанные на built-in layout tuning (`cards_3`, `contacts`, `list_with_icons`) как на главный продуктовый слой
+- любые правки, завязанные на built-in layout tuning как на главный продуктовый слой
 
 ### Правило работы
 
 - сначала доводим generic template contract и editable review path
-- built-in layouts считаем bootstrap/fallback слоем
+- built-in layouts не расширяем и не используем как продуктовый слой
 - если правка не усиливает user-template extraction/review/generation flow, её лучше не тащить в текущий цикл
 
 ## Целевая продуктовая модель
@@ -121,7 +120,7 @@ Definition of done:
 - existing `manifest.json` templates больше не теряют этот слой:
   analyzer backfill'ит не только geometry, но и editable slot metadata в уже сохранённые manifests
 - `TemplateRegistry.normalize_manifest()` теперь синхронизирует editable metadata после binding-normalization,
-  чтобы `table/contacts/footer` placeholders не расходились между binding и editable capabilities
+  чтобы generic placeholders не расходились между binding и editable capabilities
 
 ### Этап 2. Generic editable deck model
 
@@ -154,20 +153,13 @@ Definition of done:
 
 Сделано в текущем цикле:
 
-- text-to-cards chooser во frontend больше не жёстко привязан к `cards_3`
-- review-step теперь умеет выбирать card-capable target layout из analyzer-derived manifest metadata
-  по geometry/slot heuristic, а не только по встроенному layout key
+- review-step больше не должен выбирать representation через старые preset layout keys
 - `TemplateManifest` теперь также несёт `representation_hints` для layouts/prototype slides
 - analyzer уже умеет помечать card-like layouts этим hint'ом, а backfill существующих manifests не должен терять этот слой
 - frontend review logic теперь использует manifest metadata не только для uploaded template path,
   но и для обычного выбранного шаблона из registry через `fetchTemplate()`
-- ещё один hardcoded review-step path убран:
-  фильтр text-to-cards больше не определяет data layouts по `layoutKey.includes("table"|"chart")`,
-  а смотрит в manifest slot/support metadata
-- `representation_hints` расширены дальше:
-  теперь manifest умеет явно помечать не только `cards`, но и `table`, `image`, `contacts`
-- normalization path тоже синхронизирует эти hints после binding-normalization,
-  чтобы `table/contacts` layouts не теряли representation semantics
+- hardcoded review-step paths должны смотреть в manifest slot/support metadata, а не в layout key names
+- `representation_hints` держатся на generic template semantics и не должны оживлять старые presets
 - UI доведён до ручного testable state:
   пользователь уже видит active template analysis прямо в интерфейсе
   (`editable slots`, `representation hints`, `card target`, active template source)
@@ -186,12 +178,11 @@ Definition of done:
 - ввести representation layer:
   - paragraph flow
   - bullet list
-  - cards
-  - KPI cards
+  - repeated groups
   - table
   - chart
   - image + text
-  - contacts/meta
+  - meta/reference text
 - научить planner выбирать не только `slide kind`, но и candidate representations,
   которые совместимы с доступными slot groups шаблона
 - научить manifest описывать:
@@ -217,7 +208,7 @@ quality layer должен валидировать не built-in layouts, а ge
   - title/subtitle/body stack
   - table/chart/image bounds
   - repeated group integrity
-- оставить built-in rules только как fallback, если manifest бедный
+- не добавлять новые built-in rules; fallback должен быть generic
 
 Definition of done:
 

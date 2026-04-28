@@ -5,11 +5,12 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      TEMPLATES_DIR: /app/storage/templates
+      TEMPLATES_DIR: /data/templates
       OUTPUTS_DIR: /data/outputs
       APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unknown}
       APP_COMMIT_BRANCH: ${APP_COMMIT_BRANCH:-unknown}
     volumes:
+      - ./data/templates:/data/templates
       - ./data/outputs:/data/outputs
 
   frontend:

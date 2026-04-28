@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
-from dataclasses import replace
 
 from pptx.chart.data import CategoryChartData
 from pptx.chart.axis import ValueAxis
@@ -82,20 +81,6 @@ class PptxGenerator:
     COVER_META_MIN_HEIGHT_EMU = 700000
     COVER_META_GAP_EMU = 220000
     COVER_BOTTOM_LIMIT_EMU = 6200000
-    KPI_TITLE_TOP_EMU = 651176
-    KPI_TITLE_LEFT_EMU = 444249
-    KPI_TITLE_WIDTH_EMU = 10693901
-    KPI_TITLE_HEIGHT_EMU = 720000
-    KPI_DESCRIPTION_TOP_EMU = 1460000
-    KPI_DESCRIPTION_LEFT_EMU = 444249
-    KPI_DESCRIPTION_WIDTH_EMU = 8200000
-    KPI_DESCRIPTION_HEIGHT_EMU = 900000
-    KPI_METRIC_START_TOP_EMU = 3350000
-    KPI_METRIC_LEFT_EMU = 444249
-    KPI_METRIC_RIGHT_EMU = 6900000
-    KPI_METRIC_WIDTH_EMU = 4100000
-    KPI_METRIC_HEIGHT_EMU = 1200000
-    KPI_METRIC_ROW_GAP_EMU = 650000
     FULL_CONTENT_LEFT_EMU = 442913
     FULL_CONTENT_WIDTH_EMU = 11198224
     FOOTER_TOP_EMU = 6384626
@@ -103,20 +88,12 @@ class PptxGenerator:
     DEFAULT_TEXT_MARGIN_X_EMU = 91440
     DEFAULT_TEXT_MARGIN_Y_EMU = 45720
     GEOMETRY_PROFILE_TOLERANCE_EMU = 120000
-    KPI_FOURTH_CARD_LEFT_EMU = 6980000
-    KPI_FOURTH_CARD_TOP_EMU = 4950000
-    KPI_FOURTH_CARD_WIDTH_EMU = 3600000
-    KPI_FOURTH_CARD_HEIGHT_EMU = 1350000
     BUILTIN_LAYOUT_KEYS = {
         "text_full_width",
         "dense_text_full_width",
         "list_full_width",
         "table",
         "image_text",
-        "cards_3",
-        "cards_kpi",
-        "list_with_icons",
-        "contacts",
         "cover",
     }
     _CHART_STYLE_CONFIG = None
@@ -499,11 +476,6 @@ class PptxGenerator:
             "secondary_text": slide_spec.notes or "",
             "left_text": "\n".join(slide_spec.left_bullets) if slide_spec.left_bullets else slide_spec.text or "",
             "right_list": slide_spec.right_bullets or slide_spec.bullets,
-            "contact_title": slide_spec.title or "",
-            "contact_name_or_title": slide_spec.title or "",
-            "contact_role": slide_spec.subtitle or "",
-            "contact_phone": slide_spec.left_bullets[0] if slide_spec.left_bullets else "",
-            "contact_email": slide_spec.right_bullets[0] if slide_spec.right_bullets else "",
             "address": slide_spec.text or "",
             "phone": slide_spec.left_bullets[0] if slide_spec.left_bullets else "",
             "email": slide_spec.right_bullets[0] if slide_spec.right_bullets else "",
@@ -517,8 +489,6 @@ class PptxGenerator:
             token_map[f"bullet_{index}"] = slide_spec.bullets[index - 1] if len(slide_spec.bullets) >= index else ""
             token_map[f"left_bullet_{index}"] = slide_spec.left_bullets[index - 1] if len(slide_spec.left_bullets) >= index else ""
             token_map[f"right_bullet_{index}"] = slide_spec.right_bullets[index - 1] if len(slide_spec.right_bullets) >= index else ""
-            token_map[f"card_{index}"] = slide_spec.bullets[index - 1] if len(slide_spec.bullets) >= index else ""
-            token_map[f"icon_{index}"] = ""
 
         if slide_spec.table is not None:
             token_map["table"] = [" | ".join(row) for row in slide_spec.table.rows]
@@ -599,29 +569,6 @@ class PptxGenerator:
             }
             return role_map.get(idx, PlaceholderKind.UNKNOWN)
 
-        if logical_layout_key in {"cards_3", "cards_kpi"}:
-            role_map = {
-                0: PlaceholderKind.TITLE,
-                11: PlaceholderKind.BODY,
-                12: PlaceholderKind.BODY,
-                13: PlaceholderKind.BODY,
-            }
-            if logical_layout_key == "cards_3":
-                role_map[15] = PlaceholderKind.FOOTER
-            return role_map.get(idx, PlaceholderKind.UNKNOWN)
-
-        if logical_layout_key == "list_with_icons":
-            role_map = {
-                0: PlaceholderKind.TITLE,
-                12: PlaceholderKind.BODY,
-                14: PlaceholderKind.BODY,
-                21: PlaceholderKind.FOOTER,
-            }
-            return role_map.get(idx, PlaceholderKind.UNKNOWN)
-
-        if logical_layout_key == "contacts":
-            return PlaceholderKind.BODY if idx in {10, 11, 12, 13} else PlaceholderKind.UNKNOWN
-
         return placeholder_spec.kind
 
     def _fill_slide_from_layout(self, slide, slide_spec: SlideSpec, layout: LayoutSpec, presentation_title: str) -> None:
@@ -635,7 +582,9 @@ class PptxGenerator:
             self._apply_background_xml(slide, layout.background_xml)
             self._apply_background_style(slide, layout.background_style)
         elif self._background_xml_requires_relationships(layout.background_xml) or layout.background_image_base64:
-            if self._active_manifest is not None and self._active_manifest.generation_mode == GenerationMode.LAYOUT:
+            if layout.background_image_base64:
+                self._apply_layout_background_image(slide, layout)
+            elif self._active_manifest is not None and self._active_manifest.generation_mode == GenerationMode.LAYOUT:
                 self._apply_background_style(slide, layout.background_style)
             else:
                 self._apply_layout_background_image(slide, layout)
@@ -648,16 +597,10 @@ class PptxGenerator:
         if use_builtin_flow and target_layout_key == "cover":
             self._populate_cover_slide(slide, slide_spec)
             return
-        if use_builtin_flow and runtime_profile_key == "cards_kpi":
-            for placeholder in slide.placeholders:
-                self._clear_placeholder(placeholder)
-            self._populate_kpi_cards_slide(slide, slide_spec, presentation_title)
-            return
         layout_profile = profile_for_layout(runtime_profile_key)
         placeholders = {placeholder.placeholder_format.idx: placeholder for placeholder in slide.placeholders}
         used_placeholder_indices: set[int] = set()
         materialized_roles: set[str] = set()
-
         for placeholder_spec in layout.placeholders:
             shape = None
             if placeholder_spec.idx is not None and placeholder_spec.idx in placeholders:
@@ -702,10 +645,7 @@ class PptxGenerator:
                 else:
                     self._clear_placeholder(shape)
             elif effective_kind == PlaceholderKind.BODY:
-                if runtime_profile_key in {"cards_3", "cards_kpi"}:
-                    self._fill_card_body(slide, shape, slide_spec, layout_profile)
-                else:
-                    self._fill_body(shape, slide_spec, layout_profile)
+                self._fill_body(shape, slide_spec, layout_profile)
             elif effective_kind == PlaceholderKind.FOOTER:
                 self._set_text(shape, presentation_title, layout_profile)
             elif effective_kind == PlaceholderKind.TABLE:
@@ -715,7 +655,7 @@ class PptxGenerator:
             self._apply_shape_spec_metadata(
                 shape,
                 placeholder_spec,
-                apply_text_style=not (runtime_profile_key in {"cards_3", "cards_kpi"} and effective_kind == PlaceholderKind.BODY),
+                apply_text_style=True,
                 preserve_font_size=effective_kind in {PlaceholderKind.BODY, PlaceholderKind.FOOTER},
             )
             if effective_kind == PlaceholderKind.BODY:
@@ -741,8 +681,6 @@ class PptxGenerator:
 
         if use_builtin_flow:
             self._apply_layout_expansion_and_flow(slide, runtime_profile_key, slide_spec)
-        if runtime_profile_key == "cards_kpi":
-            self._add_kpi_fourth_card(slide, slide_spec, layout_profile)
 
     def _materialize_shape_from_layout_spec(
         self,
@@ -966,12 +904,6 @@ class PptxGenerator:
             self._expand_image_text_layout(slide)
         elif geometry_layout_key == "table":
             self._expand_table_layout(slide)
-        elif geometry_layout_key in {"cards_3", "cards_kpi"}:
-            self._expand_cards_layout(slide, geometry_layout_key)
-        elif geometry_layout_key == "list_with_icons":
-            self._expand_list_with_icons_layout(slide)
-        elif geometry_layout_key == "contacts":
-            self._expand_contacts_layout(slide)
         else:
             return
 
@@ -1402,98 +1334,6 @@ class PptxGenerator:
                 return candidate
         return 28.0
 
-    def _populate_kpi_cards_slide(self, slide, slide_spec: SlideSpec, presentation_title: str) -> None:
-        if self._active_presentation is not None:
-            background = slide.shapes.add_shape(
-                MSO_AUTO_SHAPE_TYPE.RECTANGLE,
-                0,
-                0,
-                self._active_presentation.slide_width,
-                self._active_presentation.slide_height,
-            )
-            background.fill.solid()
-            background.fill.fore_color.rgb = RGBColor(0x34, 0x89, 0xF3)
-            background.line.fill.background()
-
-            glow = slide.shapes.add_shape(
-                MSO_AUTO_SHAPE_TYPE.OVAL,
-                int(self._active_presentation.slide_width * 0.48),
-                -300000,
-                int(self._active_presentation.slide_width * 0.58),
-                int(self._active_presentation.slide_width * 0.58),
-            )
-            glow.fill.solid()
-            glow.fill.fore_color.rgb = RGBColor(0x18, 0xC2, 0xFF)
-            glow.fill.transparency = 0.28
-            glow.line.fill.background()
-
-        title_shape = slide.shapes.add_textbox(
-            self.KPI_TITLE_LEFT_EMU,
-            self.KPI_TITLE_TOP_EMU,
-            self.KPI_TITLE_WIDTH_EMU,
-            self.KPI_TITLE_HEIGHT_EMU,
-        )
-        self._set_cover_text(
-            title_shape,
-            slide_spec.title or "",
-            font_size=Pt(38),
-            bold=True,
-            color=RGBColor(0xF5, 0xF9, 0xFE),
-            align=PP_ALIGN.LEFT,
-        )
-        self._configure_title_text_frame(title_shape)
-        title_shape.text_frame.margin_left = 0
-        title_shape.text_frame.margin_right = 0
-        title_shape.text_frame.margin_top = 0
-        title_shape.text_frame.margin_bottom = 0
-
-        description = (slide_spec.text or "").strip()
-        if description:
-            description_shape = slide.shapes.add_textbox(
-                self.KPI_DESCRIPTION_LEFT_EMU,
-                self.KPI_DESCRIPTION_TOP_EMU,
-                self.KPI_DESCRIPTION_WIDTH_EMU,
-                self.KPI_DESCRIPTION_HEIGHT_EMU,
-            )
-            self._set_cover_text(
-                description_shape,
-                description,
-                font_size=Pt(20),
-                bold=False,
-                color=RGBColor(0xF5, 0xF9, 0xFE),
-                align=PP_ALIGN.LEFT,
-            )
-            description_shape.text_frame.margin_left = 0
-            description_shape.text_frame.margin_right = 0
-            description_shape.text_frame.margin_top = 0
-            description_shape.text_frame.margin_bottom = 0
-
-        card_items = [item.strip() for item in slide_spec.bullets if item and item.strip()][:4]
-        metric_positions = [
-            (self.KPI_METRIC_LEFT_EMU, self.KPI_METRIC_START_TOP_EMU),
-            (self.KPI_METRIC_RIGHT_EMU, self.KPI_METRIC_START_TOP_EMU),
-            (self.KPI_METRIC_LEFT_EMU, self.KPI_METRIC_START_TOP_EMU + self.KPI_METRIC_HEIGHT_EMU + self.KPI_METRIC_ROW_GAP_EMU),
-            (self.KPI_METRIC_RIGHT_EMU, self.KPI_METRIC_START_TOP_EMU + self.KPI_METRIC_HEIGHT_EMU + self.KPI_METRIC_ROW_GAP_EMU),
-        ]
-        for index, item in enumerate(card_items):
-            left, top = metric_positions[index]
-            metric_shape = slide.shapes.add_textbox(left, top, self.KPI_METRIC_WIDTH_EMU, self.KPI_METRIC_HEIGHT_EMU)
-            self._set_card_text(metric_shape, item, profile_for_layout("cards_kpi"))
-
-        footer_shape = slide.shapes.add_textbox(442913, 6384626, 3371850, 277813)
-        self._set_cover_text(
-            footer_shape,
-            presentation_title,
-            font_size=Pt(14),
-            bold=False,
-            color=RGBColor(0xF5, 0xF9, 0xFE),
-            align=PP_ALIGN.LEFT,
-        )
-        footer_shape.text_frame.margin_left = 0
-        footer_shape.text_frame.margin_right = 0
-        footer_shape.text_frame.margin_top = 0
-        footer_shape.text_frame.margin_bottom = 0
-
     def _fill_body(self, shape, slide_spec: SlideSpec, layout_profile: LayoutCapacityProfile) -> None:
         if slide_spec.content_blocks:
             self._set_content_blocks(shape, slide_spec.content_blocks, layout_profile)
@@ -1534,314 +1374,6 @@ class PptxGenerator:
             self._clear_placeholder(shape)
             return
         self._set_text(shape, slide_spec.text or "", layout_profile)
-
-    def _fill_card_body(self, slide, shape, slide_spec: SlideSpec, layout_profile: LayoutCapacityProfile) -> None:
-        placeholder_idx = None
-        if getattr(shape, "is_placeholder", False):
-            try:
-                placeholder_idx = shape.placeholder_format.idx
-            except Exception:
-                placeholder_idx = None
-
-        card_index_by_placeholder = {11: 0, 12: 1, 13: 2}
-        card_index = card_index_by_placeholder.get(placeholder_idx)
-        if card_index is None:
-            self._clear_placeholder(shape)
-            return
-
-        card_items = [item.strip() for item in slide_spec.bullets if item and item.strip()]
-        if card_index >= len(card_items):
-            self._clear_placeholder(shape)
-            return
-
-        common_font_pt = self._card_common_font_size(card_items, layout_profile)
-        rich_card = self._parse_rich_card_text(card_items[card_index])
-        if layout_profile.layout_key == "cards_3" and rich_card is not None:
-            self._set_rich_numeric_card_text(slide, shape, rich_card, layout_profile)
-            return
-        self._set_card_text(shape, card_items[card_index], layout_profile, common_font_pt=common_font_pt)
-
-    def _card_common_font_size(self, card_items: list[str], layout_profile: LayoutCapacityProfile) -> int:
-        return int(min(max(20, layout_profile.min_font_pt), layout_profile.max_font_pt))
-
-    def _card_body_font_size(self, layout_profile: LayoutCapacityProfile) -> int:
-        token_value = self._design_token("cards_body_font_size_pt")
-        if isinstance(token_value, (int, float)):
-            return int(min(max(token_value, layout_profile.min_font_pt), layout_profile.max_font_pt))
-        return int(min(max(16, layout_profile.min_font_pt), layout_profile.max_font_pt))
-
-    def _split_card_text(self, text: str) -> tuple[str, str]:
-        normalized = "\n".join(line.strip() for line in (text or "").splitlines() if line.strip())
-        if not normalized:
-            return "", ""
-        if "\n" in normalized:
-            title, description = normalized.split("\n", 1)
-            return title.strip(), " ".join(description.split())
-
-        colon_match = re.match(r"^(.{4,54}?):\s+(.{12,})$", normalized)
-        if colon_match:
-            return colon_match.group(1).strip(), colon_match.group(2).strip()
-
-        dash_match = re.match(r"^(.{4,54}?)\s+[—-]\s+(.{12,})$", normalized)
-        if dash_match:
-            return dash_match.group(1).strip(), dash_match.group(2).strip()
-
-        return normalized, ""
-
-    def _split_numeric_card_text(self, text: str) -> tuple[str, str] | None:
-        title, description = self._split_card_text(text)
-        if title and description and re.search(r"\d", title):
-            return title, description
-        normalized = " ".join((text or "").split())
-        metric_match = re.match(
-            r"^([<>~≈]?\s*\d+(?:[.,]\d+)?(?:\s*(?:%|‰|млн|млрд|тыс|трлн|сек(?:унд[аы]?)?|с|мин|ч|дн(?:ей|я)?|₽|руб(?:\.|лей|ля|ль)?))*)\s+(.+)$",
-            normalized,
-            re.IGNORECASE,
-        )
-        if metric_match:
-            value_text = re.sub(r"\s+([%‰₽])", r"\1", metric_match.group(1).strip())
-            return value_text, metric_match.group(2).strip()
-        return None
-
-    def _parse_rich_card_text(self, text: str) -> tuple[str, str, list[tuple[str, str]]] | None:
-        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-        if len(lines) < 2:
-            return None
-        title = lines[0]
-        description_lines: list[str] = []
-        metrics: list[tuple[str, str]] = []
-        for line in lines[1:]:
-            metric_parts = self._split_numeric_card_text(line)
-            if metric_parts is not None:
-                metrics.append(metric_parts)
-            else:
-                description_lines.append(line)
-        if not metrics:
-            return None
-        return title, " ".join(description_lines).strip(), metrics[:4]
-
-    def _set_card_text(self, shape, text: str, layout_profile: LayoutCapacityProfile, *, common_font_pt: int | None = None) -> None:
-        normalized = (text or "").strip()
-        if not normalized:
-            self._clear_placeholder(shape)
-            return
-
-        numeric_parts = self._split_numeric_card_text(normalized)
-        if layout_profile.layout_key == "cards_kpi" and numeric_parts is not None:
-            self._set_kpi_card_text(shape, numeric_parts[0], numeric_parts[1], layout_profile)
-            return
-
-        title, description = self._split_card_text(normalized)
-        max_font_pt = common_font_pt or self._card_common_font_size([normalized], layout_profile)
-        body_font_pt = self._card_body_font_size(layout_profile)
-        card_title_font_pt = self._component_font_size("cards", "title", fallback=min(max_font_pt, 20))
-        card_body_color = self._component_font_color("cards", "body", fallback=RGBColor(0xFF, 0xFF, 0xFF))
-        card_title_color = self._component_font_color("cards", "title", fallback=RGBColor(0xFF, 0xFF, 0xFF))
-        card_profile = replace(layout_profile, max_font_pt=min(layout_profile.max_font_pt, max_font_pt))
-        self._configure_card_text_frame(shape.text_frame)
-        text_frame = shape.text_frame
-        text_frame.clear()
-        title_paragraph = text_frame.paragraphs[0]
-        title_run = title_paragraph.add_run()
-        title_run.text = title
-        if description:
-            description_paragraph = text_frame.add_paragraph()
-            description_run = description_paragraph.add_run()
-            description_run.text = description
-        self._configure_card_text_frame(text_frame)
-        self._set_text_frame_font_size(text_frame, card_profile.max_font_pt, card_profile.layout_key)
-        self._set_text_frame_regular(text_frame)
-        self._set_text_frame_color(text_frame, card_body_color)
-        title_run.font.bold = True
-        title_run.font.size = Pt(card_title_font_pt)
-        title_run.font.color.rgb = card_title_color
-        if description:
-            title_paragraph.space_after = Pt(8)
-            for run in text_frame.paragraphs[1].runs:
-                run.font.size = Pt(body_font_pt)
-                run.font.bold = False
-                run.font.color.rgb = card_body_color
-
-    def _set_rich_numeric_card_text(
-        self,
-        slide,
-        shape,
-        card_content: tuple[str, str, list[tuple[str, str]]],
-        layout_profile: LayoutCapacityProfile,
-    ) -> None:
-        title_text, description_text, metrics = card_content
-        self._configure_card_text_frame(shape.text_frame)
-        shape.text_frame.clear()
-
-        margin_x = self._component_spacing_emu("cards", "content_margin_x_emu", self.DEFAULT_TEXT_MARGIN_X_EMU)
-        margin_y = self._component_spacing_emu("cards", "content_margin_y_emu", self.DEFAULT_TEXT_MARGIN_Y_EMU)
-        metric_gap_x = self._component_spacing_emu("cards", "metrics_gap_x_emu", 180000)
-        metric_gap_y = self._component_spacing_emu("cards", "metrics_gap_y_emu", 160000)
-        title_font_pt = self._component_font_size("cards", "title", fallback=min(layout_profile.max_font_pt, 20))
-        body_font_pt = self._numeric_card_body_font_size(description_text, metrics, layout_profile)
-        metric_value_font_pt = self._component_behavior_float("cards", "kpi_value_compact_font_pt" if len(metrics) >= 4 else "kpi_value_regular_font_pt", 20 if len(metrics) >= 4 else 22)
-        metric_label_font_pt = self._component_font_size("cards", "kpi_label", fallback=12)
-        title_body_gap = self._component_spacing_emu("cards", "title_body_gap_emu", 100000)
-        body_metrics_gap = self._component_spacing_emu("cards", "body_metrics_gap_emu", 180000)
-        card_title_color = self._component_font_color("cards", "title", fallback=RGBColor(0xFF, 0xFF, 0xFF))
-        card_body_color = self._component_font_color("cards", "body", fallback=RGBColor(0xF3, 0xF8, 0xFF))
-        card_kpi_value_color = self._component_font_color("cards", "kpi_value", fallback=RGBColor(0xFF, 0xFF, 0xFF))
-        card_kpi_label_color = self._component_font_color("cards", "kpi_label", fallback=RGBColor(0xE4, 0xF1, 0xFF))
-        inner_left = shape.left + margin_x
-        inner_top = shape.top + margin_y
-        inner_width = max(shape.width - margin_x * 2, 600000)
-        title_height = max(300000, self._estimate_text_height_emu(title_text, inner_width, title_font_pt))
-        description_height = self._estimate_text_height_emu(description_text, inner_width, body_font_pt) if description_text else 0
-        description_bottom = inner_top + title_height
-        if description_text:
-            description_bottom += title_body_gap + description_height
-        metric_top = description_bottom + (body_metrics_gap if description_text else 120000)
-        metric_bottom = shape.top + shape.height - margin_y
-        metric_area_height = max(metric_bottom - metric_top, 520000)
-        metric_boxes = self._numeric_card_metric_boxes(
-            count=len(metrics),
-            left=inner_left,
-            top=metric_top,
-            width=inner_width,
-            height=metric_area_height,
-            gap_x=metric_gap_x,
-            gap_y=metric_gap_y,
-        )
-
-        title_shape = slide.shapes.add_textbox(inner_left, inner_top, inner_width, title_height)
-        title_shape.name = f"A3_CARD_OVERLAY_{shape.placeholder_format.idx}_TITLE"
-        self._configure_card_text_frame(title_shape.text_frame)
-        title_shape.text_frame.clear()
-        title_run = title_shape.text_frame.paragraphs[0].add_run()
-        title_run.text = title_text
-        title_run.font.bold = True
-        title_run.font.size = Pt(title_font_pt)
-        title_run.font.color.rgb = card_title_color
-        body_style = self._fallback_theme_text_style("body")
-        if body_style.font_family:
-            self._apply_run_font_family(title_run, body_style.font_family)
-
-        if description_text:
-            description_shape = slide.shapes.add_textbox(inner_left, inner_top + title_height + title_body_gap, inner_width, description_height)
-            description_shape.name = f"A3_CARD_OVERLAY_{shape.placeholder_format.idx}_DESCRIPTION"
-            self._configure_card_text_frame(description_shape.text_frame)
-            description_shape.text_frame.clear()
-            description_run = description_shape.text_frame.paragraphs[0].add_run()
-            description_run.text = description_text
-            description_run.font.bold = False
-            description_run.font.size = Pt(body_font_pt)
-            description_run.font.color.rgb = card_body_color
-            if body_style.font_family:
-                self._apply_run_font_family(description_run, body_style.font_family)
-
-        for index, (value_text, label_text) in enumerate(metrics):
-            metric_left, metric_top_current, metric_width, metric_height = metric_boxes[index]
-            metric_shape = slide.shapes.add_textbox(metric_left, metric_top_current, metric_width, metric_height)
-            metric_shape.name = f"A3_CARD_OVERLAY_{shape.placeholder_format.idx}_METRIC_{index}"
-            self._configure_card_text_frame(metric_shape.text_frame)
-            metric_shape.text_frame.clear()
-            value_paragraph = metric_shape.text_frame.paragraphs[0]
-            value_run = value_paragraph.add_run()
-            value_run.text = value_text
-            value_run.font.bold = True
-            value_run.font.size = Pt(metric_value_font_pt)
-            value_run.font.color.rgb = card_kpi_value_color
-            if body_style.font_family:
-                self._apply_run_font_family(value_run, body_style.font_family)
-            if label_text:
-                label_paragraph = metric_shape.text_frame.add_paragraph()
-                label_paragraph.space_before = Pt(3)
-                label_run = label_paragraph.add_run()
-                label_run.text = label_text
-                label_run.font.bold = False
-                label_run.font.size = Pt(metric_label_font_pt)
-                label_run.font.color.rgb = card_kpi_label_color
-                if body_style.font_family:
-                    self._apply_run_font_family(label_run, body_style.font_family)
-
-    def _numeric_card_body_font_size(
-        self,
-        description_text: str,
-        metrics: list[tuple[str, str]],
-        layout_profile: LayoutCapacityProfile,
-    ) -> int:
-        points = self._card_body_font_size(layout_profile)
-        text_length = len(description_text or "")
-        if text_length >= 90 or len(metrics) >= 3:
-            points = min(points, 14)
-        if text_length >= 150:
-            points = min(points, 13)
-        return max(points, 12)
-
-    def _numeric_card_metric_boxes(
-        self,
-        *,
-        count: int,
-        left: int,
-        top: int,
-        width: int,
-        height: int,
-        gap_x: int,
-        gap_y: int,
-    ) -> list[tuple[int, int, int, int]]:
-        metric_count = max(1, min(count, 4))
-        half_width = max((width - gap_x) // 2, 900000)
-        if metric_count == 1:
-            return [(left, top, width, height)]
-        if metric_count == 2:
-            return [
-                (left, top, half_width, height),
-                (left + half_width + gap_x, top, half_width, height),
-            ]
-
-        row_height = max((height - gap_y) // 2, 420000)
-        boxes = [
-            (left, top, half_width, row_height),
-            (left + half_width + gap_x, top, half_width, row_height),
-            (left, top + row_height + gap_y, half_width, row_height),
-        ]
-        if metric_count == 4:
-            boxes.append((left + half_width + gap_x, top + row_height + gap_y, half_width, row_height))
-        return boxes
-
-    def _set_kpi_card_text(self, shape, value_text: str, label_text: str, layout_profile: LayoutCapacityProfile) -> None:
-        self._configure_card_text_frame(shape.text_frame)
-        text_frame = shape.text_frame
-        text_frame.clear()
-        value_paragraph = text_frame.paragraphs[0]
-        value_paragraph.alignment = PP_ALIGN.LEFT
-        value_run = value_paragraph.add_run()
-        value_run.text = value_text
-        value_run.font.bold = True
-        value_run.font.size = Pt(min(layout_profile.max_font_pt, 36))
-        value_run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-        body_style = self._fallback_theme_text_style("body")
-        if body_style.font_family:
-            self._apply_run_font_family(value_run, body_style.font_family)
-
-        if label_text:
-            label_paragraph = text_frame.add_paragraph()
-            label_paragraph.alignment = PP_ALIGN.LEFT
-            label_paragraph.space_before = Pt(8)
-            label_run = label_paragraph.add_run()
-            label_run.text = label_text
-            label_run.font.bold = False
-            label_run.font.size = Pt(16)
-            label_run.font.color.rgb = RGBColor(0xE4, 0xF1, 0xFF)
-            if body_style.font_family:
-                self._apply_run_font_family(label_run, body_style.font_family)
-
-    def _add_kpi_fourth_card(self, slide, slide_spec: SlideSpec, layout_profile: LayoutCapacityProfile) -> None:
-        card_items = [item.strip() for item in slide_spec.bullets if item and item.strip()]
-        if len(card_items) < 4:
-            return
-        metric_shape = slide.shapes.add_textbox(
-            self.KPI_FOURTH_CARD_LEFT_EMU,
-            self.KPI_FOURTH_CARD_TOP_EMU,
-            self.KPI_FOURTH_CARD_WIDTH_EMU,
-            self.KPI_FOURTH_CARD_HEIGHT_EMU,
-        )
-        self._set_card_text(metric_shape, card_items[3], layout_profile)
 
     def _set_content_blocks(
         self,
@@ -1948,9 +1480,6 @@ class PptxGenerator:
             return
         if binding == "image":
             self._fill_image(shape, slide_spec)
-            return
-        if binding == "icon_grid":
-            self._clear_placeholder(shape)
             return
         if self._is_empty_binding_value(binding_value) and binding not in {"presentation_name", "cover_title", "title"}:
             self._clear_placeholder(shape)
@@ -2087,102 +1616,6 @@ class PptxGenerator:
             shape.width = policy.width_emu
             shape.height = policy.height_emu
 
-    def _expand_cards_layout(self, slide, layout_key: str = "cards_3") -> None:
-        geometry = geometry_policy_for_layout(layout_key)
-        placeholders = {
-            shape.placeholder_format.idx: shape
-            for shape in slide.placeholders
-            if getattr(shape, "is_placeholder", False)
-        }
-        for idx, policy in geometry.placeholders.items():
-            shape = placeholders.get(idx)
-            if shape is None:
-                continue
-            shape.left = policy.left_emu
-            shape.top = policy.top_emu
-            shape.width = policy.width_emu
-            shape.height = policy.height_emu
-
-    def _expand_list_with_icons_layout(self, slide) -> None:
-        geometry = geometry_policy_for_layout("list_with_icons")
-        placeholders = {
-            shape.placeholder_format.idx: shape
-            for shape in slide.placeholders
-            if getattr(shape, "is_placeholder", False)
-        }
-        for idx, policy in geometry.placeholders.items():
-            shape = placeholders.get(idx)
-            if shape is None:
-                continue
-            shape.left = policy.left_emu
-            shape.top = policy.top_emu
-            shape.width = policy.width_emu
-            shape.height = policy.height_emu
-
-    def _expand_contacts_layout(self, slide) -> None:
-        geometry = geometry_policy_for_layout("contacts")
-        placeholders = {
-            shape.placeholder_format.idx: shape
-            for shape in slide.placeholders
-            if getattr(shape, "is_placeholder", False)
-        }
-        for idx, policy in geometry.placeholders.items():
-            shape = placeholders.get(idx)
-            if shape is None:
-                continue
-            shape.left = policy.left_emu
-            shape.top = policy.top_emu
-            shape.width = policy.width_emu
-            shape.height = policy.height_emu
-
-    def _expand_cards_layout(self, slide, layout_key: str = "cards_3") -> None:
-        geometry = geometry_policy_for_layout(layout_key)
-        placeholders = {
-            shape.placeholder_format.idx: shape
-            for shape in slide.placeholders
-            if getattr(shape, "is_placeholder", False)
-        }
-        for idx, policy in geometry.placeholders.items():
-            shape = placeholders.get(idx)
-            if shape is None:
-                continue
-            shape.left = policy.left_emu
-            shape.top = policy.top_emu
-            shape.width = policy.width_emu
-            shape.height = policy.height_emu
-
-    def _expand_list_with_icons_layout(self, slide) -> None:
-        geometry = geometry_policy_for_layout("list_with_icons")
-        placeholders = {
-            shape.placeholder_format.idx: shape
-            for shape in slide.placeholders
-            if getattr(shape, "is_placeholder", False)
-        }
-        for idx, policy in geometry.placeholders.items():
-            shape = placeholders.get(idx)
-            if shape is None:
-                continue
-            shape.left = policy.left_emu
-            shape.top = policy.top_emu
-            shape.width = policy.width_emu
-            shape.height = policy.height_emu
-
-    def _expand_contacts_layout(self, slide) -> None:
-        geometry = geometry_policy_for_layout("contacts")
-        placeholders = {
-            shape.placeholder_format.idx: shape
-            for shape in slide.placeholders
-            if getattr(shape, "is_placeholder", False)
-        }
-        for idx, policy in geometry.placeholders.items():
-            shape = placeholders.get(idx)
-            if shape is None:
-                continue
-            shape.left = policy.left_emu
-            shape.top = policy.top_emu
-            shape.width = policy.width_emu
-            shape.height = policy.height_emu
-
     def _adjust_title_and_flow(self, slide, layout_key: str, slide_spec: SlideSpec | None = None) -> None:
         if layout_key in {"text_full_width", "dense_text_full_width", "list_full_width"}:
             self._stack_text_content(slide, layout_key)
@@ -2192,15 +1625,6 @@ class PptxGenerator:
             return
         if layout_key == "table":
             self._stack_table_content(slide, layout_key, slide_spec)
-            return
-        if layout_key in {"cards_3", "cards_kpi"}:
-            self._stack_cards_content(slide, layout_key)
-            return
-        if layout_key == "list_with_icons":
-            self._stack_two_column_content(slide, layout_key)
-            return
-        if layout_key == "contacts":
-            self._stack_contacts_content(slide, layout_key)
             return
         placeholders = {
             shape.placeholder_format.idx: shape
@@ -2433,133 +1857,6 @@ class PptxGenerator:
 
         body.top = cursor
         body.height = max(900000, available_bottom - body.top)
-
-    def _stack_cards_content(self, slide, layout_key: str) -> None:
-        geometry = geometry_policy_for_layout(layout_key)
-        placeholders = {
-            shape.placeholder_format.idx: shape
-            for shape in slide.placeholders
-            if getattr(shape, "is_placeholder", False)
-        }
-        title = placeholders.get(0)
-        cards = [placeholders.get(idx) for idx in (11, 12, 13)]
-        cards = [card for card in cards if card is not None]
-        if title is None or not cards:
-            return
-
-        title_text = (getattr(title, "text", "") or "").strip()
-        first_card_top = min(
-            geometry.placeholders[card.placeholder_format.idx].top_emu
-            for card in cards
-            if card.placeholder_format.idx in geometry.placeholders
-        )
-        max_title_height = max(520000, first_card_top - geometry.title_body_gap_no_subtitle_emu - title.top)
-        if title_text:
-            font_size_pt = self._fit_title_font_size_for_height(title, title_text, layout_key, max_title_height)
-            self._apply_font_size(title, font_size_pt)
-            self._configure_title_text_frame(title)
-            if layout_key == "cards_kpi":
-                self._set_text_frame_color(title.text_frame, RGBColor(0xFF, 0xFF, 0xFF))
-            title.text_frame.auto_size = MSO_AUTO_SIZE.NONE
-            required_height = self._estimate_title_height_emu(title, title_text, font_size_pt)
-            title.height = min(max(520000, required_height), max_title_height)
-
-        for card in cards:
-            policy = geometry.placeholders.get(card.placeholder_format.idx)
-            if policy is None:
-                continue
-            desired_top = policy.top_emu
-            bottom = policy.top_emu + policy.height_emu
-            card.left = policy.left_emu
-            card.top = desired_top
-            card.width = policy.width_emu
-            card.height = max(900000, bottom - desired_top)
-            if getattr(card, "has_text_frame", False):
-                self._configure_card_text_frame(card.text_frame)
-
-    def _stack_two_column_content(self, slide, layout_key: str) -> None:
-        geometry = geometry_policy_for_layout(layout_key)
-        placeholders = {
-            shape.placeholder_format.idx: shape
-            for shape in slide.placeholders
-            if getattr(shape, "is_placeholder", False)
-        }
-        title = placeholders.get(0)
-        subtitle = placeholders.get(13)
-        left = placeholders.get(12)
-        right = placeholders.get(14)
-        footer = placeholders.get(21)
-        if title is None or left is None or right is None or footer is None:
-            return
-
-        title_text = (getattr(title, "text", "") or "").strip()
-        if title_text:
-            font_size_pt = self._fit_title_font_size_points(title_text, title.width, layout_key)
-            self._apply_font_size(title, font_size_pt)
-            self._configure_title_text_frame(title)
-            required_height = self._estimate_title_height_emu(title, title_text, font_size_pt)
-            title.height = max(self._minimum_title_height_emu(layout_key), required_height)
-
-        has_subtitle = subtitle is not None and getattr(subtitle, "text", "").strip()
-        title_content_gap = self._component_spacing_emu("list_with_icons", "title_content_gap_emu", geometry.title_content_gap_emu)
-        title_no_subtitle_gap = self._component_spacing_emu(
-            "list_with_icons",
-            "title_body_gap_no_subtitle_emu",
-            geometry.title_body_gap_no_subtitle_emu,
-        )
-        content_footer_gap = self._component_spacing_emu("list_with_icons", "content_footer_gap_emu", geometry.content_footer_gap_emu)
-        title_gap = title_content_gap if has_subtitle else title_no_subtitle_gap
-        cursor = title.top + title.height + title_gap
-        if has_subtitle:
-            subtitle_text = subtitle.text.strip()
-            self._configure_subtitle_text_frame(subtitle)
-            subtitle_font_pt = self._component_font_size("list_with_icons", "subtitle", fallback=18.0)
-            self._apply_font_size(subtitle, subtitle_font_pt)
-            subtitle.height = max(360000, self._estimate_text_height_emu(subtitle_text, subtitle.width, subtitle_font_pt))
-            subtitle.top = cursor
-            cursor = subtitle.top + subtitle.height + title_content_gap
-
-        content_indices = [12, 14, 15, 16, 17, 18, 19, 20]
-        content_shapes = [placeholders[idx] for idx in content_indices if idx in placeholders]
-        if not content_shapes:
-            return
-        base_top = min(shape.top for shape in content_shapes)
-        delta = max(0, cursor - base_top)
-        max_height = max(900000, footer.top - content_footer_gap - (base_top + delta))
-        for shape in content_shapes:
-            shape.top += delta
-            if shape.placeholder_format.idx in {12, 14}:
-                shape.height = min(shape.height, max_height)
-
-    def _stack_contacts_content(self, slide, layout_key: str) -> None:
-        geometry = geometry_policy_for_layout(layout_key)
-        placeholders = {
-            shape.placeholder_format.idx: shape
-            for shape in slide.placeholders
-            if getattr(shape, "is_placeholder", False)
-        }
-        primary_font = self._component_font_size("contacts", "primary", fallback=18.0)
-        secondary_font = self._component_font_size("contacts", "secondary", fallback=14.0)
-        primary_threshold = int(self._component_behavior_float("contacts", "primary_threshold_chars", 60.0))
-        secondary_threshold = int(self._component_behavior_float("contacts", "secondary_threshold_chars", 40.0))
-        decrement_pt = self._component_behavior_float("contacts", "font_decrement_pt", 2.0)
-        for idx in (10, 11, 12, 13):
-            shape = placeholders.get(idx)
-            policy = geometry.placeholders.get(idx)
-            if shape is None or policy is None:
-                continue
-            text = (getattr(shape, "text", "") or "").strip()
-            if not text:
-                continue
-            font_size_pt = primary_font if idx == 10 else secondary_font
-            if len(text) >= (primary_threshold if idx == 10 else secondary_threshold):
-                font_size_pt -= decrement_pt
-            self._apply_font_size(shape, font_size_pt)
-            self._configure_subtitle_text_frame(shape)
-            shape.left = policy.left_emu
-            shape.top = policy.top_emu
-            shape.width = policy.width_emu
-            shape.height = policy.height_emu
 
     def _title_font_size_points(self, layout_key: str) -> float:
         theme = self._active_manifest.theme if self._active_manifest is not None else None
@@ -3430,14 +2727,6 @@ class PptxGenerator:
         text_frame.auto_size = MSO_AUTO_SIZE.NONE
         self._apply_text_frame_margins(text_frame)
 
-    def _configure_card_text_frame(self, text_frame) -> None:
-        text_frame.word_wrap = True
-        text_frame.auto_size = MSO_AUTO_SIZE.NONE
-        text_frame.margin_left = self.DEFAULT_TEXT_MARGIN_X_EMU
-        text_frame.margin_right = self.DEFAULT_TEXT_MARGIN_X_EMU
-        text_frame.margin_top = self.DEFAULT_TEXT_MARGIN_Y_EMU
-        text_frame.margin_bottom = self.DEFAULT_TEXT_MARGIN_Y_EMU
-
     def _apply_paragraph_spacing(self, paragraph, role: str, layout_key: str) -> None:
         spacing = spacing_policy_for_layout(layout_key)
         role_policy = getattr(spacing, role)
@@ -3732,10 +3021,12 @@ class PptxGenerator:
     ) -> None:
         if column_stats and target_width > 0:
             weights = self._column_width_weights(column_stats)
+            if len(weights) < len(table.columns):
+                weights.extend([1.0] * (len(table.columns) - len(weights)))
             weight_sum = sum(weights) or len(weights)
             assigned = 0
             for index, column in enumerate(table.columns):
-                if index == len(weights) - 1:
+                if index == len(table.columns) - 1:
                     width = max(target_width - assigned, int(target_width * 0.08))
                 else:
                     min_share = 0.14 if len(weights) >= 3 else 0.1
@@ -4298,7 +3589,8 @@ class PptxGenerator:
         ]
 
     def _chart_series_color(self, chart_spec: ChartSpec, index: int) -> RGBColor:
-        return self._series_color(index)
+        palette = self._chart_palette_rgb()
+        return palette[index % len(palette)]
 
     def _ranked_point_colors(self, points, values) -> dict[int, RGBColor]:
         palette = self._chart_palette_rgb()

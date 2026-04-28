@@ -138,7 +138,7 @@ class SemanticPipelineTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             blocks=blocks,
         )
@@ -148,11 +148,11 @@ class SemanticPipelineTests(unittest.TestCase):
     def test_generator_renders_image_slide_without_crashing(self) -> None:
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        manifest = registry.get_template("corp_light_v1")
-        template_path = registry.get_template_pptx_path("corp_light_v1")
+        manifest = registry.get_template("deterministic_layout_fixture")
+        template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
 
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="Image Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="Image Presentation", preferred_layout_key="cover"),
@@ -187,7 +187,7 @@ class SemanticPipelineTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             blocks=blocks,
         )

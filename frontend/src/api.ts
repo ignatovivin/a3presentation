@@ -61,7 +61,7 @@ function normalizeApiErrorMessage(message: string, status: number): string {
     if (normalized.includes("content_order_mismatch")) {
       return "Не удалось сохранить порядок текста на одном из слайдов. Попробуйте другой макет или сократите исходный текст.";
     }
-    if (normalized.includes("card_overlap") || normalized.includes("two_column_overlap") || normalized.includes("image_text_overlap")) {
+    if (normalized.includes("two_column_overlap") || normalized.includes("image_text_overlap")) {
       return "Не удалось собрать слайд без пересечения блоков. Попробуйте другой макет или сократите содержимое.";
     }
     if (normalized.includes("chart_type_mismatch") || normalized.includes("chart_series_count_mismatch")) {

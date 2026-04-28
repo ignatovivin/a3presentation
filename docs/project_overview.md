@@ -17,11 +17,11 @@
    - tables
    - images
 4. Planner превращает эту структуру в slide plan.
-5. PowerPoint generator рендерит план в брендированный `.pptx` с использованием корпоративного шаблона.
+5. PowerPoint generator рендерит план в брендированный `.pptx` с использованием загруженного пользователем шаблона.
 
 Это не универсальный инструмент «для любых презентаций».
 Проект намеренно сфокусирован на структурированных бизнес-колодах, ограниченном наборе slide types и template-aware rendering pipeline.
-Текущий встроенный корпоративный шаблон важен, но его нельзя считать вечной константой, потому что пользователи и компании смогут загружать свои шаблоны.
+В runtime нет встроенного корпоративного шаблона: пользователи и компании загружают свои `.pptx`, а система строит flow вокруг analyzer-derived manifest metadata.
 
 ## Технологический стек
 
@@ -45,7 +45,7 @@
 ### Хранилище
 
 - локальная файловая система
-- шаблоны в `storage/templates`
+- пользовательские шаблоны через upload/analyze flow
 - сгенерированные презентации в `storage/outputs`
 - production outputs на Timeweb в `data/outputs`
 
@@ -72,8 +72,8 @@ src/a3presentation/
 frontend/               React UI
 docs/                   Внутренняя документация
 storage/
-  templates/            PowerPoint templates + manifests
   outputs/              Generated presentations
+  templates/            Runtime user-uploaded templates, not bundled with the product
 ```
 
 ## Сквозной pipeline
@@ -148,8 +148,6 @@ Planner старается держать связанный контент вм
 - `table`
 - `chart`
 - `image_text`
-- `cards_3`
-- `contacts`
 
 API contract для этого этапа описан в [presentation.py](../src/a3presentation/domain/presentation.py), а frontend mirror лежит в [types.ts](../frontend/src/types.ts).
 
@@ -158,8 +156,7 @@ API contract для этого этапа описан в [presentation.py](../s
 - первая страница документа становится cover slide
 - cover title строится из leading lines до первого настоящего section
 - обычные lists отправляются в `list_full_width`
-- blue-card layouts не используются для обычных bullet lists
-- `cards_3` разрешён только для очень короткого label-like content
+- blue-card/layout-specific presets не используются для обычных bullet lists
 - длинные sections делятся только когда это действительно нужно
 - крошечные text tails не выделяются в отдельные бессмысленные fragments
 - порядок mixed `paragraph -> list -> paragraph` сохраняется на основном пути
@@ -175,14 +172,8 @@ API contract для этого этапа описан в [presentation.py](../s
 Главные файлы:
 - [template_registry.py](../src/a3presentation/services/template_registry.py)
 - [template_analyzer.py](../src/a3presentation/services/template_analyzer.py)
-- [manifest.json](../storage/templates/corp_light_v1/manifest.json)
-
-Сейчас проект поставляется с основным встроенным шаблоном:
-
-- `corp_light_v1`
-
-Но архитектура движется в сторону template-aware generation, а не жёсткой привязки к одному шаблону навсегда.
-Пользователи и компании смогут загружать свои шаблоны, а analyzer/manifest metadata должны управлять и generator, и audit.
+Проект не поставляется со встроенными шаблонами.
+Пользователи и компании загружают свои шаблоны, а analyzer/manifest metadata управляют и generator, и audit.
 
 Система выбирает не физические layout'ы напрямую, а логические slide types, после чего резолвит их против активного template manifest.
 
@@ -274,8 +265,8 @@ Generator рендерит `PresentationPlan` в реальный `.pptx`.
 - host nginx на Ubuntu завершает HTTPS для `a3presentation.ru`
 - host nginx проксирует в docker nginx на `127.0.0.1:8080`
 - docker nginx маршрутизирует `/` на frontend и `/api/*` на backend
-- backend читает bundled templates из `/app/storage/templates`
-- runtime outputs сохраняются в `data/outputs`
+- backend не содержит bundled templates; шаблоны появляются через upload/analyze flow и сохраняются в runtime `TEMPLATES_DIR`
+- runtime templates и outputs сохраняются в `data/templates` и `data/outputs`
 - push в `dev` может авто-деплоиться через GitHub Actions после прохождения всех checks
 
 ## Текущие рабочие правила
@@ -294,7 +285,7 @@ Generator рендерит `PresentationPlan` в реальный `.pptx`.
 - дальше расширять deck-audit для более тонких layout-specific geometry rules
 - расширять visual snapshots для frontend и generated-slide scenarios
 - вводить template-specific typography rules на уровне layout
-- расширять `TemplateManifest.component_styles` дальше до полного component grammar layer; runtime-охват уже есть для `cards/text/table/chart/image/cover/list_with_icons/contacts`, включая geometry/behavior contracts для `table/chart/image/cover/list_with_icons/contacts`, и следующий шаг - переносить туда остальные PowerPoint-компоненты и layout-specific rules
+- расширять `TemplateManifest.component_styles` дальше до полного component grammar layer; runtime-охват сейчас держится на generic `text/table/chart/image/cover` слоях, а следующий шаг - переносить PowerPoint-компоненты в manifest-derived slot/style rules без возврата к старым preset layout keys
 - добавлять export previews
 - расширять parity и quality checks вокруг secondary value axis и mixed-unit chart scenarios
 

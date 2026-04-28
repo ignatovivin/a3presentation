@@ -34,8 +34,16 @@ class TextToPlanServiceTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        cls.manifest = registry.get_template("corp_light_v1")
-        cls.template_path = registry.get_template_pptx_path("corp_light_v1")
+        cls.manifest = registry.get_template("deterministic_layout_fixture")
+        cls.template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
+
+    def _target_key(self, slide: SlideSpec) -> str | None:
+        if slide.render_target is not None:
+            return slide.render_target.key
+        return slide.preferred_layout_key
+
+    def _body_font_size_pt(self) -> float:
+        return float(self.manifest.design_tokens.get("body_font_size_pt", 20.0))
 
     def test_build_plan_handles_large_text_sections_without_crashing(self) -> None:
         service = TextToPlanService()
@@ -68,7 +76,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="A3 Presentation",
             blocks=blocks,
@@ -95,7 +103,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="A3 Presentation",
             blocks=blocks,
@@ -117,7 +125,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -148,7 +156,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -338,7 +346,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertEqual(compacted[0].subtitle, "Подзаголовок")
         self.assertEqual(compacted[1].subtitle, "")
 
-    def test_build_single_slide_keeps_numeric_metric_bullets_out_of_kpi_slide_layout(self) -> None:
+    def test_build_single_slide_keeps_numeric_bullets_in_list_layout(self) -> None:
         service = TextToPlanService()
         section = Section(
             title="A3 GIS",
@@ -353,7 +361,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         slide = service._build_single_slide(section)
 
         self.assertEqual(slide.kind, SlideKind.BULLETS)
-        self.assertNotEqual(slide.preferred_layout_key, "cards_kpi")
+        self.assertEqual(slide.preferred_layout_key, "list_full_width")
 
     def test_preferred_textual_layout_keeps_mixed_paragraph_dominant_slide_in_text_layout(self) -> None:
         service = TextToPlanService()
@@ -524,14 +532,14 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="Большая стратегическая презентация",
             blocks=blocks,
         )
 
         cover = plan.slides[0]
-        self.assertEqual(cover.preferred_layout_key, "cover")
+        self.assertEqual(self._target_key(cover), "cover")
         self.assertLessEqual(len((cover.notes or "").splitlines()), 2)
         self.assertNotIn("многозначна", cover.notes or "")
         self.assertNotIn("как минимум три уровня", cover.notes or "")
@@ -551,7 +559,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="Раздел стратегии",
             blocks=blocks,
@@ -584,7 +592,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="Большая стратегическая презентация",
             blocks=blocks,
@@ -606,7 +614,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="Стратегия развития А3",
             blocks=blocks,
@@ -628,7 +636,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -671,7 +679,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -704,7 +712,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -748,7 +756,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -774,7 +782,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -785,7 +793,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         self.assertEqual(len(target_slides), 1)
         slide = target_slides[0]
         self.assertEqual(slide.kind, SlideKind.TEXT)
-        self.assertEqual(slide.preferred_layout_key, "text_full_width")
+        self.assertEqual(self._target_key(slide), "text_full_width")
         self.assertEqual(
             [block.kind for block in slide.content_blocks],
             [
@@ -808,7 +816,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -817,7 +825,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
         target_slides = [slide for slide in plan.slides if (slide.title or "").startswith("Разбор сценария")]
         self.assertTrue(target_slides)
-        self.assertTrue(all(slide.preferred_layout_key == "list_full_width" for slide in target_slides))
+        self.assertTrue(all(self._target_key(slide) == "list_full_width" for slide in target_slides))
         self.assertTrue(any(block.kind == SlideContentBlockKind.QA_ITEM for slide in target_slides for block in slide.content_blocks))
         self.assertTrue(any(block.kind == SlideContentBlockKind.BULLET_LIST for slide in target_slides for block in slide.content_blocks))
 
@@ -846,7 +854,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -940,7 +948,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -948,7 +956,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(plan.slides), 3)
-        self.assertEqual(plan.slides[0].preferred_layout_key, "cover")
+        self.assertEqual(self._target_key(plan.slides[0]), "cover")
         self.assertTrue(any(slide.table is not None for slide in plan.slides[1:]))
 
     def test_planner_skips_appendix_like_source_section_from_main_deck(self) -> None:
@@ -963,7 +971,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -1001,7 +1009,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -1009,9 +1017,9 @@ class TextToPlanServiceTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(plan.slides), 4)
-        self.assertEqual(plan.slides[1].preferred_layout_key, "list_full_width")
-        self.assertTrue(any(slide.preferred_layout_key == "text_full_width" for slide in plan.slides[1:]))
-        self.assertTrue(any(slide.preferred_layout_key == "table" for slide in plan.slides[1:]))
+        self.assertEqual(self._target_key(plan.slides[1]), "list_full_width")
+        self.assertTrue(any(self._target_key(slide) == "text_full_width" for slide in plan.slides[1:]))
+        self.assertTrue(any(self._target_key(slide) == "table" for slide in plan.slides[1:]))
 
     def test_resume_document_uses_resume_fallback(self) -> None:
         service = TextToPlanService()
@@ -1034,7 +1042,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -1042,9 +1050,9 @@ class TextToPlanServiceTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(plan.slides), 3)
-        self.assertEqual(plan.slides[1].preferred_layout_key, "list_full_width")
-        self.assertTrue(any(slide.preferred_layout_key == "text_full_width" for slide in plan.slides[1:]))
-        self.assertFalse(any(slide.preferred_layout_key == "table" for slide in plan.slides[1:]))
+        self.assertEqual(self._target_key(plan.slides[1]), "list_full_width")
+        self.assertTrue(any(self._target_key(slide) == "text_full_width" for slide in plan.slides[1:]))
+        self.assertFalse(any(self._target_key(slide) == "table" for slide in plan.slides[1:]))
 
     def test_table_heavy_document_adds_table_count_summary(self) -> None:
         service = TextToPlanService()
@@ -1056,7 +1064,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title=None,
             tables=[],
@@ -1064,7 +1072,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(plan.slides), 4)
-        self.assertEqual(plan.slides[1].preferred_layout_key, "list_full_width")
+        self.assertEqual(self._target_key(plan.slides[1]), "list_full_width")
         self.assertTrue(any("Таблиц в документе" in bullet for bullet in plan.slides[1].bullets))
 
     def test_planner_replaces_selected_table_with_chart_slide(self) -> None:
@@ -1075,7 +1083,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         )
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="Отчет по каналам",
             title="Отчет по каналам",
             tables=[table],
@@ -1224,7 +1232,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in blocks),
             title="A3 Presentation",
             blocks=blocks,
@@ -1275,7 +1283,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         ]
 
         plan = service.build_plan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             raw_text="\n".join(block.text or "" for block in section),
             title="A3 Presentation",
             blocks=section,
@@ -1305,7 +1313,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
     def test_generator_expands_long_title_and_pushes_content_down(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1340,7 +1348,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
     def test_generator_keeps_short_title_compact_and_readable(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1378,7 +1386,7 @@ class TextToPlanServiceTests(unittest.TestCase):
         )
 
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1405,12 +1413,13 @@ class TextToPlanServiceTests(unittest.TestCase):
 
             self.assertTrue(body_runs)
             self.assertIsNotNone(body_runs[0].font.size)
-            self.assertEqual(body_runs[0].font.size.pt, 18.0)
+            self.assertGreaterEqual(body_runs[0].font.size.pt, TEXT_FULL_WIDTH_PROFILE.min_font_pt)
+            self.assertLessEqual(body_runs[0].font.size.pt, self._body_font_size_pt())
             self.assertNotEqual(placeholders[14].text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
     def test_generator_applies_explicit_font_size_to_sparse_bullet_slide(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1442,12 +1451,13 @@ class TextToPlanServiceTests(unittest.TestCase):
 
             self.assertTrue(body_runs)
             self.assertTrue(all(run.font.size is not None for run in body_runs))
-            self.assertAlmostEqual(body_runs[0].font.size.pt, 18.0, places=1)
+            self.assertGreaterEqual(body_runs[0].font.size.pt, LIST_FULL_WIDTH_PROFILE.min_font_pt)
+            self.assertLessEqual(body_runs[0].font.size.pt, self._body_font_size_pt())
             self.assertNotEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
     def test_generator_shrinks_dense_bullet_container_to_avoid_overflow(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1522,7 +1532,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
     def test_generator_keeps_footer_in_bottom_zone(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="Очень длинное название презентации для проверки нижнего блока и корректного положения footer",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1559,7 +1569,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
     def test_generator_expands_table_footer_to_full_width_without_subtitle(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1588,7 +1598,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
     def test_generator_keeps_table_subtitle_readable_instead_of_tiny_font(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1630,7 +1640,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
     def test_generator_renders_chart_slide_into_pptx(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1688,7 +1698,7 @@ class TextToPlanServiceTests(unittest.TestCase):
             self.assertEqual(title_sizes, [self.manifest.theme.master_text_styles["title"].font_size_pt])
             self.assertEqual(subtitle_sizes, [20.0])
             self.assertEqual(chart_shapes[0].chart.series[0].name, "Лиды")
-            self.assertEqual(chart_shapes[0].chart.series[0].format.fill.fore_color.rgb, RGBColor(0x67, 0x9A, 0xEA))
+            self.assertEqual(chart_shapes[0].chart.series[0].format.fill.fore_color.rgb, RGBColor(0x09, 0x1E, 0x38))
             self.assertEqual(
                 chart_shapes[0].chart.chart_title.text_frame.paragraphs[0].runs[0].font.color.rgb,
                 RGBColor(0x08, 0x1C, 0x4F),
@@ -1697,11 +1707,11 @@ class TextToPlanServiceTests(unittest.TestCase):
     def test_generator_styles_line_chart_markers_and_percent_format(self) -> None:
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        manifest = registry.get_template("corp_light_v1")
-        template_path = registry.get_template_pptx_path("corp_light_v1")
+        manifest = registry.get_template("deterministic_layout_fixture")
+        template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
 
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1741,11 +1751,11 @@ class TextToPlanServiceTests(unittest.TestCase):
     def test_generator_renders_real_combo_chart_with_bar_and_line_plots(self) -> None:
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        manifest = registry.get_template("corp_light_v1")
-        template_path = registry.get_template_pptx_path("corp_light_v1")
+        manifest = registry.get_template("deterministic_layout_fixture")
+        template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
 
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1791,7 +1801,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
     def test_generator_keeps_combo_as_column_when_line_series_is_hidden(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1835,7 +1845,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
     def test_generator_renders_secondary_value_axis_for_mixed_unit_combo(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1885,11 +1895,11 @@ class TextToPlanServiceTests(unittest.TestCase):
     def test_generator_formats_value_axis_in_millions_for_large_currency_values(self) -> None:
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        manifest = registry.get_template("corp_light_v1")
-        template_path = registry.get_template_pptx_path("corp_light_v1")
+        manifest = registry.get_template("deterministic_layout_fixture")
+        template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
 
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1926,11 +1936,11 @@ class TextToPlanServiceTests(unittest.TestCase):
     def test_generator_styles_pie_points_with_distinct_brand_colors(self) -> None:
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        manifest = registry.get_template("corp_light_v1")
-        template_path = registry.get_template_pptx_path("corp_light_v1")
+        manifest = registry.get_template("deterministic_layout_fixture")
+        template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
 
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -1989,7 +1999,7 @@ class TextToPlanServiceTests(unittest.TestCase):
 
     def test_generator_ranks_single_series_column_points_by_value_palette(self) -> None:
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="A3 Presentation", preferred_layout_key="cover"),
@@ -2103,7 +2113,7 @@ class TextToPlanServiceTests(unittest.TestCase):
             ),
         ]
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="Chart Matrix",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="Chart Matrix", preferred_layout_key="cover"),
@@ -2162,11 +2172,11 @@ class TextToPlanServiceTests(unittest.TestCase):
     def test_generator_adapts_cover_title_height_and_meta_spacing(self) -> None:
         settings = get_settings()
         registry = TemplateRegistry(settings.templates_dir)
-        manifest = registry.get_template("corp_light_v1")
-        template_path = registry.get_template_pptx_path("corp_light_v1")
+        manifest = registry.get_template("deterministic_layout_fixture")
+        template_path = registry.get_template_pptx_path("deterministic_layout_fixture")
 
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="A3 Presentation",
             slides=[
                 SlideSpec(

@@ -745,6 +745,8 @@ class TemplateAnalyzer:
         for layout in manifest.layouts:
             source_layout = analyzed_layouts.get((layout.name, layout.slide_layout_index))
             if source_layout is None:
+                source_layout = next((item for item in analyzed.layouts if item.key == layout.key), None)
+            if source_layout is None:
                 continue
             if not layout.representation_hints:
                 layout.representation_hints = list(source_layout.representation_hints)
@@ -852,19 +854,9 @@ class TemplateAnalyzer:
                 token.margin_bottom_emu = token.margin_bottom_emu if token.margin_bottom_emu is not None else 0
 
     def _infer_component_styles(self, layouts: list[LayoutSpec]) -> dict[str, TemplateComponentStyleSpec]:
-        card_layout = next((layout for layout in layouts if "карточ" in layout.name.lower()), None)
         table_layout = next((layout for layout in layouts if "table" in layout.supported_slide_kinds or "табл" in layout.name.lower()), None)
         image_layout = next((layout for layout in layouts if "image" in layout.supported_slide_kinds), None)
         cover_layout = next((layout for layout in layouts if "тит" in layout.name.lower() or "title" in layout.name.lower()), None)
-        list_icons_layout = next((layout for layout in layouts if any(item.idx == 21 for item in layout.placeholders)), None)
-        contacts_layout = next((layout for layout in layouts if any(item.idx == 10 for item in layout.placeholders)), None)
-        card_margin_x = 91440
-        card_margin_y = 45720
-        if card_layout is not None:
-            body_placeholder = next((item for item in card_layout.placeholders if item.idx in {11, 12, 13}), None)
-            if body_placeholder is not None:
-                card_margin_x = body_placeholder.margin_left_emu or card_margin_x
-                card_margin_y = body_placeholder.margin_top_emu or card_margin_y
         table_margin_left = 80000
         table_margin_right = 80000
         table_margin_top = 40000
@@ -902,39 +894,7 @@ class TemplateAnalyzer:
                 cover_meta_left = meta_placeholder.left_emu or cover_meta_left
                 cover_meta_top = meta_placeholder.top_emu or cover_meta_top
                 cover_meta_width = meta_placeholder.width_emu or cover_meta_width
-        list_title_gap = 180000
-        list_no_subtitle_gap = 300000
-        list_footer_gap = 180000
-        if list_icons_layout is not None:
-            title_placeholder = next((item for item in list_icons_layout.placeholders if item.idx == 0), None)
-            left_placeholder = next((item for item in list_icons_layout.placeholders if item.idx == 12), None)
-            footer_placeholder = next((item for item in list_icons_layout.placeholders if item.idx == 21), None)
-            if title_placeholder is not None and left_placeholder is not None:
-                list_title_gap = max(left_placeholder.top_emu - (title_placeholder.top_emu + title_placeholder.height_emu), 120000)
-            if footer_placeholder is not None and left_placeholder is not None:
-                list_footer_gap = max(footer_placeholder.top_emu - (left_placeholder.top_emu + left_placeholder.height_emu), 120000)
         return {
-            "cards": TemplateComponentStyleSpec(
-                text_styles={
-                    "title": TemplateTextStyleSpec(font_size_pt=20.0, bold=True, color="#FFFFFF"),
-                    "body": TemplateTextStyleSpec(font_size_pt=16.0, color="#FFFFFF"),
-                    "kpi_value": TemplateTextStyleSpec(font_size_pt=22.0, bold=True, color="#FFFFFF"),
-                    "kpi_label": TemplateTextStyleSpec(font_size_pt=12.0, color="#E4F1FF"),
-                },
-                spacing_tokens={
-                    "content_margin_x_emu": card_margin_x,
-                    "content_margin_y_emu": card_margin_y,
-                    "title_body_gap_emu": 100000,
-                    "body_metrics_gap_emu": 180000,
-                    "metrics_gap_x_emu": 180000,
-                    "metrics_gap_y_emu": 160000,
-                },
-                behavior_tokens={
-                    "kpi_max_metrics": 4,
-                    "kpi_value_compact_font_pt": 20,
-                    "kpi_value_regular_font_pt": 22,
-                },
-            ),
             "table": TemplateComponentStyleSpec(
                 text_styles={
                     "header": TemplateTextStyleSpec(font_size_pt=16.0, bold=True, color="#091E38"),
@@ -1010,27 +970,6 @@ class TemplateAnalyzer:
                     "bottom_limit_emu": 6200000,
                 },
             ),
-            "list_with_icons": TemplateComponentStyleSpec(
-                text_styles={
-                    "subtitle": TemplateTextStyleSpec(font_size_pt=18.0, color="#081C4F"),
-                },
-                spacing_tokens={
-                    "title_content_gap_emu": list_title_gap,
-                    "title_body_gap_no_subtitle_emu": list_no_subtitle_gap,
-                    "content_footer_gap_emu": list_footer_gap,
-                },
-            ),
-            "contacts": TemplateComponentStyleSpec(
-                text_styles={
-                    "primary": TemplateTextStyleSpec(font_size_pt=18.0, color="#081C4F"),
-                    "secondary": TemplateTextStyleSpec(font_size_pt=14.0, color="#081C4F"),
-                },
-                behavior_tokens={
-                    "primary_threshold_chars": 60,
-                    "secondary_threshold_chars": 40,
-                    "font_decrement_pt": 2.0,
-                },
-            ),
         }
 
     def _map_placeholder_kind(self, placeholder_type) -> PlaceholderKind:
@@ -1086,10 +1025,6 @@ class TemplateAnalyzer:
 
     def _infer_representation_hints_from_placeholders(self, placeholders: list[PlaceholderSpec]) -> list[str]:
         hints: list[str] = []
-        if self._looks_like_contacts_from_slots(placeholders):
-            hints.append("contacts")
-        if self._looks_like_cards_from_slots(placeholders):
-            hints.append("cards")
         if self._looks_like_two_column_text_from_slots(placeholders):
             hints.append("two_column")
         if any(self._slot_has_capability(slot, "table") for slot in placeholders):
@@ -1102,10 +1037,6 @@ class TemplateAnalyzer:
 
     def _infer_representation_hints_from_tokens(self, tokens: list[PrototypeTokenSpec]) -> list[str]:
         hints: list[str] = []
-        if self._looks_like_contacts_from_slots(tokens):
-            hints.append("contacts")
-        if self._looks_like_cards_from_slots(tokens):
-            hints.append("cards")
         if self._looks_like_two_column_text_from_slots(tokens):
             hints.append("two_column")
         if any(self._slot_has_capability(slot, "table") for slot in tokens):
@@ -1128,44 +1059,7 @@ class TemplateAnalyzer:
             return token_name
         return "text"
 
-    def _looks_like_cards_from_slots(self, slots: list[PlaceholderSpec | PrototypeTokenSpec]) -> bool:
-        text_slots = [
-            slot
-            for slot in slots
-            if self._is_card_text_slot(slot)
-            and isinstance(slot.left_emu, int)
-            and isinstance(slot.top_emu, int)
-            and isinstance(slot.width_emu, int)
-            and isinstance(slot.height_emu, int)
-            and slot.width_emu > 0
-            and slot.height_emu > 0
-        ]
-        if len(text_slots) < 2:
-            return False
-
-        for base_slot in text_slots:
-            same_row = [
-                slot
-                for slot in text_slots
-                if abs((slot.top_emu or 0) - (base_slot.top_emu or 0))
-                <= max(slot.height_emu or 0, base_slot.height_emu or 0) * 0.45
-            ]
-            if len(same_row) < 2 or len(same_row) > 4:
-                continue
-
-            widths = [slot.width_emu or 0 for slot in same_row]
-            heights = [slot.height_emu or 0 for slot in same_row]
-            lefts = sorted(slot.left_emu or 0 for slot in same_row)
-            if len({round(value / 10000) for value in lefts}) < len(same_row):
-                continue
-
-            width_spread = max(widths) / max(min(widths), 1)
-            height_spread = max(heights) / max(min(heights), 1)
-            if width_spread <= 1.8 and height_spread <= 1.8:
-                return True
-        return False
-
-    def _is_card_text_slot(self, slot: PlaceholderSpec | PrototypeTokenSpec) -> bool:
+    def _is_textual_slot(self, slot: PlaceholderSpec | PrototypeTokenSpec) -> bool:
         role = getattr(slot, "editable_role", None)
         capabilities = getattr(slot, "editable_capabilities", [])
         if role in {"body", "bullet_item", "bullet_list"}:
@@ -1178,7 +1072,7 @@ class TemplateAnalyzer:
         text_slots = [
             slot
             for slot in slots
-            if self._is_card_text_slot(slot)
+            if self._is_textual_slot(slot)
             and isinstance(slot.left_emu, int)
             and isinstance(slot.width_emu, int)
             and slot.width_emu > 0
@@ -1192,14 +1086,6 @@ class TemplateAnalyzer:
         if len(distinct_columns) != 2:
             return False
         return max(widths) / max(min(widths), 1) <= 2.2
-
-    def _looks_like_contacts_from_slots(self, slots: list[PlaceholderSpec | PrototypeTokenSpec]) -> bool:
-        contact_like = [
-            slot
-            for slot in slots
-            if getattr(slot, "binding", "") in {"contact_name_or_title", "contact_role", "contact_phone", "contact_email"}
-        ]
-        return len(contact_like) >= 3
 
     def _slot_has_capability(self, slot: PlaceholderSpec | PrototypeTokenSpec, capability: str) -> bool:
         capabilities = getattr(slot, "editable_capabilities", [])

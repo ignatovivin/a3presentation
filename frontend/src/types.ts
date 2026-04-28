@@ -83,7 +83,7 @@ export type TemplateManifest = {
 export type InventoryTargetSummary = {
   key: string;
   name: string;
-  source: "layout" | "prototype";
+  source: "layout" | "prototype" | "direct_shape_binding";
   source_label?: string | null;
   supported_slide_kinds: string[];
   representation_hints: string[];
@@ -100,13 +100,14 @@ export type TemplateInventorySummary = {
   warnings: string[];
   layout_target_count: number;
   prototype_target_count: number;
+  direct_target_count: number;
   targets: InventoryTargetSummary[];
 };
 
 export type EditableTargetSummary = {
   key: string;
   name: string;
-  source: "layout" | "prototype";
+  source: "layout" | "prototype" | "direct_shape_binding";
   source_label?: string | null;
   runtime_profile_key?: string | null;
   supported_slide_kinds: string[];
@@ -169,7 +170,7 @@ export type PlanWithTemplateResponse = {
 export type SlideLayoutOption = {
   key: string;
   name: string;
-  source: "layout" | "prototype";
+  source: "layout" | "prototype" | "direct_shape_binding";
   source_label?: string | null;
   runtime_profile_key?: string | null;
   supported_slide_kinds: string[];
@@ -185,7 +186,12 @@ export type SlideLayoutOption = {
 
 export type SlideLayoutReview = {
   slide_index: number;
-  current_layout_key?: string | null;
+  current_target_key?: string | null;
+  current_target_type?: "layout" | "prototype" | "direct_shape_binding" | "auto_layout" | null;
+  current_target_source?: string | null;
+  current_target_explanation?: string | null;
+  current_target_confidence?: string | null;
+  current_target_degradation_reasons: string[];
   current_runtime_profile_key?: string | null;
   available_layouts: SlideLayoutOption[];
 };

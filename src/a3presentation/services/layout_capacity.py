@@ -122,59 +122,6 @@ IMAGE_TEXT_PROFILE = LayoutCapacityProfile(
     continuation_balance_tolerance=0.18,
 )
 
-CARDS_3_PROFILE = LayoutCapacityProfile(
-    layout_key="cards_3",
-    max_items=3,
-    max_weight=6.0,
-    max_chars=360,
-    max_primary_chars=0,
-    min_font_pt=12,
-    max_font_pt=24,
-    target_fill_ratio=0.74,
-    max_fill_ratio=0.9,
-    continuation_balance_tolerance=0.16,
-)
-
-CARDS_KPI_PROFILE = LayoutCapacityProfile(
-    layout_key="cards_kpi",
-    max_items=4,
-    max_weight=5.5,
-    max_chars=220,
-    max_primary_chars=0,
-    min_font_pt=14,
-    max_font_pt=44,
-    target_fill_ratio=0.68,
-    max_fill_ratio=0.88,
-    continuation_balance_tolerance=0.14,
-)
-
-LIST_WITH_ICONS_PROFILE = LayoutCapacityProfile(
-    layout_key="list_with_icons",
-    max_items=8,
-    max_weight=10.5,
-    max_chars=720,
-    max_primary_chars=220,
-    min_font_pt=12,
-    max_font_pt=20,
-    target_fill_ratio=0.78,
-    max_fill_ratio=0.93,
-    continuation_balance_tolerance=0.18,
-)
-
-CONTACTS_PROFILE = LayoutCapacityProfile(
-    layout_key="contacts",
-    max_items=4,
-    max_weight=4.5,
-    max_chars=220,
-    max_primary_chars=120,
-    min_font_pt=12,
-    max_font_pt=20,
-    target_fill_ratio=0.72,
-    max_fill_ratio=0.9,
-    continuation_balance_tolerance=0.16,
-)
-
-
 TEXT_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
     layout_key="text_full_width",
     placeholders={
@@ -224,67 +171,6 @@ IMAGE_TEXT_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
     content_footer_gap_emu=180000,
 )
 
-CARDS_3_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
-    layout_key="cards_3",
-    placeholders={
-        0: PlaceholderGeometryPolicy(placeholder_idx=0, left_emu=442913, top_emu=671247, width_emu=11198224, height_emu=1325563),
-        11: PlaceholderGeometryPolicy(placeholder_idx=11, left_emu=739775, top_emu=1723633, width_emu=3259138, height_emu=4164013),
-        12: PlaceholderGeometryPolicy(placeholder_idx=12, left_emu=4412456, top_emu=1723633, width_emu=3259138, height_emu=4164013),
-        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=8193087, top_emu=1723633, width_emu=3259138, height_emu=4164013),
-        15: PlaceholderGeometryPolicy(placeholder_idx=15, left_emu=442913, top_emu=6384626, width_emu=3371850, height_emu=277813),
-    },
-    title_content_gap_emu=220000,
-    title_body_gap_no_subtitle_emu=320000,
-    content_footer_gap_emu=180000,
-)
-
-CARDS_KPI_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
-    layout_key="cards_kpi",
-    placeholders={
-        0: PlaceholderGeometryPolicy(placeholder_idx=0, left_emu=828675, top_emu=610000, width_emu=10300000, height_emu=1400000),
-        11: PlaceholderGeometryPolicy(placeholder_idx=11, left_emu=828675, top_emu=3170000, width_emu=3600000, height_emu=1350000),
-        12: PlaceholderGeometryPolicy(placeholder_idx=12, left_emu=6980000, top_emu=3170000, width_emu=3600000, height_emu=1350000),
-        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=828675, top_emu=4950000, width_emu=3600000, height_emu=1350000),
-    },
-    title_content_gap_emu=220000,
-    title_body_gap_no_subtitle_emu=420000,
-    content_footer_gap_emu=0,
-)
-
-LIST_WITH_ICONS_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
-    layout_key="list_with_icons",
-    placeholders={
-        0: PlaceholderGeometryPolicy(placeholder_idx=0, left_emu=442913, top_emu=671247, width_emu=11198224, height_emu=1109385),
-        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=442913, top_emu=1228230, width_emu=5653087, height_emu=552402),
-        12: PlaceholderGeometryPolicy(placeholder_idx=12, left_emu=550352, top_emu=1720850, width_emu=3221037, height_emu=2393950),
-        14: PlaceholderGeometryPolicy(placeholder_idx=14, left_emu=5219700, top_emu=1690688, width_emu=6421438, height_emu=4291012),
-        15: PlaceholderGeometryPolicy(placeholder_idx=15, left_emu=4546770, top_emu=1690688, width_emu=507658, height_emu=507658),
-        16: PlaceholderGeometryPolicy(placeholder_idx=16, left_emu=4546770, top_emu=2337615, width_emu=507658, height_emu=507658),
-        17: PlaceholderGeometryPolicy(placeholder_idx=17, left_emu=4546770, top_emu=2984542, width_emu=507658, height_emu=507658),
-        18: PlaceholderGeometryPolicy(placeholder_idx=18, left_emu=4546770, top_emu=3627337, width_emu=507658, height_emu=507658),
-        19: PlaceholderGeometryPolicy(placeholder_idx=19, left_emu=4546770, top_emu=4270132, width_emu=507658, height_emu=507658),
-        20: PlaceholderGeometryPolicy(placeholder_idx=20, left_emu=4546770, top_emu=4913483, width_emu=507658, height_emu=507658),
-        21: PlaceholderGeometryPolicy(placeholder_idx=21, left_emu=442913, top_emu=6384626, width_emu=3371850, height_emu=277813),
-    },
-    title_content_gap_emu=180000,
-    title_body_gap_no_subtitle_emu=300000,
-    content_footer_gap_emu=180000,
-)
-
-CONTACTS_LAYOUT_GEOMETRY_POLICY = LayoutGeometryPolicy(
-    layout_key="contacts",
-    placeholders={
-        10: PlaceholderGeometryPolicy(placeholder_idx=10, left_emu=7486650, top_emu=2305374, width_emu=3724275, height_emu=1037901),
-        11: PlaceholderGeometryPolicy(placeholder_idx=11, left_emu=7486650, top_emu=3429000, width_emu=3724275, height_emu=361950),
-        12: PlaceholderGeometryPolicy(placeholder_idx=12, left_emu=7486650, top_emu=3826037, width_emu=3724275, height_emu=361950),
-        13: PlaceholderGeometryPolicy(placeholder_idx=13, left_emu=7486649, top_emu=4290481, width_emu=3724275, height_emu=361950),
-    },
-    title_content_gap_emu=180000,
-    title_body_gap_no_subtitle_emu=220000,
-    content_footer_gap_emu=180000,
-)
-
-
 TEXT_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
     layout_key="text_full_width",
     bullet=BulletSpacingPolicy(margin_left_emu=342900, indent_emu=-171450),
@@ -321,43 +207,12 @@ IMAGE_TEXT_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
     cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
 )
 
-CARDS_3_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
-    layout_key="cards_3",
-    bullet=TEXT_LAYOUT_SPACING_POLICY.bullet,
-    body=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
-    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
-    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
-    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
-)
-
-LIST_WITH_ICONS_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
-    layout_key="list_with_icons",
-    bullet=LIST_LAYOUT_SPACING_POLICY.bullet,
-    body=ParagraphSpacingPolicy(line_spacing=1.05, space_after_pt=5.0),
-    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
-    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=4.0),
-    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
-)
-
-CONTACTS_LAYOUT_SPACING_POLICY = LayoutSpacingPolicy(
-    layout_key="contacts",
-    bullet=TEXT_LAYOUT_SPACING_POLICY.bullet,
-    body=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=3.0),
-    title=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=0.0),
-    subtitle=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=2.0),
-    cover=ParagraphSpacingPolicy(line_spacing=1.0, space_after_pt=6.0),
-)
-
 BUILTIN_RUNTIME_PROFILE_KEYS = {
     "text_full_width",
     "dense_text_full_width",
     "list_full_width",
     "table",
     "image_text",
-    "cards_3",
-    "cards_kpi",
-    "list_with_icons",
-    "contacts",
 }
 
 
@@ -401,18 +256,10 @@ def runtime_profile_key_for_target(
         normalized_slide_kind = normalized_slide_kind.value
     normalized_slide_kind = str(normalized_slide_kind)
 
-    if "contacts" in representation_hints:
-        return "contacts"
-    if "cards" in representation_hints:
-        if target_key == "cards_kpi" or editable_slot_count >= 4:
-            return "cards_kpi"
-        return "cards_3"
     if "table" in representation_hints or normalized_slide_kind == "table":
         return "table"
     if "image" in representation_hints or normalized_slide_kind == "image":
         return "image_text"
-    if "two_column" in representation_hints:
-        return "list_with_icons"
     if (
         "bullet_list" in editable_roles
         or "bullet_item" in editable_roles
@@ -430,14 +277,6 @@ def profile_for_layout(layout_key: str) -> LayoutCapacityProfile:
         return TABLE_PROFILE
     if layout_key == "image_text":
         return IMAGE_TEXT_PROFILE
-    if layout_key == "cards_3":
-        return CARDS_3_PROFILE
-    if layout_key == "cards_kpi":
-        return CARDS_KPI_PROFILE
-    if layout_key == "list_with_icons":
-        return LIST_WITH_ICONS_PROFILE
-    if layout_key == "contacts":
-        return CONTACTS_PROFILE
     if layout_key == "list_full_width":
         return LIST_FULL_WIDTH_PROFILE
     return TEXT_FULL_WIDTH_PROFILE
@@ -502,14 +341,6 @@ def geometry_policy_for_layout(layout_key: str) -> LayoutGeometryPolicy:
         return TABLE_LAYOUT_GEOMETRY_POLICY
     if layout_key == "image_text":
         return IMAGE_TEXT_LAYOUT_GEOMETRY_POLICY
-    if layout_key == "cards_3":
-        return CARDS_3_LAYOUT_GEOMETRY_POLICY
-    if layout_key == "cards_kpi":
-        return CARDS_KPI_LAYOUT_GEOMETRY_POLICY
-    if layout_key == "list_with_icons":
-        return LIST_WITH_ICONS_LAYOUT_GEOMETRY_POLICY
-    if layout_key == "contacts":
-        return CONTACTS_LAYOUT_GEOMETRY_POLICY
     if layout_key == "list_full_width":
         return LIST_LAYOUT_GEOMETRY_POLICY
     return TEXT_LAYOUT_GEOMETRY_POLICY
@@ -522,14 +353,6 @@ def spacing_policy_for_layout(layout_key: str) -> LayoutSpacingPolicy:
         return TABLE_LAYOUT_SPACING_POLICY
     if layout_key == "image_text":
         return IMAGE_TEXT_LAYOUT_SPACING_POLICY
-    if layout_key == "cards_3":
-        return CARDS_3_LAYOUT_SPACING_POLICY
-    if layout_key == "cards_kpi":
-        return CARDS_3_LAYOUT_SPACING_POLICY
-    if layout_key == "list_with_icons":
-        return LIST_WITH_ICONS_LAYOUT_SPACING_POLICY
-    if layout_key == "contacts":
-        return CONTACTS_LAYOUT_SPACING_POLICY
     if layout_key == "list_full_width":
         return LIST_LAYOUT_SPACING_POLICY
     return TEXT_LAYOUT_SPACING_POLICY

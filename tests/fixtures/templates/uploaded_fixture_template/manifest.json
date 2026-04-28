@@ -1,6 +1,6 @@
 {
-  "template_id": "razmeshchenie_soglasiy",
-  "display_name": "Размещение согласий",
+  "template_id": "uploaded_fixture_template",
+  "display_name": "Uploaded Fixture Template",
   "source_pptx": "template.pptx",
   "description": "Шаблон на основе пользовательского примера",
   "generation_mode": "prototype",
@@ -300,8 +300,8 @@
       ]
     },
     {
-      "key": "слайд_с_карточками",
-      "name": "Слайд с карточками",
+      "key": "слайд_со_списком",
+      "name": "Слайд со списком",
       "slide_master_index": 0,
       "slide_layout_index": 2,
       "background_color": null,
@@ -758,8 +758,8 @@
       ]
     },
     {
-      "key": "карточки",
-      "name": "Карточки",
+      "key": "список",
+      "name": "Список",
       "slide_master_index": 1,
       "slide_layout_index": 1,
       "background_color": null,
@@ -1404,7 +1404,7 @@
       ]
     },
     {
-      "key": "list_with_icons",
+      "key": "uploaded_two_column",
       "name": "Слайд с перечислением",
       "source_slide_index": 4,
       "background_xml": null,
@@ -1497,8 +1497,8 @@
       ]
     },
     {
-      "key": "cards_3",
-      "name": "Слайд с карточками",
+      "key": "prototype_bullets_5",
+      "name": "Слайд со списком",
       "source_slide_index": 5,
       "background_xml": null,
       "background_image_base64": null,
@@ -1524,8 +1524,8 @@
           "shape_style": null
         },
         {
-          "token": "card_1",
-          "binding": "card_1",
+          "token": "bullet_1",
+          "binding": "bullet_1",
           "shape_name": "Текст 14",
           "left_emu": null,
           "top_emu": null,
@@ -1540,8 +1540,8 @@
           "shape_style": null
         },
         {
-          "token": "card_2",
-          "binding": "card_2",
+          "token": "bullet_2",
+          "binding": "bullet_2",
           "shape_name": "Текст 29",
           "left_emu": null,
           "top_emu": null,
@@ -1556,8 +1556,8 @@
           "shape_style": null
         },
         {
-          "token": "card_3",
-          "binding": "card_3",
+          "token": "bullet_3",
+          "binding": "bullet_3",
           "shape_name": "Текст 30",
           "left_emu": null,
           "top_emu": null,
@@ -1590,8 +1590,8 @@
       ]
     },
     {
-      "key": "contacts",
-      "name": "Контакты",
+      "key": "uploaded_text_detail",
+      "name": "Текстовый блок",
       "source_slide_index": 6,
       "background_xml": null,
       "background_image_base64": null,
@@ -1617,8 +1617,8 @@
           "shape_style": null
         },
         {
-          "token": "contact_title",
-          "binding": "contact_title",
+          "token": "title",
+          "binding": "title",
           "shape_name": "Текст 10",
           "left_emu": null,
           "top_emu": null,
@@ -1633,8 +1633,8 @@
           "shape_style": null
         },
         {
-          "token": "contact_role",
-          "binding": "contact_role",
+          "token": "subtitle",
+          "binding": "subtitle",
           "shape_name": "Текст 11",
           "left_emu": null,
           "top_emu": null,
@@ -1649,8 +1649,8 @@
           "shape_style": null
         },
         {
-          "token": "contact_phone",
-          "binding": "contact_phone",
+          "token": "left_note",
+          "binding": "left_note",
           "shape_name": "Текст 12",
           "left_emu": null,
           "top_emu": null,
@@ -1665,8 +1665,8 @@
           "shape_style": null
         },
         {
-          "token": "contact_email",
-          "binding": "contact_email",
+          "token": "right_note",
+          "binding": "right_note",
           "shape_name": "Текст 13",
           "left_emu": null,
           "top_emu": null,

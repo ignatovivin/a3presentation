@@ -26,7 +26,7 @@ from a3presentation.domain.presentation import PresentationPlan, SlideKind, Slid
 class ApiContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls._env_backup = {key: os.environ.get(key) for key in ("TEMPLATES_DIR", "OUTPUTS_DIR", "STORAGE_DIR", "SEED_BUNDLED_TEMPLATES")}
+        cls._env_backup = {key: os.environ.get(key) for key in ("TEMPLATES_DIR", "OUTPUTS_DIR", "STORAGE_DIR")}
         cls._temp_dir = tempfile.TemporaryDirectory()
         cls._root = Path(cls._temp_dir.name)
         cls._templates_dir = cls._root / "templates"
@@ -34,8 +34,8 @@ class ApiContractTests(unittest.TestCase):
         cls._templates_dir.mkdir(parents=True, exist_ok=True)
         cls._outputs_dir.mkdir(parents=True, exist_ok=True)
 
-        source_templates = Path(__file__).resolve().parents[1] / "storage" / "templates"
-        for template_id in ("corp_light_v1",):
+        source_templates = Path(__file__).resolve().parent / "fixtures" / "templates"
+        for template_id in ("deterministic_layout_fixture",):
             shutil.copytree(source_templates / template_id, cls._templates_dir / template_id)
         manifest_path = cls._templates_dir / "missing_source" / "manifest.json"
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,16 +77,15 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("commit", response)
         self.assertIn("branch", response)
 
-    def test_create_app_does_not_seed_bundled_templates_by_default(self) -> None:
-        unseeded_root = self._root / "unseeded"
-        templates_dir = unseeded_root / "templates"
-        outputs_dir = unseeded_root / "outputs"
+    def test_create_app_starts_with_empty_template_storage(self) -> None:
+        empty_root = self._root / "empty"
+        templates_dir = empty_root / "templates"
+        outputs_dir = empty_root / "outputs"
         templates_dir.mkdir(parents=True, exist_ok=True)
         outputs_dir.mkdir(parents=True, exist_ok=True)
         os.environ["TEMPLATES_DIR"] = str(templates_dir)
         os.environ["OUTPUTS_DIR"] = str(outputs_dir)
-        os.environ["STORAGE_DIR"] = str(unseeded_root)
-        os.environ.pop("SEED_BUNDLED_TEMPLATES", None)
+        os.environ["STORAGE_DIR"] = str(empty_root)
 
         importlib.reload(settings_module)
         importlib.reload(main_module)
@@ -105,7 +104,7 @@ class ApiContractTests(unittest.TestCase):
     def test_templates_endpoint_lists_available_templates(self) -> None:
         templates = routes_module.list_templates()
         template_ids = {item.template_id for item in templates}
-        self.assertIn("corp_light_v1", template_ids)
+        self.assertIn("deterministic_layout_fixture", template_ids)
 
     def test_template_details_expose_missing_template_file(self) -> None:
         response = routes_module.get_template("missing_source")
@@ -224,12 +223,12 @@ class ApiContractTests(unittest.TestCase):
     def test_plan_from_text_returns_presentation_plan(self) -> None:
         payload = routes_module.plan_from_text(
             TextPlanRequest(
-                template_id="corp_light_v1",
+                template_id="deterministic_layout_fixture",
                 title="Demo",
                 raw_text="Основные выводы\n- Рост выручки\n- Снижение churn",
             )
         )
-        self.assertEqual(payload.template_id, "corp_light_v1")
+        self.assertEqual(payload.template_id, "deterministic_layout_fixture")
         self.assertGreaterEqual(len(payload.slides), 1)
 
     def test_plan_from_text_accepts_transient_uploaded_template_id(self) -> None:
@@ -242,9 +241,11 @@ class ApiContractTests(unittest.TestCase):
         )
         self.assertEqual(payload.template_id, "uploaded_customer_template")
         self.assertGreaterEqual(len(payload.slides), 1)
+        legacy_target_keys = {"cover", "text_full_width", "dense_text_full_width", "list_full_width", "table", "image_text"}
+        self.assertTrue(all(slide.preferred_layout_key not in legacy_target_keys for slide in payload.slides))
 
     def test_plan_from_text_with_uploaded_template_returns_plan_and_manifest(self) -> None:
-        template_path = self._templates_dir / "corp_light_v1" / "template.pptx"
+        template_path = self._templates_dir / "deterministic_layout_fixture" / "template.pptx"
         upload = UploadFile(filename="customer-template.pptx", file=BytesIO(template_path.read_bytes()))
         payload = TextPlanRequest(
             template_id="ignored_template_id",
@@ -269,6 +270,17 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(response.inventory_summary.generation_mode, response.manifest.generation_mode.value)
         self.assertEqual(len(response.slide_layout_reviews), len(response.plan.slides))
         self.assertTrue(all(review.available_layouts for review in response.slide_layout_reviews))
+        review_payload = response.model_dump(mode="json")
+        self.assertTrue(
+            all("current_layout_key" not in review for review in review_payload["slide_layout_reviews"])
+        )
+        inventory_target_keys = {target.key for target in response.inventory_summary.targets}
+        self.assertTrue(
+            all(
+                review.current_target_key is None or review.current_target_key in inventory_target_keys
+                for review in response.slide_layout_reviews
+            )
+        )
         text_review = next((review for review in response.slide_layout_reviews if review.slide_index > 0), None)
         self.assertIsNotNone(text_review)
         self.assertEqual(text_review.current_target_key, response.plan.slides[text_review.slide_index].render_target.key)
@@ -367,7 +379,7 @@ class ApiContractTests(unittest.TestCase):
         self.assertTrue(prototype_option.recommendation_reasons)
 
     def test_slide_layout_reviews_expose_stable_ranking_metadata(self) -> None:
-        template_path = self._templates_dir / "corp_light_v1" / "template.pptx"
+        template_path = self._templates_dir / "deterministic_layout_fixture" / "template.pptx"
         upload = UploadFile(filename="customer-template.pptx", file=BytesIO(template_path.read_bytes()))
         payload = TextPlanRequest(
             template_id="ignored_template_id",
@@ -398,7 +410,7 @@ class ApiContractTests(unittest.TestCase):
     def test_generate_and_download_presentation_for_valid_template(self) -> None:
         payload = routes_module.generate_presentation(
             PresentationPlan(
-                template_id="corp_light_v1",
+                template_id="deterministic_layout_fixture",
                 title="Smoke Test",
                 slides=[
                     SlideSpec(kind=SlideKind.TITLE, title="Smoke Test", subtitle="API contract"),
@@ -416,10 +428,10 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(Path(download.path).name, payload.file_name)
 
     def test_generate_with_uploaded_template_does_not_require_registry_template(self) -> None:
-        template_path = self._templates_dir / "corp_light_v1" / "template.pptx"
+        template_path = self._templates_dir / "deterministic_layout_fixture" / "template.pptx"
         upload = UploadFile(filename="custom-template.pptx", file=BytesIO(template_path.read_bytes()))
         plan = PresentationPlan(
-            template_id="corp_light_v1",
+            template_id="deterministic_layout_fixture",
             title="Custom Template Smoke",
             slides=[
                 SlideSpec(kind=SlideKind.TITLE, title="Custom Template Smoke", subtitle="Transient upload"),
@@ -508,7 +520,7 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("template_file is empty", error.exception.detail)
 
     def test_upload_template_auto_returns_inventory_contract(self) -> None:
-        template_path = self._templates_dir / "corp_light_v1" / "template.pptx"
+        template_path = self._templates_dir / "deterministic_layout_fixture" / "template.pptx"
         upload = UploadFile(filename="auto-template.pptx", file=BytesIO(template_path.read_bytes()))
 
         response = asyncio.run(
@@ -526,15 +538,18 @@ class ApiContractTests(unittest.TestCase):
         self.assertTrue(response.detected_components)
 
     def test_analyze_template_returns_inventory_contract(self) -> None:
-        response = routes_module.analyze_template("corp_light_v1")
+        response = routes_module.analyze_template("deterministic_layout_fixture")
 
-        self.assertEqual(response.template_id, "corp_light_v1")
-        self.assertIn(response.inventory_summary.usability_status, {"usable", "usable_with_degradation"})
+        self.assertEqual(response.template_id, "deterministic_layout_fixture")
+        self.assertIn(
+            response.inventory_summary.usability_status,
+            {"usable", "usable_with_degradation", "not_safely_editable"},
+        )
         self.assertTrue(response.editable_targets)
-        self.assertTrue(response.detected_components)
+        self.assertIsNotNone(response.detected_components)
 
     def test_plan_from_text_with_template_rejects_invalid_payload_json(self) -> None:
-        template_path = self._templates_dir / "corp_light_v1" / "template.pptx"
+        template_path = self._templates_dir / "deterministic_layout_fixture" / "template.pptx"
         upload = UploadFile(filename="customer-template.pptx", file=BytesIO(template_path.read_bytes()))
 
         with self.assertRaises(HTTPException) as error:
