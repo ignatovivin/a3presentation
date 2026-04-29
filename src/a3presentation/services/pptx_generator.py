@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import math
+import posixpath
 import re
 import zipfile
 from datetime import UTC, datetime
@@ -10,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
 
+from lxml import etree
 from pptx.chart.data import CategoryChartData
 from pptx.chart.axis import ValueAxis
 from pptx.dml.color import RGBColor
@@ -53,6 +55,7 @@ from a3presentation.services.layout_capacity import (
     LayoutCapacityProfile,
     derive_capacity_profile_for_geometry,
     geometry_policy_for_layout,
+    PlaceholderGeometryPolicy,
     profile_for_layout,
     runtime_profile_key_for_target,
     spacing_policy_for_layout,
@@ -134,6 +137,7 @@ class PptxGenerator:
         output_stem = self._build_output_stem(plan.title or plan.template_id, timestamp)
         output_path = output_dir / f"{output_stem}.pptx"
         presentation.save(str(output_path))
+        self._sanitize_output_package(output_path)
         self._validate_output_file(output_path, expected_slide_count=len(plan.slides))
         return output_path
 
@@ -156,6 +160,19 @@ class PptxGenerator:
         self._remove_all_slides(output_presentation)
 
         for slide_spec in plan.slides:
+            if self._target_type_for_slide(slide_spec) in {"layout", "auto_layout"} or self._should_use_auto_layout_instead_of_prototype(slide_spec):
+                if self._target_type_for_slide(slide_spec) == "auto_layout":
+                    layout = self._auto_layout_spec(slide_spec, output_presentation)
+                    slide_layout = output_presentation.slide_layouts[6] if len(output_presentation.slide_layouts) > 6 else output_presentation.slide_layouts[-1]
+                elif self._should_use_auto_layout_instead_of_prototype(slide_spec):
+                    layout = self._auto_layout_spec(slide_spec, output_presentation)
+                    slide_layout = output_presentation.slide_layouts[6] if len(output_presentation.slide_layouts) > 6 else output_presentation.slide_layouts[-1]
+                else:
+                    layout = self._resolve_layout(manifest, slide_spec)
+                    slide_layout = output_presentation.slide_masters[layout.slide_master_index].slide_layouts[layout.slide_layout_index]
+                target_slide = output_presentation.slides.add_slide(slide_layout)
+                self._fill_slide_from_layout(target_slide, slide_spec, layout, plan.title)
+                continue
             prototype = self._resolve_prototype_slide(manifest, slide_spec)
             source_slide = source_slides[prototype.source_slide_index]
             target_slide = self._clone_slide(output_presentation, source_slide)
@@ -169,6 +186,13 @@ class PptxGenerator:
 
         return output_presentation
 
+    def _should_use_auto_layout_instead_of_prototype(self, slide_spec: SlideSpec) -> bool:
+        if self._target_type_for_slide(slide_spec) != "prototype":
+            return False
+        if slide_spec.kind == SlideKind.TEXT:
+            return True
+        return slide_spec.kind == SlideKind.BULLETS and slide_spec.runtime_profile_key == "text_full_width"
+
     def _should_apply_prototype_layout_flow(self, prototype: PrototypeSlideSpec) -> bool:
         if prototype.key not in self.BUILTIN_LAYOUT_KEYS:
             return False
@@ -181,12 +205,101 @@ class PptxGenerator:
         self._apply_core_properties(presentation, plan)
 
         for slide_spec in plan.slides:
-            layout = self._resolve_layout(manifest, slide_spec)
-            slide_layout = presentation.slide_masters[layout.slide_master_index].slide_layouts[layout.slide_layout_index]
+            if self._target_type_for_slide(slide_spec) == "auto_layout":
+                layout = self._auto_layout_spec(slide_spec, presentation)
+                slide_layout = presentation.slide_layouts[6] if len(presentation.slide_layouts) > 6 else presentation.slide_layouts[-1]
+            else:
+                layout = self._resolve_layout(manifest, slide_spec)
+                slide_layout = presentation.slide_masters[layout.slide_master_index].slide_layouts[layout.slide_layout_index]
             slide = presentation.slides.add_slide(slide_layout)
             self._fill_slide_from_layout(slide, slide_spec, layout, plan.title)
 
         return presentation
+
+    def _auto_layout_spec(self, slide_spec: SlideSpec, presentation: Presentation) -> LayoutSpec:
+        key = slide_spec.runtime_profile_key or slide_spec.preferred_layout_key or slide_spec.kind.value
+        if key not in self.BUILTIN_LAYOUT_KEYS:
+            key = {
+                SlideKind.TITLE: "cover",
+                SlideKind.BULLETS: "list_full_width",
+                SlideKind.TABLE: "table",
+                SlideKind.CHART: "table",
+                SlideKind.IMAGE: "image_text",
+            }.get(slide_spec.kind, "text_full_width")
+        blank_layout_index = 6 if len(presentation.slide_layouts) > 6 else len(presentation.slide_layouts) - 1
+        return LayoutSpec(
+            key=key,
+            name=f"Auto {key}",
+            slide_layout_index=blank_layout_index,
+            background_style=self._auto_layout_background_style(),
+            supported_slide_kinds=[slide_spec.kind.value],
+            representation_hints=[slide_spec.kind.value],
+            placeholders=self._auto_layout_placeholders(key),
+        )
+
+    def _auto_layout_background_style(self) -> TemplateShapeStyleSpec | None:
+        if self._active_manifest is None:
+            return None
+        color = (
+            self._active_manifest.design_tokens.get("background_color")
+            or self._active_manifest.design_tokens.get("surface_color")
+        )
+        if isinstance(color, str) and color.strip():
+            return TemplateShapeStyleSpec(fill_type="solid", fill_color=color.strip())
+        return None
+
+    def _auto_layout_placeholders(self, key: str) -> list[PlaceholderSpec]:
+        geometry = geometry_policy_for_layout(key)
+        role_map: dict[int, tuple[PlaceholderKind, str]] = {
+            0: (PlaceholderKind.TITLE, "title"),
+            13: (PlaceholderKind.SUBTITLE, "subtitle"),
+            14: (PlaceholderKind.TABLE if key == "table" else PlaceholderKind.BODY, "table" if key == "table" else "body"),
+            15: (PlaceholderKind.FOOTER, "footer"),
+            16: (PlaceholderKind.IMAGE, "image"),
+            17: (PlaceholderKind.FOOTER, "footer"),
+        }
+        placeholders: list[PlaceholderSpec] = []
+        geometry_placeholders = dict(geometry.placeholders)
+        if key == "table" and 14 not in geometry_placeholders:
+            subtitle = geometry_placeholders.get(13)
+            footer = geometry_placeholders.get(15)
+            table_top = (subtitle.top_emu + subtitle.height_emu + self.TITLE_CONTENT_GAP_EMU) if subtitle is not None else 1_970_000
+            table_bottom = (footer.top_emu - self.CONTENT_FOOTER_GAP_EMU) if footer is not None else self.FOOTER_TOP_EMU - self.CONTENT_FOOTER_GAP_EMU
+            geometry_placeholders[14] = PlaceholderGeometryPolicy(
+                placeholder_idx=14,
+                left_emu=self.FULL_CONTENT_LEFT_EMU,
+                top_emu=table_top,
+                width_emu=self.FULL_CONTENT_WIDTH_EMU,
+                height_emu=max(900000, table_bottom - table_top),
+            )
+        for idx, policy in geometry_placeholders.items():
+            kind, binding = role_map.get(idx, (PlaceholderKind.BODY, "body"))
+            text_role = "body"
+            if binding == "title":
+                text_role = "title"
+            elif binding == "subtitle":
+                text_role = "body"
+            elif binding == "footer":
+                text_role = "other"
+            text_style = None
+            if self._active_manifest is not None:
+                text_style = self._active_manifest.theme.master_text_styles.get(text_role)
+            placeholders.append(
+                PlaceholderSpec(
+                    name=f"Auto {binding} {idx}",
+                    kind=kind,
+                    idx=idx,
+                    binding=binding,
+                    editable_role=binding if binding in {"title", "subtitle", "table", "image", "footer"} else "body",
+                    editable_capabilities=["table"] if binding == "table" else ["image"] if binding == "image" else ["text"],
+                    left_emu=policy.left_emu,
+                    top_emu=policy.top_emu,
+                    width_emu=policy.width_emu,
+                    height_emu=policy.height_emu,
+                    text_style=text_style,
+                )
+            )
+        return placeholders
 
     def _generate_from_direct_shape_bindings(self, template_path: Path, manifest: TemplateManifest, plan: PresentationPlan) -> Presentation:
         output_presentation = Presentation(str(template_path))
@@ -255,7 +368,7 @@ class PptxGenerator:
             )
             used_shape_names.add(shape_name)
 
-        for shape in slide.shapes:
+        for shape in list(slide.shapes):
             if getattr(shape, "name", None) in used_shape_names:
                 continue
             if getattr(shape, "has_text_frame", False):
@@ -281,18 +394,20 @@ class PptxGenerator:
         self._clear_slide_shapes(target_slide)
 
         relationship_map: dict[str, str] = {}
+        skipped_relationship_ids: set[str] = set()
         for relationship in source_slide.part.rels.values():
-            if relationship.reltype in self.SKIPPED_RELATIONSHIP_TYPES:
+            if relationship.reltype in self.SKIPPED_RELATIONSHIP_TYPES or relationship.is_external:
+                skipped_relationship_ids.add(relationship.rId)
                 continue
             new_relationship_id = target_slide.part.relate_to(
-                relationship.target_ref if relationship.is_external else relationship.target_part,
+                relationship.target_part,
                 relationship.reltype,
-                relationship.is_external,
+                False,
             )
             relationship_map[relationship.rId] = new_relationship_id
 
         source_background = source_slide._element.cSld.bg
-        if source_background is not None:
+        if source_background is not None and not self._element_references_relationship(source_background, skipped_relationship_ids):
             target_background = copy.deepcopy(source_background)
             self._remap_relationship_ids(target_background, relationship_map)
             if target_slide._element.cSld.bg is not None:
@@ -301,6 +416,8 @@ class PptxGenerator:
 
         for shape_element in list(source_slide.shapes._spTree.iterchildren()):
             if shape_element.tag.endswith("nvGrpSpPr") or shape_element.tag.endswith("grpSpPr"):
+                continue
+            if self._element_references_relationship(shape_element, skipped_relationship_ids):
                 continue
             cloned_element = copy.deepcopy(shape_element)
             self._remap_relationship_ids(cloned_element, relationship_map)
@@ -319,6 +436,15 @@ class PptxGenerator:
             for attr_name, attr_value in list(current_element.attrib.items()):
                 if attr_value in relationship_map and attr_name.startswith(f"{{{self.RELATIONSHIP_NAMESPACE}}}"):
                     current_element.set(attr_name, relationship_map[attr_value])
+
+    def _element_references_relationship(self, element, relationship_ids: set[str]) -> bool:
+        if not relationship_ids:
+            return False
+        for current_element in element.iter():
+            for attr_name, attr_value in current_element.attrib.items():
+                if attr_name.startswith(f"{{{self.RELATIONSHIP_NAMESPACE}}}") and attr_value in relationship_ids:
+                    return True
+        return False
 
     def _resolve_prototype_slide(self, manifest: TemplateManifest, slide_spec: SlideSpec) -> PrototypeSlideSpec:
         if slide_spec.kind == SlideKind.CHART:
@@ -383,7 +509,7 @@ class PptxGenerator:
 
     def _replace_tokens_in_slide(self, slide, prototype: PrototypeSlideSpec, slide_spec: SlideSpec, presentation_title: str) -> None:
         token_values = self._build_token_value_map(slide_spec, presentation_title)
-        used_shapes: set[str] = set()
+        used_shape_element_ids: set[int] = set()
         runtime_profile_key = self._runtime_profile_key_for_slide(slide_spec, prototype=prototype)
         layout_profile = profile_for_layout(runtime_profile_key)
 
@@ -392,12 +518,37 @@ class PptxGenerator:
                 if getattr(shape, "has_text_frame", False) or getattr(shape, "is_placeholder", False):
                     self._clear_placeholder(shape)
             return
+        initial_media_shape_ids = {
+            self._shape_identity(shape)
+            for shape in slide.shapes
+            if getattr(shape, "has_table", False)
+            or getattr(shape, "has_chart", False)
+            or self._shape_contains_ole_object(shape)
+        }
 
         # Preferred path for real templates: bind by explicit shape name from manifest.
+        token_specs_by_shape: dict[tuple[str, int | None, int | None, int | None, int | None], list[PrototypeTokenSpec]] = {}
         for token_spec in prototype.tokens:
-            if not token_spec.shape_name:
-                continue
-            target_shape = next((shape for shape in slide.shapes if shape.name == token_spec.shape_name), None)
+            if token_spec.shape_name:
+                token_specs_by_shape.setdefault(
+                    (
+                        token_spec.shape_name,
+                        token_spec.left_emu,
+                        token_spec.top_emu,
+                        token_spec.width_emu,
+                        token_spec.height_emu,
+                    ),
+                    [],
+                ).append(token_spec)
+
+        token_groups = sorted(
+            token_specs_by_shape.values(),
+            key=lambda items: self._prototype_token_priority(self._select_prototype_token_for_slide(items, slide_spec), slide_spec),
+            reverse=True,
+        )
+        for shape_token_specs in token_groups:
+            token_spec = self._select_prototype_token_for_slide(shape_token_specs, slide_spec)
+            target_shape = self._find_shape_for_prototype_token(slide, token_spec, used_shape_element_ids)
             if target_shape is None:
                 continue
             self._apply_shape_spec_metadata(target_shape, token_spec)
@@ -423,17 +574,19 @@ class PptxGenerator:
                     target_shape,
                     self._component_font_size("chart", "subtitle", fallback=20.0),
                 )
-            used_shapes.add(token_spec.shape_name)
+            used_shape_element_ids.add(self._shape_identity(target_shape))
 
         for shape in slide.shapes:
             if not getattr(shape, "has_text_frame", False):
                 continue
-            if shape.name in used_shapes:
+            if self._shape_identity(shape) in used_shape_element_ids:
                 continue
 
             original_text = shape.text or ""
             matches = self.TOKEN_PATTERN.findall(original_text)
             if not matches:
+                if used_shape_element_ids:
+                    self._clear_placeholder(shape)
                 continue
 
             normalized = original_text.strip()
@@ -456,6 +609,160 @@ class PptxGenerator:
                 replaced_text = re.sub(r"{{\s*" + re.escape(token_name) + r"\s*}}", str(token_value), replaced_text)
             shape_profile = self._capacity_profile_for_shape(runtime_profile_key, shape, layout_profile)
             self._set_text(shape, replaced_text, shape_profile)
+
+        self._remove_stale_prototype_text_shapes(slide, slide_spec, presentation_title)
+        self._remove_stale_prototype_media_shapes(slide, slide_spec, used_shape_element_ids, initial_media_shape_ids)
+
+    def _select_prototype_token_for_slide(
+        self,
+        token_specs: list[PrototypeTokenSpec],
+        slide_spec: SlideSpec,
+    ) -> PrototypeTokenSpec:
+        return max(token_specs, key=lambda token_spec: self._prototype_token_priority(token_spec, slide_spec))
+
+    def _prototype_token_priority(self, token_spec: PrototypeTokenSpec, slide_spec: SlideSpec) -> int:
+        binding = token_spec.binding
+        if binding == "title":
+            return 100
+        if slide_spec.kind == SlideKind.TABLE:
+            if binding == "table":
+                return 95
+            if binding in {"body", "main_text"}:
+                return 45
+        if slide_spec.kind == SlideKind.CHART:
+            if binding in {"chart", "chart_image"}:
+                return 95
+            if binding == "table":
+                return 70
+        if slide_spec.kind == SlideKind.IMAGE:
+            if binding in {"image", "chart_image"}:
+                return 95
+            if binding in {"body", "main_text"}:
+                return 45
+        if slide_spec.kind == SlideKind.BULLETS:
+            if binding in {"bullets", "left_bullets", "right_bullets"}:
+                return 95
+            if binding in {"body", "main_text", "text"}:
+                return 75
+        if slide_spec.kind in {SlideKind.TEXT, SlideKind.TWO_COLUMN}:
+            if binding in {"body", "main_text", "text"}:
+                return 95
+            if binding in {"bullets", "left_bullets", "right_bullets"}:
+                return 70
+        if binding in {"subtitle", "secondary_text"}:
+            return 35
+        if binding in {"notes", "footer", "presentation_name"}:
+            return 10
+        return 20
+
+    def _shape_identity(self, shape) -> int:
+        try:
+            return int(getattr(shape, "shape_id"))
+        except (TypeError, ValueError):
+            return id(shape._element)
+
+    def _find_shape_for_prototype_token(
+        self,
+        slide,
+        token_spec: PrototypeTokenSpec,
+        used_shape_element_ids: set[int],
+    ):
+        candidates = [
+            shape
+            for shape in slide.shapes
+            if getattr(shape, "name", None) == token_spec.shape_name
+            and self._shape_identity(shape) not in used_shape_element_ids
+        ]
+        if not candidates:
+            return None
+
+        def distance(shape) -> int:
+            total = 0
+            for attr, expected in (
+                ("left", token_spec.left_emu),
+                ("top", token_spec.top_emu),
+                ("width", token_spec.width_emu),
+                ("height", token_spec.height_emu),
+            ):
+                if expected is None:
+                    continue
+                try:
+                    total += abs(int(getattr(shape, attr, 0) or 0) - int(expected))
+                except (TypeError, ValueError):
+                    continue
+            return total
+
+        return min(candidates, key=distance)
+
+    def _remove_stale_prototype_text_shapes(self, slide, slide_spec: SlideSpec, presentation_title: str) -> None:
+        allowed = {
+            self._normalize_generated_text(value)
+            for value in [
+                slide_spec.title,
+                slide_spec.subtitle,
+                slide_spec.text,
+                slide_spec.notes,
+                presentation_title,
+            ]
+            if value
+        }
+        allowed.update(self._normalize_generated_text(item) for item in slide_spec.bullets if item)
+        allowed.update(self._normalize_generated_text(item) for item in slide_spec.left_bullets if item)
+        allowed.update(self._normalize_generated_text(item) for item in slide_spec.right_bullets if item)
+        for block in slide_spec.content_blocks:
+            if block.text:
+                allowed.add(self._normalize_generated_text(block.text))
+            allowed.update(self._normalize_generated_text(item) for item in block.items if item)
+        allowed = {item for item in allowed if item}
+        if not allowed:
+            return
+
+        for shape in list(slide.shapes):
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            if (getattr(shape, "name", "") or "").startswith("A3_TABLE_CELL_"):
+                continue
+            paragraphs = [
+                self._normalize_generated_text(paragraph.text)
+                for paragraph in shape.text_frame.paragraphs
+                if self._normalize_generated_text(paragraph.text)
+            ]
+            if not paragraphs:
+                continue
+            if all(any(paragraph == item or paragraph in item or item in paragraph for item in allowed) for paragraph in paragraphs):
+                continue
+            self._clear_placeholder(shape)
+
+    def _remove_stale_prototype_media_shapes(
+        self,
+        slide,
+        slide_spec: SlideSpec,
+        used_shape_element_ids: set[int],
+        initial_media_shape_ids: set[int],
+    ) -> None:
+        for shape in list(slide.shapes):
+            shape_id = self._shape_identity(shape)
+            if shape_id not in initial_media_shape_ids:
+                continue
+            has_table = getattr(shape, "has_table", False)
+            has_chart = getattr(shape, "has_chart", False)
+            has_ole_object = self._shape_contains_ole_object(shape)
+            incompatible_media = (has_table and slide_spec.kind != SlideKind.TABLE) or (
+                has_chart and slide_spec.kind != SlideKind.CHART
+            ) or has_ole_object
+            if not incompatible_media and shape_id in used_shape_element_ids:
+                continue
+            if has_table or has_chart or has_ole_object:
+                self._remove_shape(shape)
+
+    def _normalize_generated_text(self, value: str | None) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip())
+
+    def _shape_contains_ole_object(self, shape) -> bool:
+        element = getattr(shape, "_element", None)
+        if element is None:
+            return False
+        return any(child.tag.endswith("}oleObj") for child in element.iter())
 
     def _build_token_value_map(self, slide_spec: SlideSpec, presentation_title: str) -> dict[str, str | list[str]]:
         token_map: dict[str, str | list[str]] = {
@@ -606,7 +913,7 @@ class PptxGenerator:
             if placeholder_spec.idx is not None and placeholder_spec.idx in placeholders:
                 shape = placeholders[placeholder_spec.idx]
                 used_placeholder_indices.add(placeholder_spec.idx)
-            elif not use_builtin_flow:
+            elif not use_builtin_flow or self._target_type_for_slide(slide_spec) == "auto_layout":
                 shape = self._materialize_shape_from_layout_spec(
                     slide,
                     placeholder_spec,
@@ -702,7 +1009,7 @@ class PptxGenerator:
         )
         if not all(isinstance(value, int) and value > 0 for value in geometry_values):
             return None
-        if role not in {"title", "subtitle", "body", "footer"}:
+        if role not in {"title", "subtitle", "body", "footer", "table", "chart", "image"}:
             return None
 
         shape = slide.shapes.add_textbox(
@@ -742,6 +1049,8 @@ class PptxGenerator:
             return "body"
         if binding == "footer":
             return "footer"
+        if binding in {"table", "chart", "image", "chart_image"}:
+            return binding
         if binding:
             return None
 
@@ -758,6 +1067,12 @@ class PptxGenerator:
             return "body"
         if effective_kind == PlaceholderKind.FOOTER:
             return "footer"
+        if effective_kind == PlaceholderKind.TABLE:
+            return "table"
+        if effective_kind == PlaceholderKind.CHART:
+            return "chart"
+        if effective_kind == PlaceholderKind.IMAGE:
+            return "image"
         return None
 
     def _apply_background_xml(self, slide, background_xml: str | None) -> None:
@@ -955,11 +1270,45 @@ class PptxGenerator:
     def _apply_vertical_anchor(self, text_frame, anchor: str | None) -> None:
         if not anchor:
             return
+        normalized_anchor = self._normalized_vertical_anchor(anchor)
+        if normalized_anchor is None:
+            return
         try:
             body_pr = text_frame._txBody.bodyPr
-            body_pr.set("anchor", anchor)
+            body_pr.set("anchor", normalized_anchor)
         except Exception:
             pass
+
+    def _normalized_vertical_anchor(self, anchor: str | None) -> str | None:
+        if not anchor:
+            return None
+        normalized = str(anchor).strip().lower()
+        if normalized in {"t", "top"}:
+            return "t"
+        if normalized in {"ctr", "center", "middle", "middle (3)"}:
+            return "ctr"
+        if normalized in {"b", "bottom"}:
+            return "b"
+        if normalized in {"just", "justify", "dist", "distributed"}:
+            return normalized if normalized in {"just", "dist"} else {"justify": "just", "distributed": "dist"}[normalized]
+        return None
+
+    def _normalize_text_body_anchors(self, root) -> bool:
+        changed = False
+        for element in root.iter():
+            if not element.tag.endswith("}bodyPr"):
+                continue
+            anchor = element.get("anchor")
+            if not anchor:
+                continue
+            normalized_anchor = self._normalized_vertical_anchor(anchor)
+            if normalized_anchor is None:
+                del element.attrib["anchor"]
+                changed = True
+            elif normalized_anchor != anchor:
+                element.set("anchor", normalized_anchor)
+                changed = True
+        return changed
 
     def _apply_text_style(
         self,
@@ -971,18 +1320,26 @@ class PptxGenerator:
     ) -> None:
         for paragraph in text_frame.paragraphs:
             if style.line_spacing is not None:
-                paragraph.line_spacing = style.line_spacing
+                line_spacing = self._safe_point_value(style.line_spacing)
+                if line_spacing is not None:
+                    paragraph.line_spacing = line_spacing
             if style.space_after_pt is not None:
-                paragraph.space_after = Pt(style.space_after_pt)
+                space_after = self._safe_point_value(style.space_after_pt)
+                if space_after is not None:
+                    paragraph.space_after = Pt(space_after)
             if style.space_before_pt is not None:
-                paragraph.space_before = Pt(style.space_before_pt)
+                space_before = self._safe_point_value(style.space_before_pt)
+                if space_before is not None:
+                    paragraph.space_before = Pt(space_before)
                 if not paragraph.runs and paragraph.text:
                     run = paragraph.add_run()
                     run.text = paragraph.text
                     paragraph.text = ""
             for run in paragraph.runs:
                 if style.font_size_pt is not None and not preserve_font_size:
-                    run.font.size = Pt(style.font_size_pt)
+                    font_size = self._safe_point_value(style.font_size_pt)
+                    if font_size is not None:
+                        run.font.size = Pt(font_size)
                 if apply_font_family and style.font_family:
                     self._apply_run_font_family(run, style.font_family)
                 if style.bold is not None:
@@ -1007,11 +1364,17 @@ class PptxGenerator:
 
     def _apply_paragraph_style(self, paragraph, style: TemplateTextStyleSpec) -> None:
         if style.line_spacing is not None:
-            paragraph.line_spacing = style.line_spacing
+            line_spacing = self._safe_point_value(style.line_spacing)
+            if line_spacing is not None:
+                paragraph.line_spacing = line_spacing
         if style.space_after_pt is not None:
-            paragraph.space_after = Pt(style.space_after_pt)
+            space_after = self._safe_point_value(style.space_after_pt)
+            if space_after is not None:
+                paragraph.space_after = Pt(space_after)
         if style.space_before_pt is not None:
-            paragraph.space_before = Pt(style.space_before_pt)
+            space_before = self._safe_point_value(style.space_before_pt)
+            if space_before is not None:
+                paragraph.space_before = Pt(space_before)
         ppr = paragraph._p.get_or_add_pPr()
         if style.margin_left_emu is not None:
             ppr.set("marL", str(style.margin_left_emu))
@@ -1049,7 +1412,9 @@ class PptxGenerator:
             paragraph.text = ""
         for run in paragraph.runs:
             if style.font_size_pt is not None:
-                run.font.size = Pt(style.font_size_pt)
+                font_size = self._safe_point_value(style.font_size_pt)
+                if font_size is not None:
+                    run.font.size = Pt(font_size)
             if apply_font_family and style.font_family:
                 self._apply_run_font_family(run, style.font_family)
             if style.bold is not None:
@@ -1071,6 +1436,17 @@ class PptxGenerator:
                 clamped = min(max(points, layout_profile.min_font_pt), layout_profile.max_font_pt)
                 if clamped != points:
                     run.font.size = Pt(clamped)
+
+    def _safe_point_value(self, value: float | int | None) -> float | None:
+        if value is None:
+            return None
+        try:
+            points = float(value)
+        except (TypeError, ValueError):
+            return None
+        if points > 132.0:
+            points = points / 12700.0
+        return points if 0.0 <= points <= 132.0 else None
 
     def _apply_shape_style(self, shape, style: TemplateShapeStyleSpec) -> None:
         try:
@@ -1459,7 +1835,7 @@ class PptxGenerator:
         if slide_spec.content_blocks and placeholder_idx == 14 and binding in {"body", "main_text", "bullets"}:
             self._set_content_blocks(shape, slide_spec.content_blocks, layout_profile)
             return
-        if slide_spec.content_blocks and placeholder_idx == 15 and binding in {"secondary_text", "notes"}:
+        if slide_spec.content_blocks and binding in {"secondary_text", "notes"}:
             self._clear_placeholder(shape)
             return
         if slide_spec.content_blocks and placeholder_idx == 13 and binding == "subtitle":
@@ -2065,53 +2441,116 @@ class PptxGenerator:
             except (AttributeError, TypeError, ValueError):
                 pass
 
-        if getattr(shape, "has_table", False):
-            table = shape.table
-            max_rows = len(table.rows)
-            max_cols = len(table.columns)
-            current_row = 0
-            if headers and max_rows > 0:
-                for col_index, value in enumerate(headers[:max_cols]):
-                    table.cell(0, col_index).text = value
-                current_row = 1
-            for row_index, row in enumerate(rows, start=current_row):
-                if row_index >= max_rows:
-                    break
-                for col_index, value in enumerate(row[:max_cols]):
-                    table.cell(row_index, col_index).text = value
-            final_height = self._format_table(
-                table,
-                slide_spec.table,
-                shape.width,
-                self._table_target_height(shape),
-                placeholder_spec=placeholder_spec,
-            )
-            shape.height = final_height
-            if render_as_shapes:
-                original_left = shape.left
-                original_top = shape.top
-                original_width = shape.width
-                original_height = shape.height
-                shape.left = -shape.width - 1000000
-                self._render_visible_table_grid(
-                    shape.part.slide.shapes,
+        if not getattr(shape, "has_table", False):
+            try:
+                target_left = shape.left
+                target_top = shape.top
+                target_width = shape.width
+                target_height = self._table_target_height(shape)
+                slide_shapes = shape.part.slide.shapes
+                if getattr(shape, "has_text_frame", False):
+                    self._set_text(shape, "", profile_for_layout("text_full_width"))
+                graphic_frame = slide_shapes.add_table(row_count, col_count, target_left, target_top, target_width, target_height)
+                table = graphic_frame.table
+                current_row = 0
+                if headers:
+                    for col_index, value in enumerate(headers):
+                        table.cell(0, col_index).text = value
+                    current_row = 1
+                for row_index, row in enumerate(rows, start=current_row):
+                    for col_index, value in enumerate(row):
+                        if col_index < col_count:
+                            table.cell(row_index, col_index).text = value
+                final_height = self._format_table(
+                    table,
                     slide_spec.table,
-                    table,
-                    left=original_left,
-                    top=original_top,
-                    width=original_width,
-                    height=original_height,
+                    graphic_frame.width,
+                    graphic_frame.height,
+                    placeholder_spec=placeholder_spec,
                 )
-            else:
-                self._overlay_table_grid_lines(
-                    shape.part.slide.shapes,
+                graphic_frame.height = final_height
+                if render_as_shapes:
+                    original_left = graphic_frame.left
+                    original_top = graphic_frame.top
+                    original_width = graphic_frame.width
+                    original_height = graphic_frame.height
+                    graphic_frame.left = -graphic_frame.width - 1000000
+                    self._render_visible_table_grid(
+                        slide_shapes,
+                        slide_spec.table,
+                        table,
+                        left=original_left,
+                        top=original_top,
+                        width=original_width,
+                        height=original_height,
+                    )
+                else:
+                    self._overlay_table_grid_lines(
+                        slide_shapes,
+                        table,
+                        left=graphic_frame.left,
+                        top=graphic_frame.top,
+                        width=graphic_frame.width,
+                        height=graphic_frame.height,
+                    )
+                return
+            except (AttributeError, TypeError, ValueError):
+                pass
+
+        if getattr(shape, "has_table", False):
+            try:
+                target_left = shape.left
+                target_top = shape.top
+                target_width = shape.width
+                target_height = self._table_target_height(shape)
+                slide_shapes = shape.part.slide.shapes
+                self._remove_shape(shape)
+                graphic_frame = slide_shapes.add_table(row_count, col_count, target_left, target_top, target_width, target_height)
+                table = graphic_frame.table
+                current_row = 0
+                if headers:
+                    for col_index, value in enumerate(headers):
+                        table.cell(0, col_index).text = value
+                    current_row = 1
+                for row_index, row in enumerate(rows, start=current_row):
+                    for col_index, value in enumerate(row):
+                        if col_index < col_count:
+                            table.cell(row_index, col_index).text = value
+                final_height = self._format_table(
                     table,
-                    left=shape.left,
-                    top=shape.top,
-                    width=shape.width,
-                    height=shape.height,
+                    slide_spec.table,
+                    graphic_frame.width,
+                    graphic_frame.height,
+                    placeholder_spec=placeholder_spec,
                 )
-            return
+                graphic_frame.height = final_height
+                if render_as_shapes:
+                    original_left = graphic_frame.left
+                    original_top = graphic_frame.top
+                    original_width = graphic_frame.width
+                    original_height = graphic_frame.height
+                    graphic_frame.left = -graphic_frame.width - 1000000
+                    self._render_visible_table_grid(
+                        slide_shapes,
+                        slide_spec.table,
+                        table,
+                        left=original_left,
+                        top=original_top,
+                        width=original_width,
+                        height=original_height,
+                    )
+                else:
+                    self._overlay_table_grid_lines(
+                        slide_shapes,
+                        table,
+                        left=graphic_frame.left,
+                        top=graphic_frame.top,
+                        width=graphic_frame.width,
+                        height=graphic_frame.height,
+                    )
+                return
+            except (AttributeError, TypeError, ValueError):
+                pass
 
         as_lines = []
         if headers:
@@ -2171,7 +2610,13 @@ class PptxGenerator:
                 top = top + int(height * plot_top)
                 width = int(width * plot_width)
                 height = int(height * plot_height)
-            if getattr(shape, "is_placeholder", False):
+            if getattr(shape, "has_table", False):
+                self._remove_shape(shape)
+            elif (
+                getattr(shape, "is_placeholder", False)
+                or getattr(shape, "has_chart", False)
+                or getattr(shape, "has_text_frame", False)
+            ):
                 self._clear_placeholder(shape)
 
             graphic_frame = slide_shapes.add_chart(chart_type, left, top, width, height, chart_data)
@@ -3463,7 +3908,13 @@ class PptxGenerator:
                 role_style = header_style if row_index == 0 and headers else body_style
                 role_fallback_size = font_size.pt if hasattr(font_size, "pt") else float(font_size)
                 configured_size = self._component_font_size("table", "header" if row_index == 0 and headers else "body", fallback=role_fallback_size)
-                effective_font_size = min(configured_size, role_fallback_size)
+                effective_font_size = self._fit_table_overlay_font_size(
+                    str(value or ""),
+                    cell_width=cell_width,
+                    row_height=row_height,
+                    margins=margins,
+                    base_font_size=min(configured_size, role_fallback_size),
+                )
                 lines = str(value or "").splitlines() or [str(value or "")]
                 for line_index, line in enumerate(lines):
                     paragraph = text_frame.paragraphs[0] if line_index == 0 else text_frame.add_paragraph()
@@ -3488,6 +3939,29 @@ class PptxGenerator:
             top=top,
             border_rgb=border_rgb,
         )
+
+    def _fit_table_overlay_font_size(
+        self,
+        value: str,
+        *,
+        cell_width: int,
+        row_height: int,
+        margins: tuple[int, int, int, int],
+        base_font_size: float,
+    ) -> float:
+        margin_left, margin_right, margin_top, margin_bottom = margins
+        available_width = max(int(cell_width - margin_left - margin_right), 1)
+        available_height = max(int(row_height - margin_top - margin_bottom), 1)
+        text = value or ""
+        for candidate in range(int(math.floor(base_font_size)), 4, -1):
+            char_width_emu = max(int(candidate * self.EMU_PER_PT * 0.52), 1)
+            chars_per_line = max(4, int(available_width / char_width_emu))
+            explicit_lines = text.splitlines() or [text]
+            line_count = sum(max(1, (len(line) + chars_per_line - 1) // chars_per_line) for line in explicit_lines)
+            required_height = int(line_count * candidate * self.EMU_PER_PT * 1.18)
+            if required_height <= int(available_height * 1.04):
+                return float(candidate)
+        return 5.0
 
     def _draw_visible_table_borders(self, slide_shapes, column_widths: list[int], row_heights: list[int], *, left: int, top: int, border_rgb: RGBColor) -> None:
         thickness = 28000
@@ -3609,6 +4083,7 @@ class PptxGenerator:
             self._remove_shape(shape)
             return
         if getattr(shape, "has_table", False):
+            self._remove_shape(shape)
             return
         self._remove_shape(shape)
 
@@ -3633,6 +4108,12 @@ class PptxGenerator:
                 duplicates = sorted({name for name in archive_names if archive_names.count(name) > 1})
                 if duplicates:
                     raise ValueError(f"Generated PPTX contains duplicate package entries: {', '.join(duplicates[:5])}")
+                package_violations = self._package_validation_violations(archive)
+                if package_violations:
+                    raise ValueError(
+                        "Generated PPTX package validation failed: "
+                        + "; ".join(package_violations[:8])
+                    )
 
             presentation = Presentation(str(output_path))
             if len(presentation.slides) != expected_slide_count:
@@ -3642,3 +4123,374 @@ class PptxGenerator:
         except Exception:
             output_path.unlink(missing_ok=True)
             raise
+
+    def _sanitize_output_package(self, output_path: Path) -> None:
+        temp_path = output_path.with_suffix(f"{output_path.suffix}.tmp")
+        removed_relationship_ids_by_part: dict[str, set[str]] = {}
+        entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+
+        with zipfile.ZipFile(output_path, "r") as source:
+            for info in source.infolist():
+                data = source.read(info.filename)
+                if info.filename.endswith(".rels"):
+                    try:
+                        root = parse_xml(data)
+                    except Exception:
+                        entries.append((info, data))
+                        continue
+                    removed_ids: set[str] = set()
+                    for relationship in list(root):
+                        relationship_type = relationship.get("Type") or ""
+                        should_remove = relationship.get("TargetMode") == "External" or (
+                            info.filename.startswith("ppt/slides/_rels/")
+                            and relationship_type.endswith("/oleObject")
+                        )
+                        if not should_remove:
+                            continue
+                        relationship_id = relationship.get("Id")
+                        if relationship_id:
+                            removed_ids.add(relationship_id)
+                        root.remove(relationship)
+                    if removed_ids:
+                        source_part = self._relationship_source_part(info.filename)
+                        if source_part is not None:
+                            removed_relationship_ids_by_part.setdefault(source_part, set()).update(removed_ids)
+                        data = self._serialize_xml(root)
+                entries.append((info, data))
+
+        sanitized_entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+        for info, data in entries:
+            if info.filename.endswith(".xml"):
+                removed_ids = removed_relationship_ids_by_part.get(info.filename, set())
+                try:
+                    root = parse_xml(data)
+                except Exception:
+                    sanitized_entries.append((info, data))
+                    continue
+                changed = False
+                changed = self._normalize_text_body_anchors(root) or changed
+                if info.filename.startswith("ppt/slides/slide") and info.filename.endswith(".xml"):
+                    changed = self._strip_ole_object_shapes(root) or changed
+                    changed = self._strip_extension_lists(root) or changed
+                if info.filename == "ppt/presentation.xml":
+                    changed = self._strip_extension_lists(root) or changed
+                if removed_ids:
+                    changed = self._strip_removed_relationship_references(root, removed_ids) or changed
+                if info.filename.startswith("ppt/slides/slide") and info.filename.endswith(".xml"):
+                    changed = self._renumber_duplicate_slide_shape_ids(root) or changed
+                if changed:
+                    data = self._serialize_xml(root)
+            sanitized_entries.append((info, data))
+
+        sanitized_entries = self._remove_unused_internal_relationships(sanitized_entries)
+        referenced_parts = self._referenced_package_parts(sanitized_entries)
+        removed_parts: set[str] = set()
+        filtered_entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+        for info, data in sanitized_entries:
+            if self._is_removable_orphan_part(info.filename) and info.filename not in referenced_parts:
+                removed_parts.add(info.filename)
+                continue
+            filtered_entries.append((info, data))
+
+        if removed_parts:
+            sanitized_entries = []
+            for info, data in filtered_entries:
+                if info.filename == "[Content_Types].xml":
+                    try:
+                        root = parse_xml(data)
+                    except Exception:
+                        sanitized_entries.append((info, data))
+                        continue
+                    if self._remove_content_type_overrides(root, removed_parts):
+                        data = self._serialize_xml(root)
+                sanitized_entries.append((info, data))
+        else:
+            sanitized_entries = filtered_entries
+
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as target:
+            for info, data in sanitized_entries:
+                target.writestr(info, data)
+        temp_path.replace(output_path)
+
+    def _serialize_xml(self, root) -> bytes:
+        return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+    def _strip_removed_relationship_references(self, root, removed_relationship_ids: set[str]) -> bool:
+        changed = False
+        for element in list(root.iter()):
+            for attr_name, attr_value in list(element.attrib.items()):
+                if attr_name.startswith(f"{{{self.RELATIONSHIP_NAMESPACE}}}") and attr_value in removed_relationship_ids:
+                    del element.attrib[attr_name]
+                    changed = True
+            local_name = element.tag.rsplit("}", 1)[-1]
+            if local_name in {"hlinkClick", "hlinkMouseOver"} and not any(
+                attr_name.startswith(f"{{{self.RELATIONSHIP_NAMESPACE}}}") for attr_name in element.attrib
+            ):
+                parent = element.getparent()
+                if parent is not None:
+                    parent.remove(element)
+                    changed = True
+        return changed
+
+    def _strip_ole_object_shapes(self, root) -> bool:
+        changed = False
+        for ole_object in list(root.iter()):
+            if not ole_object.tag.endswith("}oleObj"):
+                continue
+            container = ole_object
+            while container.getparent() is not None:
+                parent = container.getparent()
+                if parent.tag.endswith("}spTree"):
+                    parent.remove(container)
+                    changed = True
+                    break
+                container = parent
+            else:
+                parent = ole_object.getparent()
+                if parent is not None:
+                    parent.remove(ole_object)
+                    changed = True
+        return changed
+
+    def _strip_extension_lists(self, root) -> bool:
+        changed = False
+        for element in list(root.iter()):
+            if element.tag.rsplit("}", 1)[-1] != "extLst":
+                continue
+            parent = element.getparent()
+            if parent is None:
+                continue
+            parent.remove(element)
+            changed = True
+        return changed
+
+    def _renumber_duplicate_slide_shape_ids(self, root) -> bool:
+        c_nv_pr_elements = [element for element in root.iter() if element.tag.endswith("}cNvPr")]
+        used_ids: set[int] = set()
+        next_id = 1
+        changed = False
+        for element in c_nv_pr_elements:
+            raw_shape_id = element.get("id")
+            try:
+                shape_id = int(raw_shape_id or "0")
+            except ValueError:
+                shape_id = 0
+            if shape_id > 0 and shape_id not in used_ids:
+                used_ids.add(shape_id)
+                next_id = max(next_id, shape_id + 1)
+                continue
+            while next_id in used_ids:
+                next_id += 1
+            element.set("id", str(next_id))
+            used_ids.add(next_id)
+            next_id += 1
+            changed = True
+        return changed
+
+    def _referenced_package_parts(self, entries: list[tuple[zipfile.ZipInfo, bytes]]) -> set[str]:
+        entry_names = {info.filename for info, _data in entries}
+        referenced_parts: set[str] = set()
+        for info, data in entries:
+            if not info.filename.endswith(".rels"):
+                continue
+            try:
+                root = parse_xml(data)
+            except Exception:
+                continue
+            source_base = self._relationship_source_base(info.filename)
+            for relationship in root:
+                if relationship.get("TargetMode") == "External":
+                    continue
+                target = relationship.get("Target") or ""
+                if not target:
+                    continue
+                target_part = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join(source_base, target))
+                if target_part in entry_names:
+                    referenced_parts.add(target_part)
+        return referenced_parts
+
+    def _is_removable_orphan_part(self, filename: str) -> bool:
+        lowered = filename.lower()
+        return lowered.startswith("ppt/embeddings/") or lowered.startswith("ppt/media/")
+
+    def _remove_content_type_overrides(self, root, removed_parts: set[str]) -> bool:
+        changed = False
+        removed_part_names = {f"/{part}" for part in removed_parts}
+        for child in list(root):
+            if child.tag.rsplit("}", 1)[-1] != "Override":
+                continue
+            if child.get("PartName") not in removed_part_names:
+                continue
+            root.remove(child)
+            changed = True
+        return changed
+
+    def _remove_unused_internal_relationships(
+        self,
+        entries: list[tuple[zipfile.ZipInfo, bytes]],
+    ) -> list[tuple[zipfile.ZipInfo, bytes]]:
+        data_by_name = {info.filename: data for info, data in entries}
+        referenced_ids_by_part: dict[str, set[str]] = {}
+        for name, data in data_by_name.items():
+            if not name.endswith(".xml"):
+                continue
+            try:
+                root = parse_xml(data)
+            except Exception:
+                continue
+            referenced_ids_by_part[name] = self._referenced_relationship_ids(root)
+
+        pruned_entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+        for info, data in entries:
+            if not info.filename.endswith(".rels"):
+                pruned_entries.append((info, data))
+                continue
+            source_part = self._relationship_source_part(info.filename)
+            if source_part is None or source_part not in referenced_ids_by_part:
+                pruned_entries.append((info, data))
+                continue
+            try:
+                root = parse_xml(data)
+            except Exception:
+                pruned_entries.append((info, data))
+                continue
+            referenced_ids = referenced_ids_by_part[source_part]
+            changed = False
+            for relationship in list(root):
+                relationship_id = relationship.get("Id") or ""
+                relationship_type = relationship.get("Type") or ""
+                if relationship_id in referenced_ids or self._is_required_relationship_type(relationship_type):
+                    continue
+                root.remove(relationship)
+                changed = True
+            if changed:
+                data = self._serialize_xml(root)
+            pruned_entries.append((info, data))
+        return pruned_entries
+
+    def _is_required_relationship_type(self, relationship_type: str) -> bool:
+        return relationship_type.endswith(
+            (
+                "/slide",
+                "/slideLayout",
+                "/slideMaster",
+                "/theme",
+                "/notesMaster",
+                "/notesSlide",
+                "/presProps",
+                "/viewProps",
+                "/tableStyles",
+                "/font",
+                "/commentAuthors",
+                "/authors",
+            )
+        )
+
+    def _package_validation_violations(self, archive: zipfile.ZipFile) -> list[str]:
+        names = set(archive.namelist())
+        violations: list[str] = []
+        relationship_ids_by_part: dict[str, set[str]] = {}
+        referenced_parts: set[str] = set()
+
+        for name in sorted(names):
+            if not name.endswith(".rels"):
+                continue
+            try:
+                root = parse_xml(archive.read(name))
+            except Exception as exc:
+                violations.append(f"invalid_relationship_xml:{name}:{type(exc).__name__}")
+                continue
+            source_base = self._relationship_source_base(name)
+            relationship_ids: set[str] = set()
+            for relationship in root:
+                relationship_id = relationship.get("Id") or ""
+                if relationship_id:
+                    if relationship_id in relationship_ids:
+                        violations.append(f"duplicate_relationship_id:{name}:{relationship_id}")
+                    relationship_ids.add(relationship_id)
+                target = relationship.get("Target") or ""
+                relationship_type = relationship.get("Type") or ""
+                if name.startswith("ppt/slides/_rels/") and relationship_type.endswith("/oleObject"):
+                    violations.append(f"slide_ole_object_relationship:{name}:{relationship_id}")
+                if relationship.get("TargetMode") == "External":
+                    violations.append(f"external_relationship:{name}:{relationship_id}")
+                    continue
+                if not target:
+                    violations.append(f"empty_relationship_target:{name}:{relationship_id}")
+                    continue
+                target_part = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join(source_base, target))
+                if target_part not in names:
+                    violations.append(f"missing_relationship_target:{name}:{relationship_id}->{target_part}")
+                else:
+                    referenced_parts.add(target_part)
+            source_part = self._relationship_source_part(name)
+            if source_part:
+                relationship_ids_by_part[source_part] = relationship_ids
+
+        for name in sorted(names):
+            if not name.endswith(".xml"):
+                continue
+            try:
+                root = parse_xml(archive.read(name))
+            except Exception as exc:
+                violations.append(f"invalid_part_xml:{name}:{type(exc).__name__}")
+                continue
+            referenced_relationship_ids = self._referenced_relationship_ids(root)
+            if referenced_relationship_ids:
+                declared_relationship_ids = relationship_ids_by_part.get(name, set())
+                for relationship_id in sorted(referenced_relationship_ids - declared_relationship_ids):
+                    violations.append(f"dangling_relationship_reference:{name}:{relationship_id}")
+            if name.startswith("ppt/slides/slide") and name.endswith(".xml"):
+                duplicate_shape_ids = self._duplicate_slide_shape_ids(root)
+                for shape_id in duplicate_shape_ids[:5]:
+                    violations.append(f"duplicate_slide_shape_id:{name}:{shape_id}")
+            invalid_anchors = self._invalid_text_body_anchors(root)
+            for anchor in invalid_anchors[:5]:
+                violations.append(f"invalid_text_body_anchor:{name}:{anchor}")
+
+        for name in sorted(names):
+            if self._is_removable_orphan_part(name) and name not in referenced_parts:
+                violations.append(f"orphan_package_part:{name}")
+
+        return violations
+
+    def _relationship_source_part(self, rels_name: str) -> str | None:
+        if rels_name == "_rels/.rels":
+            return None
+        if "/_rels/" not in rels_name or not rels_name.endswith(".rels"):
+            return None
+        prefix, file_name = rels_name.split("/_rels/", 1)
+        return posixpath.join(prefix, file_name[:-5])
+
+    def _relationship_source_base(self, rels_name: str) -> str:
+        source_part = self._relationship_source_part(rels_name)
+        if source_part is None:
+            return ""
+        return posixpath.dirname(source_part)
+
+    def _referenced_relationship_ids(self, root) -> set[str]:
+        relationship_ids: set[str] = set()
+        for element in root.iter():
+            for attr_name, attr_value in element.attrib.items():
+                if attr_name.startswith(f"{{{self.RELATIONSHIP_NAMESPACE}}}") and attr_value:
+                    relationship_ids.add(attr_value)
+        return relationship_ids
+
+    def _duplicate_slide_shape_ids(self, root) -> list[str]:
+        shape_ids: list[str] = []
+        for element in root.iter():
+            if element.tag.endswith("}cNvPr"):
+                shape_id = element.get("id")
+                if shape_id:
+                    shape_ids.append(shape_id)
+        return sorted({shape_id for shape_id in shape_ids if shape_ids.count(shape_id) > 1})
+
+    def _invalid_text_body_anchors(self, root) -> list[str]:
+        invalid: list[str] = []
+        for element in root.iter():
+            if not element.tag.endswith("}bodyPr"):
+                continue
+            anchor = element.get("anchor")
+            if anchor and self._normalized_vertical_anchor(anchor) != anchor:
+                invalid.append(anchor)
+        return invalid

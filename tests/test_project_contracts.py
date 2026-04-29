@@ -841,13 +841,8 @@ class ProjectContractTests(unittest.TestCase):
         )
         resolved = self.registry.resolve_layout_key_for_slide(manifest, slide)
 
-        self.assertEqual(reviews[0].available_layouts[0].source, "direct_shape_binding")
-        self.assertEqual(reviews[0].available_layouts[0].key, "direct_slide_0")
-        self.assertIn("direct binding", reviews[0].available_layouts[0].match_summary or "")
-        self.assertIn("source shapes", reviews[0].available_layouts[0].match_summary or "")
-        self.assertTrue(
-            any("shape bindings" in reason for reason in reviews[0].available_layouts[0].recommendation_reasons)
-        )
+        self.assertEqual(reviews[0].available_layouts[0].source, "layout")
+        self.assertEqual(reviews[0].available_layouts[0].key, "text_layout")
         self.assertEqual(resolved, "direct_slide_0")
 
     def test_template_registry_ranks_text_layouts_by_semantics_and_capacity(self) -> None:
@@ -2202,6 +2197,81 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(audits[0].target_type, "direct_shape_binding")
         self.assertTrue(audits[0].degraded_but_valid)
         self.assertEqual(audits[0].target_degradation_reasons, ())
+
+    def test_generator_renders_direct_shape_binding_table_as_native_table(self) -> None:
+        pptx = Presentation()
+        slide = pptx.slides.add_slide(pptx.slide_layouts[6])
+        table_shape = slide.shapes.add_textbox(600000, 1600000, 7600000, 2600000)
+        table_shape.name = "Table Box"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            template_path = Path(temp_dir) / "direct-binding-table-template.pptx"
+            pptx.save(str(template_path))
+            manifest = TemplateManifest(
+                template_id="direct_binding_table_demo",
+                display_name="Direct Binding Table Demo",
+                source_pptx=template_path.name,
+                inventory=ExtractedPresentationInventory(
+                    degradation_mode="direct_shape_binding",
+                    slides=[
+                        ExtractedSlideInventory(
+                            source_kind=InventorySourceKind.SLIDE,
+                            source_index=0,
+                            name="Direct Table Slide",
+                            component_ids=["slide_0_table"],
+                            supported_slide_kinds=["table"],
+                            representation_hints=["table"],
+                        )
+                    ],
+                    components=[
+                        ExtractedComponent(
+                            component_id="slide_0_table",
+                            source_kind=InventorySourceKind.SLIDE,
+                            source_index=0,
+                            source_name="Direct Table Slide",
+                            shape_name="Table Box",
+                            component_type=ExtractedComponentType.TABLE,
+                            role=ExtractedComponentRole.TABLE,
+                            binding="table",
+                            confidence=ComponentConfidence.MEDIUM,
+                            editability=ComponentEditability.EDITABLE,
+                            capabilities=["table"],
+                            geometry=ComponentGeometry(left_emu=600000, top_emu=1600000, width_emu=7600000, height_emu=2600000),
+                        ),
+                    ],
+                ),
+            )
+            plan = PresentationPlan(
+                template_id="direct_binding_table_demo",
+                title="Direct Binding Table Demo",
+                slides=[
+                    SlideSpec(
+                        kind=SlideKind.TABLE,
+                        title="Direct table",
+                        table=TableBlock(headers=["Metric", "Value"], rows=[["GMV", "125"], ["NPS", "65"]]),
+                        render_target=SlideRenderTarget(
+                            type=RenderTargetType.DIRECT_SHAPE_BINDING,
+                            key="direct_slide_0",
+                        ),
+                    )
+                ],
+            )
+
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+            audits = audit_generated_presentation(output_path, plan, manifest)
+
+        rendered_tables = [shape for shape in presentation.slides[0].shapes if getattr(shape, "has_table", False)]
+        self.assertEqual(len(rendered_tables), 1)
+        self.assertEqual(rendered_tables[0].table.cell(0, 0).text, "Metric")
+        self.assertEqual(rendered_tables[0].table.cell(1, 0).text, "GMV")
+        self.assertTrue(audits[0].has_table)
+        self.assertNotIn("missing_table_shape", {item.rule for item in find_capacity_violations(audits)})
 
     def test_deck_audit_uses_manifest_geometry_metadata_for_uploaded_prototype_templates(self) -> None:
         template_id = "uploaded_fixture_template"

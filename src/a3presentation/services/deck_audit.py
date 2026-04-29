@@ -676,6 +676,15 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                         details="; ".join(audit.table_overlay_overflow_details[:4]),
                     )
                 )
+        elif audit.has_table:
+            violations.append(
+                CapacityViolation(
+                    slide_index=audit.slide_index,
+                    title=audit.title,
+                    rule="unexpected_table_shape",
+                    details=f"kind={audit.kind} target={audit.layout_key}",
+                )
+            )
 
         if audit.kind == SlideKind.CHART.value:
             expected_title_font_pt = audit.expected_title_font_pt or EXPECTED_CHART_TITLE_FONT_PT
@@ -784,6 +793,15 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                         ),
                     )
                 )
+        elif audit.has_chart:
+            violations.append(
+                CapacityViolation(
+                    slide_index=audit.slide_index,
+                    title=audit.title,
+                    rule="unexpected_chart_shape",
+                    details=f"kind={audit.kind} target={audit.layout_key}",
+                )
+            )
             if audit.chart_content_width_ratio and audit.chart_content_width_ratio < 0.9:
                 violations.append(
                     CapacityViolation(
@@ -1108,7 +1126,7 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
             expected_source = audit.expected_items
             expected = [_normalize_audit_text(item) for item in expected_source if _normalize_audit_text(item)]
             rendered = [_normalize_audit_text(item) for item in audit.rendered_items if _normalize_audit_text(item)]
-            if rendered and expected != rendered:
+            if rendered and not _rendered_items_preserve_expected_order(expected, rendered):
                 violations.append(
                     CapacityViolation(
                         slide_index=audit.slide_index,
@@ -1489,12 +1507,24 @@ def _shapes_matching_geometry(slide, shape_spec) -> list[object]:
         shape
         for shape in slide.shapes
         if getattr(shape, "has_text_frame", False)
-        and abs(getattr(shape, "left", 0) - expected_left) <= GEOMETRY_TOLERANCE_EMU
-        and abs(getattr(shape, "top", 0) - expected_top) <= GEOMETRY_TOLERANCE_EMU
-        and abs(getattr(shape, "width", 0) - expected_width) <= GEOMETRY_TOLERANCE_EMU
-        and abs(getattr(shape, "height", 0) - expected_height) <= GEOMETRY_TOLERANCE_EMU
+        and _shape_dimension(shape, "left") is not None
+        and _shape_dimension(shape, "top") is not None
+        and _shape_dimension(shape, "width") is not None
+        and _shape_dimension(shape, "height") is not None
+        and abs(_shape_dimension(shape, "left") - expected_left) <= GEOMETRY_TOLERANCE_EMU
+        and abs(_shape_dimension(shape, "top") - expected_top) <= GEOMETRY_TOLERANCE_EMU
+        and abs(_shape_dimension(shape, "width") - expected_width) <= GEOMETRY_TOLERANCE_EMU
+        and abs(_shape_dimension(shape, "height") - expected_height) <= GEOMETRY_TOLERANCE_EMU
     ]
     return sorted(matches, key=lambda shape: (getattr(shape, "top", 0), getattr(shape, "left", 0)))
+
+
+def _shape_dimension(shape, attr: str) -> int | None:
+    value = getattr(shape, attr, None)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _preferred_text_shape(shapes: list[object]) -> object | None:
@@ -1652,3 +1682,20 @@ def _expected_items_for_slide(slide_spec: SlideSpec) -> tuple[str, ...]:
 def _normalize_audit_text(text: str) -> str:
     normalized = re.sub(r"\s+", " ", (text or "").strip())
     return re.sub(r"\s+([%‰₽])", r"\1", normalized)
+
+
+def _rendered_items_preserve_expected_order(expected: list[str], rendered: list[str]) -> bool:
+    if not expected:
+        return True
+    if expected == rendered:
+        return True
+    rendered_text = "\n".join(rendered)
+    cursor = 0
+    for item in expected:
+        if not item:
+            continue
+        position = rendered_text.find(item, cursor)
+        if position < 0:
+            return False
+        cursor = position + len(item)
+    return True

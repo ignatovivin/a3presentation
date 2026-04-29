@@ -342,7 +342,7 @@ class ApiContractTests(unittest.TestCase):
         self.assertTrue(response.detected_components)
         self.assertTrue(all(review.available_layouts for review in response.slide_layout_reviews))
         self.assertTrue(
-            any(option.source == "prototype" for review in response.slide_layout_reviews for option in review.available_layouts)
+            any(option.source == "layout" for review in response.slide_layout_reviews for option in review.available_layouts)
         )
         self.assertTrue(
             any(
@@ -367,16 +367,16 @@ class ApiContractTests(unittest.TestCase):
                 if response.plan.slides[review.slide_index].render_target is not None
             )
         )
-        prototype_option = next(
+        layout_option = next(
             option
             for review in response.slide_layout_reviews
             for option in review.available_layouts
-            if option.source == "prototype"
+            if option.source == "layout"
         )
-        self.assertTrue(prototype_option.source_label)
-        self.assertTrue(prototype_option.match_summary)
-        self.assertTrue(prototype_option.recommendation_label)
-        self.assertTrue(prototype_option.recommendation_reasons)
+        self.assertTrue(layout_option.source_label)
+        self.assertTrue(layout_option.match_summary)
+        self.assertTrue(layout_option.recommendation_label)
+        self.assertTrue(layout_option.recommendation_reasons)
 
     def test_slide_layout_reviews_expose_stable_ranking_metadata(self) -> None:
         template_path = self._templates_dir / "deterministic_layout_fixture" / "template.pptx"

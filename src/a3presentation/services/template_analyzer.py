@@ -29,10 +29,14 @@ from a3presentation.domain.template import (
     TemplateManifest,
     TemplateTextStyleSpec,
 )
+from a3presentation.services.template_preview_renderer import TemplatePreviewRenderer
 
 
 class TemplateAnalyzer:
     TOKEN_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_]+)\s*}}")
+
+    def __init__(self) -> None:
+        self._preview_renderer = TemplatePreviewRenderer()
 
     def analyze(self, template_id: str, template_path: Path, display_name: str | None = None) -> TemplateManifest:
         manifest_path = template_path.with_name("manifest.json")
@@ -79,10 +83,10 @@ class TemplateAnalyzer:
                             self._infer_placeholder_binding(placeholder_kind),
                             placeholder_kind.value,
                         ),
-                        left_emu=int(shape.left),
-                        top_emu=int(shape.top),
-                        width_emu=int(shape.width),
-                        height_emu=int(shape.height),
+                        left_emu=self._shape_emu(shape, "left"),
+                        top_emu=self._shape_emu(shape, "top"),
+                        width_emu=self._shape_emu(shape, "width"),
+                        height_emu=self._shape_emu(shape, "height"),
                         margin_left_emu=self._text_frame_margin(shape, "left"),
                         margin_right_emu=self._text_frame_margin(shape, "right"),
                         margin_top_emu=self._text_frame_margin(shape, "top"),
@@ -161,10 +165,10 @@ class TemplateAnalyzer:
                             editable_capabilities=self._editable_capabilities_for_binding(binding),
                             slot_group=self._infer_slot_group(token),
                             slot_group_order=self._infer_slot_group_order(token),
-                            left_emu=int(shape.left),
-                            top_emu=int(shape.top),
-                            width_emu=int(shape.width),
-                            height_emu=int(shape.height),
+                            left_emu=self._shape_emu(shape, "left"),
+                            top_emu=self._shape_emu(shape, "top"),
+                            width_emu=self._shape_emu(shape, "width"),
+                            height_emu=self._shape_emu(shape, "height"),
                             margin_left_emu=self._text_frame_margin(shape, "left"),
                             margin_right_emu=self._text_frame_margin(shape, "right"),
                             margin_top_emu=self._text_frame_margin(shape, "top"),
@@ -207,7 +211,7 @@ class TemplateAnalyzer:
             has_usable_layout_inventory=self._has_usable_layout_inventory(layouts),
             has_prototype_inventory=bool(prototype_slides),
         )
-        return TemplateManifest(
+        manifest = TemplateManifest(
             template_id=template_id,
             display_name=display_name or template_id,
             source_pptx=template_path.name,
@@ -218,6 +222,8 @@ class TemplateAnalyzer:
             prototype_slides=prototype_slides,
             inventory=inventory,
         )
+        self._preview_renderer.attach_previews(manifest, template_path)
+        return manifest
 
     def _has_usable_layout_inventory(self, layouts: list[LayoutSpec]) -> bool:
         return any(
@@ -244,7 +250,7 @@ class TemplateAnalyzer:
             for shape in slide.shapes
             if getattr(shape, "has_text_frame", False) and self._shape_text_content(shape)
         ]
-        text_shapes.sort(key=lambda shape: (int(shape.top), int(shape.left), -int(shape.width)))
+        text_shapes.sort(key=lambda shape: (self._shape_emu(shape, "top"), self._shape_emu(shape, "left"), -self._shape_emu(shape, "width")))
         title_shape, subtitle_shape = self._select_title_and_subtitle_shapes(text_shapes, slide_width, slide_height)
         two_column_shapes = self._detect_two_column_text_shapes(
             [shape for shape in text_shapes if shape is not title_shape and shape is not subtitle_shape],
@@ -299,10 +305,10 @@ class TemplateAnalyzer:
             editable_capabilities=self._editable_capabilities_for_binding(binding),
             slot_group=self._infer_slot_group(binding),
             slot_group_order=self._infer_slot_group_order(binding),
-            left_emu=int(shape.left),
-            top_emu=int(shape.top),
-            width_emu=int(shape.width),
-            height_emu=int(shape.height),
+            left_emu=self._shape_emu(shape, "left"),
+            top_emu=self._shape_emu(shape, "top"),
+            width_emu=self._shape_emu(shape, "width"),
+            height_emu=self._shape_emu(shape, "height"),
             margin_left_emu=self._text_frame_margin(shape, "left"),
             margin_right_emu=self._text_frame_margin(shape, "right"),
             margin_top_emu=self._text_frame_margin(shape, "top"),
@@ -679,9 +685,9 @@ class TemplateAnalyzer:
             style = TemplateTextStyleSpec(
                 level=getattr(paragraph, "level", None),
                 alignment=str(paragraph.alignment).split(".")[-1].lower() if getattr(paragraph, "alignment", None) is not None else None,
-                line_spacing=float(paragraph.line_spacing) if isinstance(getattr(paragraph, "line_spacing", None), (int, float)) else None,
-                space_before_pt=float(paragraph.space_before.pt) if getattr(paragraph, "space_before", None) is not None else None,
-                space_after_pt=float(paragraph.space_after.pt) if getattr(paragraph, "space_after", None) is not None else None,
+                line_spacing=self._paragraph_spacing_value(getattr(paragraph, "line_spacing", None)),
+                space_before_pt=self._length_points(getattr(paragraph, "space_before", None)),
+                space_after_pt=self._length_points(getattr(paragraph, "space_after", None)),
             )
             if any(value is not None for value in style.model_dump().values()):
                 level_styles[level_key] = style
@@ -748,6 +754,9 @@ class TemplateAnalyzer:
                 source_layout = next((item for item in analyzed.layouts if item.key == layout.key), None)
             if source_layout is None:
                 continue
+            if not layout.preview_image_base64:
+                layout.preview_image_base64 = source_layout.preview_image_base64
+                layout.preview_image_content_type = source_layout.preview_image_content_type
             if not layout.representation_hints:
                 layout.representation_hints = list(source_layout.representation_hints)
             for placeholder in layout.placeholders:
@@ -789,6 +798,9 @@ class TemplateAnalyzer:
         for prototype in manifest.prototype_slides:
             source_slide = analyzed_prototypes.get(prototype.name)
             if source_slide is not None:
+                if not prototype.preview_image_base64:
+                    prototype.preview_image_base64 = source_slide.preview_image_base64
+                    prototype.preview_image_content_type = source_slide.preview_image_content_type
                 if not prototype.representation_hints:
                     prototype.representation_hints = list(source_slide.representation_hints)
                 for index, token in enumerate(prototype.tokens):
@@ -1000,7 +1012,14 @@ class TemplateAnalyzer:
         elif PlaceholderKind.TITLE in kinds and ("тит" in layout_name_lower or "title" in layout_name_lower):
             supported.append("title")
         if PlaceholderKind.BODY in kinds:
-            supported.extend(["bullets", "text", "table"])
+            supported.extend(["bullets", "text"])
+        if (
+            PlaceholderKind.TABLE in kinds
+            or "табл" in layout_name_lower
+            or "table" in layout_name_lower
+            or any(self._slot_has_capability(slot, "table") for slot in placeholders)
+        ):
+            supported.append("table")
         if PlaceholderKind.IMAGE in kinds:
             supported.append("image")
         return list(dict.fromkeys(supported))
@@ -1202,6 +1221,42 @@ class TemplateAnalyzer:
             candidate = f"{base_key}_m{master_index}_l{layout_index}"
         used_keys.add(candidate)
         return candidate
+
+    def _shape_emu(self, shape, attr: str) -> int:
+        value = getattr(shape, attr, None)
+        if value is None:
+            return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _paragraph_spacing_value(self, value) -> float | None:
+        if value is None:
+            return None
+        points = self._length_points(value)
+        if points is not None:
+            return points
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric > 132.0:
+                numeric = numeric / 12700.0
+            return numeric if 0.0 <= numeric <= 132.0 else None
+        return None
+
+    def _length_points(self, value) -> float | None:
+        if value is None:
+            return None
+        if hasattr(value, "pt"):
+            try:
+                points = float(value.pt)
+                return points if 0.0 <= points <= 132.0 else None
+            except (TypeError, ValueError):
+                return None
+        if isinstance(value, (int, float)) and float(value) > 132.0:
+            points = float(value) / 12700.0
+            return points if 0.0 <= points <= 132.0 else None
+        return None
 
     def _text_frame_margin(self, shape, side: str) -> int | None:
         if not getattr(shape, "has_text_frame", False):

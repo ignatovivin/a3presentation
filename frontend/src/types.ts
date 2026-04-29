@@ -34,6 +34,8 @@ export type LayoutSpec = {
   slide_master_index: number;
   slide_layout_index: number;
   preview_path?: string | null;
+  preview_image_base64?: string | null;
+  preview_image_content_type?: string | null;
   supported_slide_kinds: string[];
   representation_hints: string[];
   placeholders: PlaceholderSpec[];
@@ -69,6 +71,8 @@ export type PrototypeSlideSpec = {
   key: string;
   name: string;
   source_slide_index: number;
+  preview_image_base64?: string | null;
+  preview_image_content_type?: string | null;
   supported_slide_kinds: string[];
   representation_hints: string[];
   tokens: PrototypeTokenSpec[];

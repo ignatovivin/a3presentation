@@ -184,12 +184,22 @@ class TemplateRegistry:
 
     def apply_layout_inventory_to_plan(self, manifest: TemplateManifest, plan: PresentationPlan) -> PresentationPlan:
         adapted = plan.model_copy(deep=True)
+        expanded_slides: list[SlideSpec] = []
         for slide in adapted.slides:
             existing_render_target = slide.render_target.model_copy(deep=True) if slide.render_target is not None else None
             ranked_options = self.layout_options_for_slide(manifest, slide)
+            if not ranked_options and self._slide_requires_media_slot(slide):
+                slide.render_target = self._merge_render_targets(existing_render_target, self._auto_layout_render_target_for_slide(slide))
+                expanded_slides.append(slide)
+                continue
             resolved = ranked_options[0].key if ranked_options else self.resolve_layout_key_for_slide(manifest, slide)
+            if ranked_options and not self._target_has_required_media_slot(slide, ranked_options[0]):
+                slide.render_target = self._merge_render_targets(existing_render_target, self._auto_layout_render_target_for_slide(slide))
+                expanded_slides.append(slide)
+                continue
             if not resolved:
                 slide.render_target = self._merge_render_targets(existing_render_target, self._auto_layout_render_target_for_slide(slide))
+                expanded_slides.append(slide)
                 continue
             target = self._target_by_key(manifest, resolved)
             if target is not None:
@@ -208,6 +218,9 @@ class TemplateRegistry:
             else:
                 slide.render_target = self._merge_render_targets(existing_render_target, self._auto_layout_render_target_for_slide(slide))
             slide.preferred_layout_key = resolved
+            capacity = ranked_options[0].estimated_text_capacity_chars if ranked_options else None
+            expanded_slides.extend(self._split_slide_for_target_capacity(slide, capacity))
+        adapted.slides = expanded_slides
         return adapted
 
     def build_slide_layout_reviews(self, manifest: TemplateManifest, plan: PresentationPlan) -> list[SlideLayoutReview]:
@@ -223,7 +236,7 @@ class TemplateRegistry:
                     list(slide.render_target.degradation_reasons) if slide.render_target is not None else []
                 ),
                 current_runtime_profile_key=slide.runtime_profile_key,
-                available_layouts=self.layout_options_for_slide(manifest, slide),
+                available_layouts=self.layout_options_for_slide(manifest, slide, only_powerpoint_layouts=True),
             )
             for index, slide in enumerate(plan.slides)
         ]
@@ -336,13 +349,27 @@ class TemplateRegistry:
         if ranked_options:
             return ranked_options[0].key
 
+        if self._slide_requires_media_slot(slide):
+            return None
+
         return preferred_key or default_key
 
-    def layout_options_for_slide(self, manifest: TemplateManifest, slide: SlideSpec) -> list[SlideLayoutOption]:
+    def layout_options_for_slide(
+        self,
+        manifest: TemplateManifest,
+        slide: SlideSpec,
+        *,
+        only_powerpoint_layouts: bool = False,
+    ) -> list[SlideLayoutOption]:
         preferred_key = self._preferred_target_key(slide)
         options: list[tuple[int, SlideLayoutOption]] = []
+        targets = self._inventory_targets(manifest)
+        if only_powerpoint_layouts:
+            layout_targets = [target for target in targets if target.source == "layout"]
+            if layout_targets:
+                targets = layout_targets
 
-        for target in self._inventory_targets(manifest):
+        for target in targets:
             runtime_profile_key = self._logical_capacity_layout_key(
                 slide=slide,
                 key=target.key,
@@ -361,35 +388,35 @@ class TemplateRegistry:
                 source=target.source,
                 degradation_mode=manifest.inventory.degradation_mode,
             )
-            options.append((
-                score,
-                SlideLayoutOption(
+            option = SlideLayoutOption(
+                key=target.key,
+                name=target.name,
+                source=target.source,
+                source_label=target.source_label,
+                runtime_profile_key=runtime_profile_key,
+                supported_slide_kinds=list(target.supported_slide_kinds),
+                representation_hints=list(target.representation_hints),
+                editable_slot_count=target.editable_slot_count,
+                editable_roles=list(target.editable_roles),
+                supports_current_slide_kind=slide.kind in target.supported_slide_kinds,
+                estimated_text_capacity_chars=estimated_capacity,
+                match_summary=match_summary,
+                recommendation_label=self._recommendation_label_for_score(score),
+                recommendation_reasons=self._recommendation_reasons(
+                    slide=slide,
                     key=target.key,
-                    name=target.name,
+                    supported_slide_kinds=target.supported_slide_kinds,
+                    editable_roles=target.editable_roles,
+                    representation_hints=target.representation_hints,
+                    estimated_capacity=estimated_capacity,
+                    preferred_key=preferred_key,
                     source=target.source,
-                    source_label=target.source_label,
-                    runtime_profile_key=runtime_profile_key,
-                    supported_slide_kinds=list(target.supported_slide_kinds),
-                    representation_hints=list(target.representation_hints),
-                    editable_slot_count=target.editable_slot_count,
-                    editable_roles=list(target.editable_roles),
-                    supports_current_slide_kind=slide.kind in target.supported_slide_kinds,
-                    estimated_text_capacity_chars=estimated_capacity,
-                    match_summary=match_summary,
-                    recommendation_label=self._recommendation_label_for_score(score),
-                    recommendation_reasons=self._recommendation_reasons(
-                        slide=slide,
-                        key=target.key,
-                        supported_slide_kinds=target.supported_slide_kinds,
-                        editable_roles=target.editable_roles,
-                        representation_hints=target.representation_hints,
-                        estimated_capacity=estimated_capacity,
-                        preferred_key=preferred_key,
-                        source=target.source,
-                        degradation_mode=manifest.inventory.degradation_mode,
-                    ),
+                    degradation_mode=manifest.inventory.degradation_mode,
                 ),
-            ))
+            )
+            if not only_powerpoint_layouts and not self._target_has_required_media_slot(slide, option):
+                continue
+            options.append((score, option))
 
         options.sort(key=lambda item: (-item[0], item[1].name.lower(), item[1].key))
         return [option for _, option in options]
@@ -411,6 +438,99 @@ class TemplateRegistry:
         if target.type == RenderTargetType.LAYOUT:
             return "Слайд будет заполнен через layout target из извлеченного inventory."
         return None
+
+    def _target_has_required_media_slot(self, slide: SlideSpec, option: SlideLayoutOption) -> bool:
+        roles = set(option.editable_roles)
+        if slide.kind == SlideKind.TABLE:
+            return "table" in roles
+        if slide.kind == SlideKind.CHART:
+            return "chart" in roles or "table" in roles
+        if slide.kind == SlideKind.IMAGE:
+            return "image" in roles
+        return True
+
+    def _slide_requires_media_slot(self, slide: SlideSpec) -> bool:
+        return slide.kind in {SlideKind.TABLE, SlideKind.CHART, SlideKind.IMAGE}
+
+    def _split_slide_for_target_capacity(self, slide: SlideSpec, estimated_capacity_chars: int | None) -> list[SlideSpec]:
+        if slide.kind not in {SlideKind.TEXT, SlideKind.BULLETS, SlideKind.TWO_COLUMN}:
+            return [slide]
+        if estimated_capacity_chars is None or estimated_capacity_chars <= 0:
+            return [slide]
+        text_demand = self._slide_text_demand_chars(slide)
+        budget = max(int(estimated_capacity_chars * 0.82), 180)
+        if text_demand <= budget:
+            return [slide]
+        chunks = self._slide_content_chunks(slide)
+        if len(chunks) <= 1:
+            return [slide]
+        batches: list[list[tuple[str, str]]] = []
+        current: list[tuple[str, str]] = []
+        current_chars = 0
+        for kind, text in chunks:
+            item_chars = len(text)
+            if current and current_chars + item_chars > budget:
+                batches.append(current)
+                current = []
+                current_chars = 0
+            current.append((kind, text))
+            current_chars += item_chars
+        if current:
+            batches.append(current)
+        if len(batches) <= 1:
+            return [slide]
+        slides: list[SlideSpec] = []
+        for index, batch in enumerate(batches):
+            next_slide = slide.model_copy(deep=True)
+            next_slide.title = slide.title if index == 0 else f"{slide.title} ({index + 1})"
+            next_slide.subtitle = slide.subtitle if index == 0 else None
+            paragraphs = [text for kind, text in batch if kind == "paragraph"]
+            bullets = [text for kind, text in batch if kind == "bullet"]
+            if bullets and not paragraphs:
+                next_slide.kind = SlideKind.BULLETS
+                next_slide.text = None
+                next_slide.notes = None
+                next_slide.bullets = bullets
+                next_slide.left_bullets = []
+                next_slide.right_bullets = []
+                next_slide.content_blocks = [self._list_block(bullets)]
+            else:
+                next_slide.kind = SlideKind.TEXT
+                next_slide.text = self._merge_text_parts(paragraphs + bullets)
+                next_slide.notes = None
+                next_slide.bullets = []
+                next_slide.left_bullets = []
+                next_slide.right_bullets = []
+                next_slide.content_blocks = self._paragraph_blocks_from_parts(next_slide.text or "")
+            slides.append(next_slide)
+        return slides
+
+    def _slide_content_chunks(self, slide: SlideSpec) -> list[tuple[str, str]]:
+        chunks: list[tuple[str, str]] = []
+        if slide.content_blocks:
+            for block in slide.content_blocks:
+                if block.text and block.text.strip():
+                    chunks.append(("paragraph", block.text.strip()))
+                for item in block.items:
+                    if item and item.strip():
+                        chunks.append(("bullet", item.strip()))
+        if not chunks:
+            for part in [slide.text or "", slide.notes or ""]:
+                if part.strip():
+                    chunks.append(("paragraph", part.strip()))
+            chunks.extend(("bullet", item.strip()) for item in slide.bullets if item.strip())
+            chunks.extend(("bullet", item.strip()) for item in slide.left_bullets if item.strip())
+            chunks.extend(("bullet", item.strip()) for item in slide.right_bullets if item.strip())
+        return chunks
+
+    def _auto_layout_key_for_slide(self, slide: SlideSpec) -> str:
+        return {
+            SlideKind.TITLE: "cover",
+            SlideKind.BULLETS: "list_full_width",
+            SlideKind.TABLE: "table",
+            SlideKind.CHART: "table",
+            SlideKind.IMAGE: "image_text",
+        }.get(slide.kind, "text_full_width")
 
     def _score_layout_candidate(
         self,
@@ -860,15 +980,15 @@ class TemplateRegistry:
             degradation_reasons=degradation_reasons,
         )
 
-    def _auto_layout_render_target_for_slide(self, slide: SlideSpec) -> SlideRenderTarget:
+    def _auto_layout_render_target_for_slide(self, slide: SlideSpec, *, reason: str = "inventory_unresolved") -> SlideRenderTarget:
         return SlideRenderTarget(
             type=RenderTargetType.AUTO_LAYOUT,
-            key=slide.runtime_profile_key or slide.preferred_layout_key,
+            key=slide.runtime_profile_key or self._auto_layout_key_for_slide(slide),
             label="Auto layout fallback",
             source="runtime fallback",
             binding_keys=[],
             confidence="medium",
-            degradation_reasons=["inventory_unresolved"],
+            degradation_reasons=[reason],
         )
 
     def _normalize_slide_for_target(self, slide: SlideSpec, target: _InventoryTarget) -> SlideSpec:
@@ -1041,7 +1161,6 @@ class TemplateRegistry:
         return (
             "табл" in layout.name.lower()
             or any(placeholder.kind == PlaceholderKind.TABLE for placeholder in layout.placeholders)
-            or "table" in layout.supported_slide_kinds
             or "table" in bindings
         )
 

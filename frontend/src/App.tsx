@@ -12,6 +12,8 @@ import type {
   ChartSpec,
   DocumentBlock,
   GeneratePresentationResponse,
+  PlaceholderSpec,
+  PrototypeTokenSpec,
   SlideLayoutOption,
   PresentationPlan,
   SlideLayoutReview,
@@ -22,6 +24,8 @@ import type {
 } from "@/types";
 
 const initialText = `Вставьте текст или загрузите документ в формате docx для презентации`;
+const slideCanvasWidthEmu = 12_192_000;
+const slideCanvasHeightEmu = 6_858_000;
 
 const chartTypeLabels: Record<string, string> = {
   bar: "Горизонтальные столбцы",
@@ -351,6 +355,158 @@ function currentLayoutOption(review: SlideLayoutReview | null, slide: SlideSpec)
   }
   const key = slide.render_target?.key ?? slide.preferred_layout_key ?? review.current_target_key ?? review.available_layouts[0]?.key ?? "";
   return review.available_layouts.find((option) => option.key === key) ?? review.available_layouts[0] ?? null;
+}
+
+function layoutPreviewTarget(manifest: TemplateManifest | null, option: SlideLayoutOption | null) {
+  if (!manifest || !option) {
+    return null;
+  }
+  if (option.source === "layout") {
+    return manifest.layouts.find((layout) => layout.key === option.key) ?? null;
+  }
+  if (option.source === "prototype") {
+    return manifest.prototype_slides.find((slide) => slide.key === option.key) ?? null;
+  }
+  return null;
+}
+
+function slotRole(slot: PlaceholderSpec | PrototypeTokenSpec): string {
+  const role = slot.editable_role || slot.binding;
+  if (role) {
+    return role;
+  }
+  if (slot.editable_capabilities.includes("table")) {
+    return "table";
+  }
+  if (slot.editable_capabilities.includes("chart")) {
+    return "chart";
+  }
+  if (slot.editable_capabilities.includes("image")) {
+    return "image";
+  }
+  return "body";
+}
+
+function slotLabel(role: string): string {
+  return editableRoleLabels[role] ?? representationHintLabels[role] ?? role;
+}
+
+function layoutPreviewSlots(target: ReturnType<typeof layoutPreviewTarget>): (PlaceholderSpec | PrototypeTokenSpec)[] {
+  if (!target) {
+    return [];
+  }
+  if ("placeholders" in target) {
+    return target.placeholders;
+  }
+  return target.tokens;
+}
+
+function layoutPreviewKind(option: SlideLayoutOption): string {
+  const hint = option.representation_hints[0] || option.supported_slide_kinds[0] || option.editable_roles[0];
+  return representationHintLabels[hint] ?? slideKindLabels[hint] ?? editableRoleLabels[hint] ?? hint ?? "Макет";
+}
+
+function cssColor(value?: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+  return normalized.startsWith("#") ? normalized : `#${normalized}`;
+}
+
+function layoutPreviewCanvasStyle(target: ReturnType<typeof layoutPreviewTarget>): CSSProperties {
+  if (!target) {
+    return {};
+  }
+  if (target.preview_image_base64 && target.preview_image_content_type) {
+    return {
+      backgroundImage: `url(data:${target.preview_image_content_type};base64,${target.preview_image_base64})`,
+    };
+  }
+  if (!("background_image_base64" in target)) {
+    return {};
+  }
+  if (target.background_image_base64 && target.background_image_content_type) {
+    return {
+      backgroundImage: `url(data:${target.background_image_content_type};base64,${target.background_image_base64})`,
+    };
+  }
+  const backgroundColor = cssColor(target.background_style?.fill_color ?? target.background_color);
+  return backgroundColor ? { background: backgroundColor } : {};
+}
+
+function layoutPreviewSlotStyle(slot: PlaceholderSpec | PrototypeTokenSpec): CSSProperties {
+  const fillColor = cssColor(slot.shape_style?.fill_color);
+  const lineColor = cssColor(slot.shape_style?.line_color);
+  const textColor = cssColor(slot.text_style?.color);
+  return {
+    left: `${Math.max(0, Math.min(100, ((slot.left_emu ?? 0) / slideCanvasWidthEmu) * 100))}%`,
+    top: `${Math.max(0, Math.min(100, ((slot.top_emu ?? 0) / slideCanvasHeightEmu) * 100))}%`,
+    width: `${Math.max(3, Math.min(100, ((slot.width_emu ?? 0) / slideCanvasWidthEmu) * 100))}%`,
+    height: `${Math.max(4, Math.min(100, ((slot.height_emu ?? 0) / slideCanvasHeightEmu) * 100))}%`,
+    background: fillColor ?? undefined,
+    borderColor: lineColor ?? undefined,
+    color: textColor ?? undefined,
+  };
+}
+
+function renderLayoutPreview(
+  manifest: TemplateManifest | null,
+  option: SlideLayoutOption,
+  isSelected: boolean,
+  onSelect: () => void,
+) {
+  const target = layoutPreviewTarget(manifest, option);
+  const hasRealPreview = Boolean(target?.preview_image_base64 && target.preview_image_content_type);
+  const slots = layoutPreviewSlots(target)
+    .filter((slot) => (
+      typeof slot.left_emu === "number"
+      && typeof slot.top_emu === "number"
+      && typeof slot.width_emu === "number"
+      && typeof slot.height_emu === "number"
+      && slot.width_emu > 0
+      && slot.height_emu > 0
+    ))
+    .slice(0, 12);
+  const optionMeta = layoutOptionMeta(option);
+
+  return (
+    <button
+      type="button"
+      className={`layout-preview-option${isSelected ? " is-selected" : ""}`}
+      data-testid={`layout-preview-option-${option.key}`}
+      onClick={onSelect}
+      title={`${option.name}${optionMeta ? ` · ${optionMeta}` : ""}`}
+    >
+      <span className="layout-preview-canvas" style={layoutPreviewCanvasStyle(target)} aria-hidden="true">
+        {hasRealPreview ? null : slots.length ? (
+          slots.map((slot, slotIndex) => {
+            const role = slotRole(slot);
+            return (
+              <span
+                className={`layout-preview-slot is-${role}`}
+                key={`${option.key}-${slotIndex}-${role}`}
+                style={layoutPreviewSlotStyle(slot)}
+              >
+                <span>{slotLabel(role)}</span>
+              </span>
+            );
+          })
+        ) : (
+          <span className={`layout-preview-empty is-${option.source}`}>
+            {displayLayoutSourceType(option.source)}
+          </span>
+        )}
+      </span>
+      <span className="layout-preview-caption">
+        <span className="layout-preview-name">{option.name}</span>
+        <span className="layout-preview-kind">{layoutPreviewKind(option)}</span>
+      </span>
+    </button>
+  );
 }
 
 function inventoryTargetRuntimeProfileKey(manifest: TemplateManifest | null, targetKey: string | null): string | null {
@@ -1424,21 +1580,21 @@ export function App() {
                           ) : null}
                           {review?.available_layouts.length ? (
                             <>
-                              <Select
-                                className="chart-type-select"
-                                data-testid={`slide-layout-select-${index}`}
-                                value={slide.preferred_layout_key ?? review.current_target_key ?? review.available_layouts[0]?.key ?? ""}
-                                onChange={(event) => handleSlideLayoutChange(index, event.target.value)}
-                              >
+                              <div className="layout-preview-grid" data-testid={`layout-preview-grid-${index}`}>
                                 {review.available_layouts.map((option) => {
-                                  const meta = layoutOptionMeta(option);
+                                  const selectedKey = currentLayoutOption(review, slide)?.key ?? review.available_layouts[0]?.key ?? "";
                                   return (
-                                    <option key={`${index}-${option.key}`} value={option.key}>
-                                      {option.name} · {meta || displayLayoutSourceLabel(option.source, option.source_label)}
-                                    </option>
+                                    <span className="layout-preview-item" key={`${index}-${option.key}`}>
+                                      {renderLayoutPreview(
+                                        effectiveTemplateManifest,
+                                        option,
+                                        option.key === selectedKey,
+                                        () => handleSlideLayoutChange(index, option.key),
+                                      )}
+                                    </span>
                                   );
                                 })}
-                              </Select>
+                              </div>
                               <span className="slide-choice-preview">{layoutRecommendationText(currentLayoutOption(review, slide) ?? review.available_layouts[0])}</span>
                             </>
                           ) : (

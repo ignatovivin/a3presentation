@@ -271,6 +271,8 @@ class LayoutSpec(BaseModel):
     slide_master_index: int = 0
     slide_layout_index: int
     preview_path: str | None = None
+    preview_image_base64: str | None = None
+    preview_image_content_type: str | None = None
     supported_slide_kinds: list[str] = Field(default_factory=list)
     representation_hints: list[str] = Field(default_factory=list)
     placeholders: list[PlaceholderSpec] = Field(default_factory=list)
@@ -306,6 +308,8 @@ class PrototypeSlideSpec(BaseModel):
     key: str
     name: str
     source_slide_index: int
+    preview_image_base64: str | None = None
+    preview_image_content_type: str | None = None
     supported_slide_kinds: list[str] = Field(default_factory=list)
     representation_hints: list[str] = Field(default_factory=list)
     tokens: list[PrototypeTokenSpec] = Field(default_factory=list)
