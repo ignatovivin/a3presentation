@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from typing import get_args
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -11,21 +12,28 @@ from a3presentation.domain.api import (
     AnalyzeTemplateResponse,
     AutoUploadTemplateResponse,
     ExtractTextResponse,
+    GenerationDiagnostic,
+    GenerationDiagnosticRuleMetadata,
+    GenerationDiagnosticsSummary,
+    GenerationDiagnosticsMetadataResponse,
     GeneratePresentationResponse,
+    PresentationDiagnosticsResponse,
     PlanWithTemplateResponse,
     TemplateDetailsResponse,
     TemplateSummary,
     TextPlanRequest,
     UploadTemplateResponse,
 )
+from a3presentation.domain.diagnostics import GenerationDiagnosticRule, GenerationDiagnosticSeverity, GenerationDiagnosticSource
 from a3presentation.domain.presentation import PresentationPlan
 from a3presentation.domain.template import TemplateManifest
+from a3presentation.services.diagnostic_catalog import diagnostic_rule_action, diagnostic_rule_label
 from a3presentation.services.document_text_extractor import DocumentTextExtractor
-from a3presentation.services.deck_audit import audit_generated_presentation, find_capacity_violations
 from a3presentation.services.planner import TextToPlanService
+from a3presentation.services.presentation_generation import PresentationGenerationError, PresentationGenerationService
+from a3presentation.services.pptx_generator import PptxGenerator
 from a3presentation.services.table_chart_analyzer import TableChartAnalyzer
 from a3presentation.services.template_analyzer import TemplateAnalyzer
-from a3presentation.services.pptx_generator import PptxGenerator
 from a3presentation.services.template_registry import TemplateRegistry
 from a3presentation.settings import get_settings
 
@@ -38,6 +46,11 @@ analyzer = TemplateAnalyzer()
 document_text_extractor = DocumentTextExtractor()
 table_chart_analyzer = TableChartAnalyzer()
 generator = PptxGenerator()
+generation_service = PresentationGenerationService(
+    generator=generator,
+    template_registry=template_registry,
+    output_dir=settings.outputs_dir,
+)
 
 
 @router.get("/health")
@@ -47,6 +60,23 @@ def healthcheck() -> dict[str, str]:
         "commit": os.getenv("APP_COMMIT_SHA", "unknown"),
         "branch": os.getenv("APP_COMMIT_BRANCH", "unknown"),
     }
+
+
+@router.get("/diagnostics/metadata")
+def diagnostics_metadata() -> GenerationDiagnosticsMetadataResponse:
+    rules = sorted(get_args(GenerationDiagnosticRule))
+    return GenerationDiagnosticsMetadataResponse(
+        severities=list(get_args(GenerationDiagnosticSeverity)),
+        sources=list(get_args(GenerationDiagnosticSource)),
+        rules=[
+            GenerationDiagnosticRuleMetadata(
+                rule=rule,
+                label=diagnostic_rule_label(rule),
+                action=diagnostic_rule_action(rule),
+            )
+            for rule in rules
+        ],
+    )
 
 
 @router.get("/templates")
@@ -300,12 +330,33 @@ def generate_presentation(plan: PresentationPlan) -> GeneratePresentationRespons
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    output_path = _generate_checked_presentation(plan, manifest, template_path)
+    target_plan = template_registry.apply_layout_inventory_to_plan(manifest, plan)
+    result = _generate_checked_result(target_plan, manifest, template_path)
+    output_path = result.output_path
+    diagnostics = _generation_diagnostics(result)
     return GeneratePresentationResponse(
         output_path=str(output_path),
         file_name=output_path.name,
         download_url=f"/presentations/files/{output_path.name}",
+        warnings=result.warnings,
+        diagnostics=diagnostics,
+        diagnostics_summary=_diagnostics_summary(diagnostics),
+        attempt_count=result.attempt_count,
     )
+
+
+@router.post("/presentations/diagnose")
+def diagnose_presentation(plan: PresentationPlan) -> PresentationDiagnosticsResponse:
+    try:
+        manifest = template_registry.get_template(plan.template_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    target_plan = template_registry.apply_layout_inventory_to_plan(manifest, plan)
+    diagnostics = _diagnostic_items(generation_service.preflight_diagnostics(target_plan, manifest))
+    return PresentationDiagnosticsResponse(diagnostics=diagnostics, diagnostics_summary=_diagnostics_summary(diagnostics))
 
 
 @router.post("/presentations/generate-with-template")
@@ -338,49 +389,123 @@ async def generate_presentation_with_template(
             raise HTTPException(status_code=400, detail="Failed to analyze uploaded template") from exc
         manifest = template_registry.normalize_manifest(manifest)
         transient_plan = plan.model_copy(update={"template_id": manifest.template_id}, deep=True)
-        output_path = _generate_checked_presentation(transient_plan, manifest, template_path)
+        transient_plan = template_registry.apply_layout_inventory_to_plan(manifest, transient_plan)
+        result = _generate_checked_result(transient_plan, manifest, template_path)
+        output_path = result.output_path
 
+    diagnostics = _generation_diagnostics(result)
     return GeneratePresentationResponse(
         output_path=str(output_path),
         file_name=output_path.name,
         download_url=f"/presentations/files/{output_path.name}",
+        warnings=result.warnings,
+        diagnostics=diagnostics,
+        diagnostics_summary=_diagnostics_summary(diagnostics),
+        attempt_count=result.attempt_count,
     )
 
 
-def _generate_checked_presentation(plan: PresentationPlan, manifest: TemplateManifest, template_path: Path) -> Path:
+@router.post("/presentations/diagnose-with-template")
+async def diagnose_presentation_with_template(
+    plan_json: str = Form(...),
+    template_file: UploadFile = File(...),
+) -> PresentationDiagnosticsResponse:
+    if not template_file.filename or not template_file.filename.lower().endswith(".pptx"):
+        raise HTTPException(status_code=400, detail="template_file must be a .pptx")
+
     try:
-        output_path = generator.generate(
-            template_path=template_path,
-            manifest=manifest,
-            plan=plan,
-            output_dir=settings.outputs_dir,
-        )
-        audits = audit_generated_presentation(output_path, plan, manifest)
-        violations = _blocking_generation_violations(find_capacity_violations(audits))
-        if violations:
-            details = "; ".join(f"slide {item.slide_index}: {item.rule}" for item in violations[:6])
-            raise ValueError(f"Generated deck failed layout quality gate: {details}")
-        return output_path
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to generate a valid PowerPoint file: {exc}") from exc
+        plan = PresentationPlan.model_validate_json(plan_json)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Failed to generate PowerPoint file") from exc
+        raise HTTPException(status_code=400, detail=f"Invalid plan_json: {exc}") from exc
+
+    template_bytes = await template_file.read()
+    if not template_bytes:
+        raise HTTPException(status_code=400, detail="template_file is empty")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        template_path = Path(temp_dir) / "template.pptx"
+        template_path.write_bytes(template_bytes)
+        try:
+            manifest = analyzer.analyze(
+                template_id=f"uploaded_{Path(template_file.filename).stem or 'template'}",
+                template_path=template_path,
+                display_name=Path(template_file.filename).stem or "Uploaded template",
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Failed to analyze uploaded template") from exc
+        manifest = template_registry.normalize_manifest(manifest)
+        transient_plan = plan.model_copy(update={"template_id": manifest.template_id}, deep=True)
+        transient_plan = template_registry.apply_layout_inventory_to_plan(manifest, transient_plan)
+
+    diagnostics = _diagnostic_items(generation_service.preflight_diagnostics(transient_plan, manifest))
+    return PresentationDiagnosticsResponse(diagnostics=diagnostics, diagnostics_summary=_diagnostics_summary(diagnostics))
 
 
-def _blocking_generation_violations(violations):
-    blocking_rules = {
-        "table_overlay_text_overflow",
-        "missing_table_shape",
-        "missing_chart_shape",
-        "missing_image_shape",
-        "unexpected_table_shape",
-        "unexpected_chart_shape",
-        "two_column_overlap",
-        "image_text_overlap",
-        "chart_type_mismatch",
-        "chart_series_count_mismatch",
-    }
-    return [item for item in violations if item.rule in blocking_rules]
+def _generate_checked_presentation(plan: PresentationPlan, manifest: TemplateManifest, template_path: Path) -> Path:
+    return _generate_checked_result(plan, manifest, template_path).output_path
+
+
+def _generate_checked_result(plan: PresentationPlan, manifest: TemplateManifest, template_path: Path):
+    try:
+        return generation_service.generate_checked_result(plan, manifest, template_path)
+    except PresentationGenerationError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "attempt_count": exc.attempt_count,
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "generation_failed",
+                "message": f"Failed to generate a valid PowerPoint file: {exc}",
+                "attempt_count": 0,
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "generation_failed",
+                "message": "Failed to generate PowerPoint file",
+                "attempt_count": 0,
+            },
+        ) from exc
+
+
+def _generation_diagnostics(result) -> list[GenerationDiagnostic]:
+    return _diagnostic_items(result.diagnostics or [])
+
+
+def _diagnostic_items(items) -> list[GenerationDiagnostic]:
+    return [
+        GenerationDiagnostic(
+            slide_index=item.slide_index,
+            title=item.title,
+            severity=item.severity,
+            rule=item.rule,
+            label=diagnostic_rule_label(item.rule),
+            action=diagnostic_rule_action(item.rule),
+            details=item.details,
+            source=item.source,
+        )
+        for item in items
+    ]
+
+
+def _diagnostics_summary(items: list[GenerationDiagnostic]) -> GenerationDiagnosticsSummary:
+    return GenerationDiagnosticsSummary(
+        total=len(items),
+        blocking=sum(1 for item in items if item.severity == "blocking"),
+        retryable=sum(1 for item in items if item.severity == "retryable"),
+        warning=sum(1 for item in items if item.severity == "warning"),
+        capacity=sum(1 for item in items if item.source == "capacity"),
+        style=sum(1 for item in items if item.source == "style"),
+    )
 
 
 @router.get("/presentations/files/{file_name}")

@@ -8,19 +8,41 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from typing import get_args
 from unittest.mock import patch
 
 from docx import Document
 from fastapi import HTTPException
 from pptx import Presentation
+from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
 from a3presentation import main as main_module
 from a3presentation import settings as settings_module
 from a3presentation.api import routes as routes_module
-from a3presentation.domain.template import TemplateManifest
-from a3presentation.domain.api import TextPlanRequest
-from a3presentation.domain.presentation import PresentationPlan, SlideKind, SlideSpec
+from a3presentation.services import presentation_generation as generation_module
+from a3presentation.services.presentation_generation import (
+    GeneratedPresentationResult,
+    GenerationDiagnosticItem,
+    PresentationGenerationError,
+)
+from a3presentation.domain.template import LayoutSpec, PlaceholderKind, PlaceholderSpec, TemplateManifest, TemplateTextStyleSpec
+from a3presentation.domain.api import GenerationDiagnostic, TextPlanRequest
+from a3presentation.domain.diagnostics import GenerationDiagnosticRule
+from a3presentation.domain.presentation import (
+    PresentationPlan,
+    RenderTargetType,
+    SlideContentBlock,
+    SlideContentBlockKind,
+    SlideKind,
+    SlideRenderTarget,
+    SlideSpec,
+)
+from a3presentation.services.deck_audit import CapacityViolation, SlideAudit, TextOverflowDetail, find_capacity_violations
+from a3presentation.services.diagnostic_catalog import DIAGNOSTIC_RULE_ACTIONS, DIAGNOSTIC_RULE_LABELS
+from a3presentation.services.layout_capacity import TEXT_FULL_WIDTH_PROFILE
+from a3presentation.services.slide_text_policy import slide_content_chunks, slide_text_demand_chars
+from a3presentation.services.text_fit import FitBox, TextBoxMetrics, assign_text_chunks_to_boxes
 
 
 class ApiContractTests(unittest.TestCase):
@@ -419,6 +441,9 @@ class ApiContractTests(unittest.TestCase):
             )
         )
         self.assertTrue((self._outputs_dir / payload.file_name).exists())
+        self.assertEqual(payload.warnings, [])
+        self.assertEqual(payload.diagnostics, [])
+        self.assertEqual(payload.attempt_count, 1)
 
         download = routes_module.download_presentation(payload.file_name)
         self.assertEqual(
@@ -426,6 +451,16 @@ class ApiContractTests(unittest.TestCase):
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         )
         self.assertEqual(Path(download.path).name, payload.file_name)
+
+    def test_diagnostics_metadata_exposes_backend_contract(self) -> None:
+        metadata = routes_module.diagnostics_metadata()
+        contract_rules = set(get_args(GenerationDiagnosticRule))
+
+        self.assertEqual(set(metadata.severities), {"blocking", "retryable", "warning"})
+        self.assertEqual(set(metadata.sources), {"capacity", "style"})
+        self.assertEqual({item.rule for item in metadata.rules}, contract_rules)
+        self.assertTrue(all(item.label for item in metadata.rules))
+        self.assertTrue(all(item.action for item in metadata.rules))
 
     def test_generate_with_uploaded_template_does_not_require_registry_template(self) -> None:
         template_path = self._templates_dir / "deterministic_layout_fixture" / "template.pptx"
@@ -448,6 +483,703 @@ class ApiContractTests(unittest.TestCase):
 
         self.assertTrue((self._outputs_dir / payload.file_name).exists())
         self.assertNotIn("custom-template", {item.template_id for item in routes_module.list_templates()})
+
+    def test_generate_response_exposes_style_audit_warnings(self) -> None:
+        output_path = self._outputs_dir / "style-warning.pptx"
+        output_path.write_bytes(b"pptx")
+
+        with patch.object(
+            routes_module.generation_service,
+            "generate_checked_result",
+            return_value=GeneratedPresentationResult(
+                output_path=output_path,
+                warnings=["slide 1: text_color_mismatch: placeholder=Body actual=['000000'] expected=CC3300"],
+                diagnostics=[
+                    GenerationDiagnosticItem(
+                        slide_index=1,
+                        title="Warning",
+                        severity="warning",
+                        rule="text_color_mismatch",
+                        details="placeholder=Body actual=['000000'] expected=CC3300",
+                        source="style",
+                    )
+                ],
+                attempt_count=2,
+            ),
+        ):
+            payload = routes_module.generate_presentation(
+                PresentationPlan(
+                    template_id="deterministic_layout_fixture",
+                    title="Style Warning",
+                    slides=[SlideSpec(kind=SlideKind.TEXT, title="Warning", text="Style warning propagation.")],
+                )
+            )
+
+        self.assertEqual(payload.file_name, output_path.name)
+        self.assertEqual(payload.warnings, ["slide 1: text_color_mismatch: placeholder=Body actual=['000000'] expected=CC3300"])
+        self.assertEqual(len(payload.diagnostics), 1)
+        self.assertEqual(payload.diagnostics_summary.total, 1)
+        self.assertEqual(payload.diagnostics_summary.warning, 1)
+        self.assertEqual(payload.diagnostics_summary.style, 1)
+        self.assertEqual(payload.attempt_count, 2)
+        self.assertEqual(payload.diagnostics[0].severity, "warning")
+        self.assertEqual(payload.diagnostics[0].source, "style")
+        self.assertEqual(payload.diagnostics[0].rule, "text_color_mismatch")
+        self.assertEqual(payload.diagnostics[0].label, "Цвет текста не совпал")
+        self.assertEqual(payload.diagnostics[0].action, "Проверьте цвет текста в placeholder style шаблона.")
+
+    def test_capacity_diagnostics_classify_retryable_and_blocking_rules(self) -> None:
+        diagnostics = routes_module.generation_service.capacity_diagnostics(
+            [
+                CapacityViolation(
+                    slide_index=1,
+                    title="Retry",
+                    rule="overflow_risk",
+                    details="fill_ratio=1.40 max=1.00",
+                ),
+                CapacityViolation(
+                    slide_index=2,
+                    title="Block",
+                    rule="missing_chart_shape",
+                    details="chart slide does not contain rendered chart shape",
+                ),
+            ]
+        )
+
+        self.assertEqual([item.severity for item in diagnostics], ["retryable", "blocking"])
+        self.assertEqual([item.source for item in diagnostics], ["capacity", "capacity"])
+
+    def test_generation_diagnostics_deduplicate_slide_source_rule(self) -> None:
+        diagnostics = routes_module.generation_service.deduplicate_diagnostics(
+            [
+                GenerationDiagnosticItem(
+                    slide_index=2,
+                    title="Dup",
+                    severity="warning",
+                    rule="overflow_risk",
+                    details="text_chars=920 estimated_capacity=780",
+                    source="capacity",
+                ),
+                GenerationDiagnosticItem(
+                    slide_index=2,
+                    title="Dup",
+                    severity="retryable",
+                    rule="overflow_risk",
+                    details="fill_ratio=1.30 max=1.00",
+                    source="capacity",
+                ),
+            ]
+        )
+
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(diagnostics[0].severity, "retryable")
+        self.assertIn("text_chars=920", diagnostics[0].details)
+        self.assertIn("fill_ratio=1.30", diagnostics[0].details)
+
+    def test_generation_diagnostic_rejects_unknown_severity_and_source(self) -> None:
+        with self.assertRaises(ValidationError):
+            GenerationDiagnostic(
+                slide_index=1,
+                severity="info",
+                rule="overflow_risk",
+                details="details",
+                source="capacity",
+            )
+        with self.assertRaises(ValidationError):
+            GenerationDiagnostic(
+                slide_index=1,
+                severity="warning",
+                rule="overflow_risk",
+                details="details",
+                source="planner",
+            )
+
+    def test_generation_diagnostic_rejects_unknown_rule_and_catalog_covers_contract(self) -> None:
+        with self.assertRaises(ValidationError):
+            GenerationDiagnostic(
+                slide_index=1,
+                severity="warning",
+                rule="unknown_rule",
+                details="details",
+                source="capacity",
+            )
+
+        contract_rules = set(get_args(GenerationDiagnosticRule))
+        self.assertEqual(set(DIAGNOSTIC_RULE_LABELS), contract_rules)
+        self.assertTrue(contract_rules.issuperset(DIAGNOSTIC_RULE_ACTIONS))
+
+    def test_diagnose_presentation_exposes_preflight_degradation_reasons(self) -> None:
+        response = routes_module.diagnose_presentation(
+            PresentationPlan(
+                template_id="deterministic_layout_fixture",
+                title="Preflight Diagnostics",
+                slides=[
+                    SlideSpec(
+                        kind=SlideKind.TEXT,
+                        title="Preflight",
+                        text="Проверка ранней диагностики.",
+                        render_target=SlideRenderTarget(
+                            type=RenderTargetType.AUTO_LAYOUT,
+                            key="text_full_width",
+                            degradation_reasons=["capacity_retry:rendered_text_overflow:shape=Body:idx=14:height=860>650"],
+                            confidence="medium",
+                        ),
+                    )
+                ],
+            )
+        )
+
+        retryable_rules = {
+            item.rule
+            for item in response.diagnostics
+            if item.severity == "retryable" and item.source == "capacity"
+        }
+        self.assertEqual(response.diagnostics_summary.total, len(response.diagnostics))
+        self.assertGreaterEqual(response.diagnostics_summary.retryable, 1)
+        self.assertGreaterEqual(response.diagnostics_summary.capacity, 1)
+        self.assertIn("rendered_text_overflow", retryable_rules)
+        self.assertIn("Текст вышел за границы блока", {item.label for item in response.diagnostics})
+        self.assertIn(
+            "Система повторит разбиение по фактическому переполненному блоку.",
+            {item.action for item in response.diagnostics},
+        )
+
+    def test_preflight_diagnostics_report_missing_required_editable_slot(self) -> None:
+        manifest = TemplateManifest(
+            template_id="missing_slot_demo",
+            display_name="Missing Slot Demo",
+            source_pptx="template.pptx",
+            default_layout_key="title_only",
+            layouts=[
+                LayoutSpec(
+                    key="title_only",
+                    name="Title Only",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Title",
+                            kind=PlaceholderKind.TITLE,
+                            idx=0,
+                            editable_role="title",
+                            editable_capabilities=["text"],
+                        )
+                    ],
+                )
+            ],
+        )
+        plan = PresentationPlan(
+            template_id="missing_slot_demo",
+            title="Missing Slot Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Needs body",
+                    text="Этот текст требует body slot.",
+                    preferred_layout_key="title_only",
+                )
+            ],
+        )
+
+        diagnostics = routes_module.generation_service.preflight_diagnostics(plan, manifest)
+
+        missing_slot = [item for item in diagnostics if item.rule == "missing_required_editable_slot"]
+        self.assertEqual(len(missing_slot), 1)
+        self.assertEqual(missing_slot[0].severity, "warning")
+        self.assertIn("missing_roles=body", missing_slot[0].details)
+
+    def test_generate_retries_after_post_generation_capacity_audit(self) -> None:
+        first_output = self._outputs_dir / "first.pptx"
+        retry_output = self._outputs_dir / "retry.pptx"
+        source_parts = [
+            "Первый перегруженный фрагмент текста для проверки post-generation audit retry. " * 2,
+            "Второй перегруженный фрагмент текста должен уйти на отдельный слайд после аудита. " * 2,
+            "Третий перегруженный фрагмент текста сохраняет смысл исходного документа. " * 2,
+        ]
+        plan = PresentationPlan(
+            template_id="deterministic_layout_fixture",
+            title="Retry Contract",
+            slides=[
+                SlideSpec(kind=SlideKind.TITLE, title="Retry Contract"),
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Перегруженный раздел",
+                    text="\n".join(source_parts),
+                    content_blocks=[
+                        SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text=part)
+                        for part in source_parts
+                    ],
+                ),
+            ],
+        )
+        generated_plans: list[PresentationPlan] = []
+
+        def fake_generate(**kwargs):
+            generated_plans.append(kwargs["plan"])
+            output_path = first_output if len(generated_plans) == 1 else retry_output
+            output_path.write_bytes(b"pptx")
+            return output_path
+
+        first_audit = [
+            SlideAudit(
+                slide_index=2,
+                title="Перегруженный раздел",
+                kind=SlideKind.TEXT.value,
+                layout_key="text_full_width",
+                body_char_count=TEXT_FULL_WIDTH_PROFILE.max_chars + 200,
+                body_font_sizes=(TEXT_FULL_WIDTH_PROFILE.max_font_pt,),
+                profile=TEXT_FULL_WIDTH_PROFILE,
+            )
+        ]
+        first_violations = [
+            CapacityViolation(
+                slide_index=2,
+                title="Перегруженный раздел",
+                rule="overflow_risk",
+                details="fill_ratio=1.40 max=1.00",
+            )
+        ]
+
+        with (
+            patch.object(routes_module.generation_service.generator, "generate", side_effect=fake_generate),
+            patch.object(generation_module, "audit_generated_presentation", side_effect=[first_audit, []]),
+            patch.object(generation_module, "find_capacity_violations", side_effect=[first_violations, []]),
+            patch.object(generation_module, "audit_presentation_styles", return_value=[]),
+        ):
+            output_path = routes_module._generate_checked_presentation(
+                plan,
+                routes_module.template_registry.get_template("deterministic_layout_fixture"),
+                routes_module.template_registry.get_template_pptx_path("deterministic_layout_fixture"),
+            )
+
+        self.assertEqual(output_path.name, retry_output.name)
+        self.assertEqual(len(generated_plans), 2)
+        self.assertEqual(len(generated_plans[0].slides), 2)
+        self.assertGreater(len(generated_plans[1].slides), len(generated_plans[0].slides))
+
+    def test_generate_error_detail_is_structured_for_retry_exhausted(self) -> None:
+        with patch.object(
+            routes_module.generation_service,
+            "generate_checked_result",
+            side_effect=PresentationGenerationError(
+                "retry_exhausted",
+                "Generated deck failed layout quality gate: slide 2: rendered_text_overflow",
+                attempt_count=2,
+            ),
+        ):
+            with self.assertRaises(HTTPException) as error:
+                routes_module._generate_checked_result(
+                    PresentationPlan(
+                        template_id="deterministic_layout_fixture",
+                        title="Retry Exhausted",
+                        slides=[SlideSpec(kind=SlideKind.TEXT, title="Overflow", text="Overflow")],
+                    ),
+                    routes_module.template_registry.get_template("deterministic_layout_fixture"),
+                    routes_module.template_registry.get_template_pptx_path("deterministic_layout_fixture"),
+                )
+
+        self.assertEqual(error.exception.status_code, 500)
+        self.assertEqual(error.exception.detail["code"], "retry_exhausted")
+        self.assertEqual(error.exception.detail["attempt_count"], 2)
+        self.assertIn("layout quality gate", error.exception.detail["message"])
+
+    def test_capacity_retry_uses_overflow_shape_diagnostics_to_split_target_slot(self) -> None:
+        manifest = TemplateManifest(
+            template_id="slot_retry_demo",
+            display_name="Slot Retry Demo",
+            source_pptx="template.pptx",
+            default_layout_key="diagnostic_text",
+            layouts=[
+                LayoutSpec(
+                    key="diagnostic_text",
+                    name="Diagnostic Text",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1300000,
+                            width_emu=3600000,
+                            height_emu=1000000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=18.0, line_spacing=1.18),
+                        )
+                    ],
+                )
+            ],
+        )
+        source_parts = [
+            "Первый фрагмент для точечного retry с подробностями и несколькими ограничениями.",
+            "Второй фрагмент для точечного retry с рисками и следующим действием.",
+        ]
+        plan = PresentationPlan(
+            template_id="slot_retry_demo",
+            title="Slot Retry Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Targeted retry",
+                    text="\n".join(source_parts),
+                    content_blocks=[
+                        SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text=part)
+                        for part in source_parts
+                    ],
+                    preferred_layout_key="diagnostic_text",
+                )
+            ],
+        )
+        audit = SlideAudit(
+            slide_index=1,
+            title="Targeted retry",
+            kind=SlideKind.TEXT.value,
+            layout_key="diagnostic_text",
+            body_char_count=sum(len(part) for part in source_parts),
+            body_font_sizes=(18.0,),
+            profile=TEXT_FULL_WIDTH_PROFILE,
+            body_text_overflow_details=(
+                TextOverflowDetail(
+                    shape_name="Body",
+                    shape_id=7,
+                    placeholder_idx=14,
+                    left=600000,
+                    top=1300000,
+                    width=3600000,
+                    height=1000000,
+                    estimated_height=860,
+                    available_height=650,
+                    font_size_pt=18.0,
+                    text_excerpt=source_parts[0],
+                ),
+            ),
+        )
+        violations = [
+            CapacityViolation(
+                slide_index=1,
+                title="Targeted retry",
+                rule="rendered_text_overflow",
+                details="shape=Body idx=14",
+            )
+        ]
+
+        retry_plan = routes_module.generation_service.plan_with_capacity_retry(plan, manifest, [audit], violations)
+
+        self.assertIsNotNone(retry_plan)
+        assert retry_plan is not None
+        self.assertEqual(len(retry_plan.slides), 2)
+        self.assertIn(source_parts[0], retry_plan.slides[0].text or "")
+        self.assertIn(source_parts[1], retry_plan.slides[1].text or "")
+        self.assertIsNotNone(retry_plan.slides[0].render_target)
+        assert retry_plan.slides[0].render_target is not None
+        self.assertIn(
+            "capacity_retry:rendered_text_overflow:shape=Body:idx=14:height=860>650",
+            retry_plan.slides[0].render_target.degradation_reasons,
+        )
+        self.assertEqual(retry_plan.slides[0].render_target.confidence, "medium")
+
+    def test_capacity_retry_splits_only_overflow_assigned_slot_batch(self) -> None:
+        manifest = TemplateManifest(
+            template_id="slot_batch_retry_demo",
+            display_name="Slot Batch Retry Demo",
+            source_pptx="template.pptx",
+            default_layout_key="two_slot_text",
+            layouts=[
+                LayoutSpec(
+                    key="two_slot_text",
+                    name="Two Slot Text",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Lead Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1300000,
+                            width_emu=3200000,
+                            height_emu=900000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=18.0, line_spacing=1.18),
+                        ),
+                        PlaceholderSpec(
+                            name="Overflow Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=18,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=4200000,
+                            top_emu=1300000,
+                            width_emu=3200000,
+                            height_emu=900000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=18.0, line_spacing=1.18),
+                        ),
+                    ],
+                )
+            ],
+        )
+        source_parts = [
+            "Префикс первого slot с операционным контекстом, длинным описанием, ограничениями и дополнительными деталями процесса.",
+            "Overflow batch первый фрагмент.",
+            "Overflow batch второй фрагмент.",
+        ]
+        plan = PresentationPlan(
+            template_id="slot_batch_retry_demo",
+            title="Slot Batch Retry Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Batch retry",
+                    text="\n".join(source_parts),
+                    content_blocks=[
+                        SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text=part)
+                        for part in source_parts
+                    ],
+                    preferred_layout_key="two_slot_text",
+                )
+            ],
+        )
+        audit = SlideAudit(
+            slide_index=1,
+            title="Batch retry",
+            kind=SlideKind.TEXT.value,
+            layout_key="two_slot_text",
+            body_char_count=sum(len(part) for part in source_parts),
+            body_font_sizes=(18.0,),
+            profile=TEXT_FULL_WIDTH_PROFILE,
+            body_text_overflow_details=(
+                TextOverflowDetail(
+                    shape_name="Overflow Body",
+                    shape_id=18,
+                    placeholder_idx=18,
+                    left=4200000,
+                    top=1300000,
+                    width=3200000,
+                    height=900000,
+                    estimated_height=860,
+                    available_height=450,
+                    font_size_pt=18.0,
+                    text_excerpt="Overflow batch первый фрагмент. Overflow batch второй фрагмент.",
+                ),
+            ),
+        )
+        violations = [
+            CapacityViolation(
+                slide_index=1,
+                title="Batch retry",
+                rule="rendered_text_overflow",
+                details="shape=Overflow Body idx=18",
+            )
+        ]
+
+        retry_plan = routes_module.generation_service.plan_with_capacity_retry(plan, manifest, [audit], violations)
+
+        self.assertIsNotNone(retry_plan)
+        assert retry_plan is not None
+        self.assertEqual(len(retry_plan.slides), 2)
+        self.assertIn(source_parts[0], retry_plan.slides[0].text or "")
+        self.assertIn(source_parts[1], retry_plan.slides[0].text or "")
+        self.assertNotIn(source_parts[0], retry_plan.slides[1].text or "")
+        self.assertIn(source_parts[2], retry_plan.slides[1].text or "")
+
+    def test_capacity_retry_splits_multiple_overflow_slot_batches(self) -> None:
+        manifest = TemplateManifest(
+            template_id="multi_slot_retry_demo",
+            display_name="Multi Slot Retry Demo",
+            source_pptx="template.pptx",
+            default_layout_key="two_slot_text",
+            layouts=[
+                LayoutSpec(
+                    key="two_slot_text",
+                    name="Two Slot Text",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Lead Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1300000,
+                            width_emu=3300000,
+                            height_emu=950000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=18.0, line_spacing=1.18),
+                        ),
+                        PlaceholderSpec(
+                            name="Overflow Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=18,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=4300000,
+                            top_emu=1300000,
+                            width_emu=3300000,
+                            height_emu=950000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=18.0, line_spacing=1.18),
+                        ),
+                    ],
+                )
+            ],
+        )
+        source_parts = [
+            "Первый slot первый фрагмент с операционным контекстом.",
+            "Первый slot второй фрагмент с дополнительными ограничениями.",
+            "Второй slot первый фрагмент с рисками внедрения.",
+            "Второй slot второй фрагмент с критериями приемки.",
+        ]
+        plan = PresentationPlan(
+            template_id="multi_slot_retry_demo",
+            title="Multi Slot Retry Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Multi overflow retry",
+                    text="\n".join(source_parts),
+                    content_blocks=[
+                        SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text=part)
+                        for part in source_parts
+                    ],
+                    preferred_layout_key="two_slot_text",
+                )
+            ],
+        )
+        audit = SlideAudit(
+            slide_index=1,
+            title="Multi overflow retry",
+            kind=SlideKind.TEXT.value,
+            layout_key="two_slot_text",
+            body_char_count=sum(len(part) for part in source_parts),
+            body_font_sizes=(18.0,),
+            profile=TEXT_FULL_WIDTH_PROFILE,
+            body_text_overflow_details=(
+                TextOverflowDetail(
+                    shape_name="Lead Body",
+                    shape_id=14,
+                    placeholder_idx=14,
+                    left=600000,
+                    top=1300000,
+                    width=3300000,
+                    height=950000,
+                    estimated_height=900,
+                    available_height=520,
+                    font_size_pt=18.0,
+                    text_excerpt=" ".join(source_parts[:2]),
+                ),
+                TextOverflowDetail(
+                    shape_name="Overflow Body",
+                    shape_id=18,
+                    placeholder_idx=18,
+                    left=4300000,
+                    top=1300000,
+                    width=3300000,
+                    height=950000,
+                    estimated_height=900,
+                    available_height=520,
+                    font_size_pt=18.0,
+                    text_excerpt=" ".join(source_parts[2:]),
+                ),
+            ),
+        )
+        violations = [
+            CapacityViolation(
+                slide_index=1,
+                title="Multi overflow retry",
+                rule="rendered_text_overflow",
+                details="shape=Lead Body idx=14; shape=Overflow Body idx=18",
+            )
+        ]
+
+        retry_plan = routes_module.generation_service.plan_with_capacity_retry(plan, manifest, [audit], violations)
+
+        self.assertIsNotNone(retry_plan)
+        assert retry_plan is not None
+        self.assertGreaterEqual(len(retry_plan.slides), 3)
+        rendered_texts = [slide.text or "" for slide in retry_plan.slides]
+        self.assertFalse(any(source_parts[0] in text and source_parts[1] in text for text in rendered_texts))
+        self.assertFalse(any(source_parts[2] in text and source_parts[3] in text for text in rendered_texts))
+
+    def test_text_pack_result_reports_failed_box_and_chunk(self) -> None:
+        box = FitBox(
+            metrics=TextBoxMetrics(width_emu=1800000, height_emu=650000, font_size_pt=18.0),
+            min_font_pt=12,
+            max_font_pt=18,
+        )
+
+        result = assign_text_chunks_to_boxes(
+            [
+                "Первый компактный фрагмент.",
+                "Второй фрагмент намеренно длиннее и должен не поместиться в единственный target box.",
+            ],
+            [box],
+        )
+
+        self.assertFalse(result.fits)
+        self.assertEqual(result.failed_box_index, 0)
+        self.assertEqual(result.failed_chunk_index, 1)
+        self.assertIn(result.reason, {"chunk_too_large", "no_remaining_box"})
+
+    def test_slide_text_policy_prefers_content_blocks_for_demand_and_chunks(self) -> None:
+        slide = SlideSpec(
+            kind=SlideKind.TEXT,
+            title="Policy",
+            text="Fallback text should not be counted when content blocks exist.",
+            bullets=["Fallback bullet"],
+            content_blocks=[
+                SlideContentBlock(kind=SlideContentBlockKind.PARAGRAPH, text="First paragraph."),
+                SlideContentBlock(kind=SlideContentBlockKind.BULLET_LIST, items=["First bullet", "Second bullet"]),
+            ],
+        )
+
+        chunks = slide_content_chunks(slide)
+
+        self.assertEqual(
+            chunks,
+            [
+                ("paragraph", "First paragraph."),
+                ("bullet", "First bullet"),
+                ("bullet", "Second bullet"),
+            ],
+        )
+        self.assertEqual(slide_text_demand_chars(slide), len("First paragraph.") + len("First bullet") + len("Second bullet"))
+
+    def test_capacity_audit_reports_native_table_cell_text_overflow(self) -> None:
+        violations = find_capacity_violations(
+            [
+                SlideAudit(
+                    slide_index=1,
+                    title="Table",
+                    kind=SlideKind.TABLE.value,
+                    layout_key="table",
+                    body_char_count=0,
+                    body_font_sizes=(),
+                    profile=TEXT_FULL_WIDTH_PROFILE,
+                    has_table=True,
+                    table_cell_overflow_count=1,
+                    table_cell_overflow_details=("row=1 col=0: required=900 available=300",),
+                )
+            ]
+        )
+
+        self.assertIn("table_cell_text_overflow", {item.rule for item in violations})
+
+    def test_target_split_uses_assignment_failure_boundary(self) -> None:
+        box = FitBox(
+            metrics=TextBoxMetrics(width_emu=2400000, height_emu=700000, font_size_pt=18.0),
+            min_font_pt=12,
+            max_font_pt=18,
+        )
+        chunks = [("paragraph", "Alpha короткий текст.") for _ in range(5)]
+
+        batches = routes_module.template_registry._split_chunks_by_target_assignment(chunks, [box])
+
+        self.assertIsNotNone(batches)
+        assert batches is not None
+        self.assertEqual([len(batch) for batch in batches], [2, 2, 1])
 
     def test_generate_returns_404_for_template_without_pptx(self) -> None:
         with self.assertRaises(HTTPException) as error:

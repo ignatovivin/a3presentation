@@ -60,6 +60,14 @@ from a3presentation.services.layout_capacity import (
     runtime_profile_key_for_target,
     spacing_policy_for_layout,
 )
+from a3presentation.services.text_fit import (
+    FitBox,
+    best_fit_font_size_pt,
+    estimate_wrapped_line_count,
+    metrics_from_shape,
+    pack_text_chunks_for_boxes,
+    text_fits_box,
+)
 
 
 class PptxGenerator:
@@ -189,9 +197,24 @@ class PptxGenerator:
     def _should_use_auto_layout_instead_of_prototype(self, slide_spec: SlideSpec) -> bool:
         if self._target_type_for_slide(slide_spec) != "prototype":
             return False
-        if slide_spec.kind == SlideKind.TEXT:
-            return True
-        return slide_spec.kind == SlideKind.BULLETS and slide_spec.runtime_profile_key == "text_full_width"
+        if self._active_manifest is None:
+            return False
+        target_key = self._target_key_for_slide(slide_spec)
+        prototype = next(
+            (item for item in self._active_manifest.prototype_slides if item.key == target_key),
+            None,
+        )
+        if prototype is None:
+            return False
+        if self._prototype_has_text_slot_for_slide(prototype, slide_spec):
+            return False
+        return slide_spec.kind in {SlideKind.TEXT, SlideKind.BULLETS}
+
+    def _prototype_has_text_slot_for_slide(self, prototype: PrototypeSlideSpec, slide_spec: SlideSpec) -> bool:
+        text_bindings = {"body", "main_text", "text", "bullets", "left_bullets", "right_bullets"}
+        if slide_spec.kind == SlideKind.TWO_COLUMN:
+            text_bindings.update({"left_text", "right_text", "right_list"})
+        return any(token.binding in text_bindings for token in prototype.tokens)
 
     def _should_apply_prototype_layout_flow(self, prototype: PrototypeSlideSpec) -> bool:
         if prototype.key not in self.BUILTIN_LAYOUT_KEYS:
@@ -908,6 +931,19 @@ class PptxGenerator:
         placeholders = {placeholder.placeholder_format.idx: placeholder for placeholder in slide.placeholders}
         used_placeholder_indices: set[int] = set()
         materialized_roles: set[str] = set()
+        filled_body_placeholder = False
+        primary_body_placeholder_idx = self._primary_body_placeholder_idx(layout) if not use_builtin_flow else None
+        distributed_body_placeholders = False
+        if not use_builtin_flow:
+            distributed_body_placeholders = self._fill_body_across_layout_slots(
+                slide,
+                slide_spec,
+                layout,
+                placeholders,
+                layout_profile,
+                runtime_profile_key,
+                used_placeholder_indices,
+            )
         for placeholder_spec in layout.placeholders:
             shape = None
             if placeholder_spec.idx is not None and placeholder_spec.idx in placeholders:
@@ -926,6 +962,17 @@ class PptxGenerator:
                 continue
             self._apply_shape_spec_metadata(shape, placeholder_spec)
             if placeholder_spec.binding:
+                binding_role = self._materialized_role_key(placeholder_spec, slide_spec, runtime_profile_key)
+                if binding_role == "body" and not use_builtin_flow:
+                    if distributed_body_placeholders:
+                        continue
+                    if primary_body_placeholder_idx is not None and placeholder_spec.idx != primary_body_placeholder_idx:
+                        self._clear_placeholder(shape)
+                        continue
+                    if filled_body_placeholder:
+                        self._clear_placeholder(shape)
+                        continue
+                    filled_body_placeholder = True
                 self._fill_shape_by_binding(
                     shape,
                     placeholder_spec.binding,
@@ -952,7 +999,16 @@ class PptxGenerator:
                 else:
                     self._clear_placeholder(shape)
             elif effective_kind == PlaceholderKind.BODY:
+                if distributed_body_placeholders:
+                    continue
+                if primary_body_placeholder_idx is not None and placeholder_spec.idx != primary_body_placeholder_idx:
+                    self._clear_placeholder(shape)
+                    continue
+                if filled_body_placeholder and not use_builtin_flow:
+                    self._clear_placeholder(shape)
+                    continue
                 self._fill_body(shape, slide_spec, layout_profile)
+                filled_body_placeholder = True
             elif effective_kind == PlaceholderKind.FOOTER:
                 self._set_text(shape, presentation_title, layout_profile)
             elif effective_kind == PlaceholderKind.TABLE:
@@ -988,6 +1044,156 @@ class PptxGenerator:
 
         if use_builtin_flow:
             self._apply_layout_expansion_and_flow(slide, runtime_profile_key, slide_spec)
+
+    def _fill_body_across_layout_slots(
+        self,
+        slide,
+        slide_spec: SlideSpec,
+        layout: LayoutSpec,
+        placeholders: dict[int, object],
+        layout_profile: LayoutCapacityProfile,
+        runtime_profile_key: str,
+        used_placeholder_indices: set[int],
+    ) -> bool:
+        body_specs = self._layout_body_placeholder_specs(layout)
+        if len(body_specs) <= 1 or any(self._placeholder_has_explicit_style(spec) for spec in body_specs):
+            return False
+        chunks = self._body_text_chunks_for_distribution(slide_spec)
+        if len(chunks) <= 1:
+            return False
+
+        body_shapes: list[tuple[PlaceholderSpec, object]] = []
+        for placeholder_spec in body_specs:
+            shape = None
+            if placeholder_spec.idx is not None and placeholder_spec.idx in placeholders:
+                shape = placeholders[placeholder_spec.idx]
+                used_placeholder_indices.add(placeholder_spec.idx)
+            else:
+                shape = self._materialize_layout_body_shape(slide, placeholder_spec)
+            if shape is None or not getattr(shape, "has_text_frame", False):
+                continue
+            self._apply_shape_spec_metadata(shape, placeholder_spec)
+            body_shapes.append((placeholder_spec, shape))
+        if len(body_shapes) <= 1:
+            return False
+
+        fit_boxes = [
+            self._fit_box_for_shape(shape, layout_profile, runtime_profile_key)
+            for _, shape in body_shapes
+        ]
+        if any(box is None for box in fit_boxes):
+            return False
+        batches = pack_text_chunks_for_boxes(chunks, [box for box in fit_boxes if box is not None])
+        if batches is None or len(batches) <= 1:
+            return False
+
+        for index, (placeholder_spec, shape) in enumerate(body_shapes):
+            batch = batches[index] if index < len(batches) else []
+            if batch:
+                self._set_text(shape, "\n".join(batch), layout_profile)
+                self._apply_shape_spec_metadata(shape, placeholder_spec, apply_text_style=True, preserve_font_size=True)
+                self._clamp_text_frame_font_size(shape, layout_profile)
+            else:
+                self._clear_placeholder(shape)
+        return True
+
+    def _layout_body_placeholder_specs(self, layout: LayoutSpec) -> list[PlaceholderSpec]:
+        return [
+            placeholder
+            for placeholder in layout.placeholders
+            if self._placeholder_is_body_target(placeholder)
+        ]
+
+    def _placeholder_is_body_target(self, placeholder: PlaceholderSpec) -> bool:
+        role = getattr(placeholder, "editable_role", None)
+        if role in {"body", "bullet_list", "bullet_item"}:
+            return True
+        if role in {"title", "subtitle", "footer", "table", "chart", "image"}:
+            return False
+        binding_role = self._materialized_role_key(placeholder, SlideSpec(kind=SlideKind.TEXT), "text_full_width")
+        if binding_role == "body":
+            return True
+        return placeholder.kind == PlaceholderKind.BODY
+
+    def _materialize_layout_body_shape(self, slide, placeholder_spec: PlaceholderSpec):
+        geometry_values = (
+            placeholder_spec.left_emu,
+            placeholder_spec.top_emu,
+            placeholder_spec.width_emu,
+            placeholder_spec.height_emu,
+        )
+        if not all(isinstance(value, int) and value > 0 for value in geometry_values):
+            return None
+        shape = slide.shapes.add_textbox(
+            placeholder_spec.left_emu,
+            placeholder_spec.top_emu,
+            placeholder_spec.width_emu,
+            placeholder_spec.height_emu,
+        )
+        if placeholder_spec.shape_name:
+            shape.name = placeholder_spec.shape_name
+        return shape
+
+    def _body_text_chunks_for_distribution(self, slide_spec: SlideSpec) -> list[str]:
+        chunks: list[str] = []
+        if slide_spec.content_blocks:
+            for block in slide_spec.content_blocks:
+                if block.text and block.text.strip():
+                    chunks.append(block.text.strip())
+                chunks.extend(item.strip() for item in block.items if item and item.strip())
+            return chunks
+        if slide_spec.kind == SlideKind.BULLETS:
+            return [item.strip() for item in slide_spec.bullets if item and item.strip()]
+        if slide_spec.kind == SlideKind.TWO_COLUMN:
+            return [item.strip() for item in [*slide_spec.left_bullets, *slide_spec.right_bullets] if item and item.strip()]
+        if slide_spec.text and slide_spec.text.strip():
+            return [part.strip() for part in re.split(r"\n{2,}|\n", slide_spec.text) if part.strip()]
+        return []
+
+    def _fit_box_for_shape(
+        self,
+        shape,
+        layout_profile: LayoutCapacityProfile,
+        runtime_profile_key: str,
+    ) -> FitBox | None:
+        metrics = metrics_from_shape(
+            shape,
+            layout_key=runtime_profile_key,
+            fallback_font_size_pt=float(layout_profile.max_font_pt),
+        )
+        if metrics is None:
+            return None
+        return FitBox(metrics=metrics, min_font_pt=layout_profile.min_font_pt, max_font_pt=layout_profile.max_font_pt)
+
+    def _primary_body_placeholder_idx(self, layout: LayoutSpec) -> int | None:
+        body_placeholders = [
+            placeholder
+            for placeholder in layout.placeholders
+            if placeholder.idx is not None
+            and (
+                placeholder.kind == PlaceholderKind.BODY
+                or getattr(placeholder, "editable_role", None) in {"body", "bullet_list", "bullet_item"}
+            )
+        ]
+        if not body_placeholders:
+            return None
+
+        def score(placeholder: PlaceholderSpec) -> tuple[int, int]:
+            style_priority = 1 if self._placeholder_has_explicit_style(placeholder) else 0
+            width = placeholder.width_emu or 0
+            height = placeholder.height_emu or 0
+            return style_priority, width * height
+
+        return max(body_placeholders, key=score).idx
+
+    def _placeholder_has_explicit_style(self, placeholder: PlaceholderSpec) -> bool:
+        for style in (placeholder.text_style, placeholder.shape_style):
+            if style is None:
+                continue
+            values = style.model_dump(exclude_none=True) if hasattr(style, "model_dump") else vars(style)
+            if values:
+                return True
+        return False
 
     def _materialize_shape_from_layout_spec(
         self,
@@ -2334,38 +2540,12 @@ class PptxGenerator:
         *,
         min_chars_per_line: int,
     ) -> int:
-        chars_per_line = max(int(width_pt / average_char_width_pt), min_chars_per_line)
-        wrapped_lines = 0
-
-        for paragraph in text.splitlines() or [text]:
-            normalized = paragraph.strip()
-            if not normalized:
-                wrapped_lines += 1
-                continue
-
-            words = normalized.split()
-            if len(words) <= 1:
-                wrapped_lines += max(1, math.ceil(len(normalized) / chars_per_line))
-                continue
-
-            current_line_len = 0
-            paragraph_lines = 1
-            for word in words:
-                word_len = len(word)
-                projected = word_len if current_line_len == 0 else current_line_len + 1 + word_len
-                if projected <= chars_per_line:
-                    current_line_len = projected
-                    continue
-                if current_line_len == 0:
-                    paragraph_lines += max(math.ceil(word_len / chars_per_line) - 1, 0)
-                    current_line_len = word_len % chars_per_line or chars_per_line
-                    continue
-                paragraph_lines += 1
-                current_line_len = word_len
-
-            wrapped_lines += paragraph_lines
-
-        return wrapped_lines
+        return estimate_wrapped_line_count(
+            text,
+            width_pt,
+            average_char_width_pt,
+            min_chars_per_line=min_chars_per_line,
+        )
 
     def _fill_table(self, shape, slide_spec: SlideSpec, placeholder_spec: PlaceholderSpec | None = None) -> None:
         if slide_spec.table is None:
@@ -3169,7 +3349,7 @@ class PptxGenerator:
 
     def _configure_body_text_frame(self, text_frame) -> None:
         text_frame.word_wrap = True
-        text_frame.auto_size = MSO_AUTO_SIZE.NONE
+        text_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
         self._apply_text_frame_margins(text_frame)
 
     def _apply_paragraph_spacing(self, paragraph, role: str, layout_key: str) -> None:
@@ -3179,10 +3359,14 @@ class PptxGenerator:
         paragraph.space_after = Pt(role_policy.space_after_pt)
 
     def _apply_text_frame_margins(self, text_frame) -> None:
-        text_frame.margin_left = self.DEFAULT_TEXT_MARGIN_X_EMU
-        text_frame.margin_right = self.DEFAULT_TEXT_MARGIN_X_EMU
-        text_frame.margin_top = self.DEFAULT_TEXT_MARGIN_Y_EMU
-        text_frame.margin_bottom = self.DEFAULT_TEXT_MARGIN_Y_EMU
+        if text_frame.margin_left is None:
+            text_frame.margin_left = self.DEFAULT_TEXT_MARGIN_X_EMU
+        if text_frame.margin_right is None:
+            text_frame.margin_right = self.DEFAULT_TEXT_MARGIN_X_EMU
+        if text_frame.margin_top is None:
+            text_frame.margin_top = self.DEFAULT_TEXT_MARGIN_Y_EMU
+        if text_frame.margin_bottom is None:
+            text_frame.margin_bottom = self.DEFAULT_TEXT_MARGIN_Y_EMU
 
     def _apply_body_font_size(self, text_frame, items: list[str], shape, layout_profile: LayoutCapacityProfile) -> None:
         non_empty_items = [item.strip() for item in items if item and item.strip()]
@@ -3249,28 +3433,24 @@ class PptxGenerator:
         margin_top = getattr(text_frame, "margin_top", self.DEFAULT_TEXT_MARGIN_Y_EMU) or 0
         margin_bottom = getattr(text_frame, "margin_bottom", self.DEFAULT_TEXT_MARGIN_Y_EMU) or 0
         available_height = max(shape_height - margin_top - margin_bottom, 200000)
-        for candidate in range(points, layout_profile.min_font_pt - 1, -1):
-            if self._text_frame_height_fits_shape(text_frame, shape, layout_profile.layout_key, candidate, available_height):
-                return candidate
-        return layout_profile.min_font_pt
+        metrics = metrics_from_shape(shape, layout_key=layout_profile.layout_key, fallback_font_size_pt=float(points))
+        if metrics is None:
+            return points
+        paragraphs = [paragraph.text.strip() for paragraph in text_frame.paragraphs if paragraph.text.strip()]
+        best_fit = best_fit_font_size_pt(
+            paragraphs,
+            metrics,
+            min_font_pt=layout_profile.min_font_pt,
+            max_font_pt=points,
+        )
+        return best_fit if best_fit is not None else layout_profile.min_font_pt
 
     def _text_frame_height_fits_shape(self, text_frame, shape, layout_key: str, font_size_pt: float, available_height_emu: int) -> bool:
-        margin_left = getattr(text_frame, "margin_left", self.DEFAULT_TEXT_MARGIN_X_EMU) or 0
-        margin_right = getattr(text_frame, "margin_right", self.DEFAULT_TEXT_MARGIN_X_EMU) or 0
-        effective_width = max(int((shape.width - margin_left - margin_right) * 0.82), shape.width // 2)
-        spacing = spacing_policy_for_layout(layout_key).body
-        paragraph_gap_emu = int(Pt(spacing.space_after_pt).emu)
-        total_height = 0
-        non_empty_count = 0
-        for paragraph in text_frame.paragraphs:
-            paragraph_text = paragraph.text.strip()
-            if not paragraph_text:
-                continue
-            non_empty_count += 1
-            total_height += self._estimate_text_height_emu(paragraph_text, effective_width, font_size_pt)
-        if non_empty_count > 1:
-            total_height += paragraph_gap_emu * (non_empty_count - 1)
-        return int(total_height * 1.04) <= available_height_emu
+        metrics = metrics_from_shape(shape, layout_key=layout_key, fallback_font_size_pt=float(font_size_pt))
+        if metrics is None:
+            return True
+        paragraphs = [paragraph.text.strip() for paragraph in text_frame.paragraphs if paragraph.text.strip()]
+        return text_fits_box(paragraphs, metrics, font_size_pt=float(font_size_pt))
 
     def _set_text_frame_font_size(self, text_frame, points: float, layout_key: str) -> None:
         font_size = Pt(points)

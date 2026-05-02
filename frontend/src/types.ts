@@ -347,6 +347,115 @@ export type GeneratePresentationResponse = {
   output_path: string;
   file_name: string;
   download_url: string;
+  warnings?: string[];
+  diagnostics?: GenerationDiagnostic[];
+  diagnostics_summary?: GenerationDiagnosticsSummary;
+  attempt_count?: number;
+};
+
+export type PresentationDiagnosticsResponse = {
+  diagnostics: GenerationDiagnostic[];
+  diagnostics_summary?: GenerationDiagnosticsSummary;
+};
+
+export type GenerationDiagnosticSeverity = "blocking" | "retryable" | "warning";
+
+export type GenerationDiagnosticSource = "capacity" | "style";
+
+export type GenerationDiagnosticRule =
+  | "background_fill_color_mismatch"
+  | "body_left_misalignment"
+  | "body_margin_mismatch"
+  | "capacity_retry"
+  | "chart_secondary_value_axis_number_format_mismatch"
+  | "chart_series_color_missing"
+  | "chart_series_count_mismatch"
+  | "chart_subtitle_font_mismatch"
+  | "chart_title_font_mismatch"
+  | "chart_type_mismatch"
+  | "chart_value_axis_number_format_mismatch"
+  | "combo_chart_structure_mismatch"
+  | "content_footer_overlap"
+  | "content_order_mismatch"
+  | "continuation_balance"
+  | "continuation_font_delta"
+  | "continuation_order_mismatch"
+  | "direct_shape_binding"
+  | "font_bounds"
+  | "footer_left_misalignment"
+  | "image_text_body_misalignment"
+  | "image_text_overlap"
+  | "inventory_fallback"
+  | "layout_degradation"
+  | "missing_chart_shape"
+  | "missing_image_shape"
+  | "missing_required_editable_slot"
+  | "missing_secondary_value_axis"
+  | "missing_table_shape"
+  | "narrow_chart_content"
+  | "narrow_footer"
+  | "narrow_image_content"
+  | "narrow_image_panel"
+  | "narrow_table_content"
+  | "narrow_table_footer"
+  | "narrow_text_footer"
+  | "overflow_continuation"
+  | "overflow_risk"
+  | "rendered_text_overflow"
+  | "shape_fill_color_mismatch"
+  | "shape_line_color_mismatch"
+  | "split_for_capacity"
+  | "split_overflow_slot"
+  | "style_target_missing"
+  | "subtitle_body_gap_drift"
+  | "subtitle_body_overlap"
+  | "table_header_fill_color_mismatch"
+  | "table_header_text_color_mismatch"
+  | "table_cell_text_overflow"
+  | "table_overlay_text_overflow"
+  | "text_color_mismatch"
+  | "title_body_gap_drift"
+  | "title_body_overlap"
+  | "title_subtitle_gap_drift"
+  | "title_subtitle_overlap"
+  | "two_column_overlap"
+  | "unexpected_chart_shape"
+  | "unexpected_table_shape"
+  | "underfilled_auxiliary_placeholder_fill"
+  | "underfilled_continuation"
+  | "underfilled_placeholder_fill"
+  | "underfilled_subtitle_placeholder_fill";
+
+export type GenerationDiagnosticsSummary = {
+  total: number;
+  blocking: number;
+  retryable: number;
+  warning: number;
+  capacity: number;
+  style: number;
+};
+
+export type GenerationDiagnosticRuleMetadata = {
+  rule: GenerationDiagnosticRule;
+  label: string;
+  action: string;
+};
+
+export type GenerationDiagnosticsMetadataResponse = {
+  severities: GenerationDiagnosticSeverity[];
+  sources: GenerationDiagnosticSource[];
+  rules: GenerationDiagnosticRuleMetadata[];
+};
+
+export type GenerationDiagnostic = {
+  slide_index: number;
+  title: string;
+  severity: GenerationDiagnosticSeverity;
+  rule: GenerationDiagnosticRule;
+  label?: string;
+  action?: string;
+  details: string;
+  source: GenerationDiagnosticSource;
 };
 
 export type AutoUploadTemplateResponse = {

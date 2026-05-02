@@ -621,6 +621,64 @@ const generationResponse = {
   output_path: "/tmp/A3_Presentation.pptx",
   file_name: "A3_Presentation.pptx",
   download_url: "/presentations/files/A3_Presentation.pptx",
+  warnings: ["slide 2: text_color_mismatch: placeholder=Body actual=['000000'] expected=CC3300"],
+  diagnostics: [
+    {
+      slide_index: 2,
+      title: "1. Рост",
+      severity: "warning",
+      rule: "text_color_mismatch",
+      details: "placeholder=Body actual=['000000'] expected=CC3300",
+      source: "style",
+    },
+  ],
+  diagnostics_summary: {
+    total: 1,
+    blocking: 0,
+    retryable: 0,
+    warning: 1,
+    capacity: 0,
+    style: 1,
+  },
+  attempt_count: 2,
+};
+
+const diagnosticsResponse = {
+  diagnostics: [
+    {
+      slide_index: 2,
+      title: "1. Рост",
+      severity: "retryable",
+      rule: "overflow_risk",
+      details: "text_chars=920 estimated_capacity=780",
+      source: "capacity",
+    },
+  ],
+  diagnostics_summary: {
+    total: 1,
+    blocking: 0,
+    retryable: 1,
+    warning: 0,
+    capacity: 1,
+    style: 0,
+  },
+};
+
+const diagnosticsMetadataResponse = {
+  severities: ["blocking", "retryable", "warning"],
+  sources: ["capacity", "style"],
+  rules: [
+    {
+      rule: "overflow_risk",
+      label: "Текст может не поместиться",
+      action: "Система попробует разбить текст на дополнительные слайды или выбрать более емкий макет.",
+    },
+    {
+      rule: "text_color_mismatch",
+      label: "Цвет текста не совпал",
+      action: "Проверьте цвет текста в placeholder style шаблона.",
+    },
+  ],
 };
 
 const uploadedTemplateManifest = {
@@ -898,6 +956,10 @@ test.beforeEach(async ({ page }) => {
     await route.fulfill({ json: extractResponse });
   });
 
+  await page.route("**/api/diagnostics/metadata", async (route) => {
+    await route.fulfill({ json: diagnosticsMetadataResponse });
+  });
+
   await page.route("**/api/plans/from-text", async (route) => {
     lastPlanPayload = await route.request().postDataJSON();
     await route.fulfill({ json: planResponse });
@@ -911,6 +973,14 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/presentations/generate-with-template", async (route) => {
     lastGeneratePayload = readMultipartJsonField(route.request().postData() ?? "", "plan_json");
     await route.fulfill({ json: generationResponse });
+  });
+
+  await page.route("**/api/presentations/diagnose", async (route) => {
+    await route.fulfill({ json: diagnosticsResponse });
+  });
+
+  await page.route("**/api/presentations/diagnose-with-template", async (route) => {
+    await route.fulfill({ json: diagnosticsResponse });
   });
 
   await page.route("**/api/presentations/files/*", async (route) => {
@@ -1000,6 +1070,11 @@ test("@smoke user can upload document inspect structure and generate presentatio
   await expect(page.getByTestId("slide-review-panel")).toBeVisible();
   await expect(page.getByTestId("drawer-tab-text")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("layout-slide-choice-1")).toContainText("1. Рост");
+  await expect(page.getByTestId("preflight-diagnostics")).toContainText("Retry");
+  await expect(page.getByTestId("preflight-diagnostics-summary")).toHaveText("1 retry");
+  await expect(page.getByTestId("preflight-diagnostics")).toContainText("Верстка");
+  await expect(page.getByTestId("preflight-diagnostics")).toContainText("Текст может не поместиться");
+  await expect(page.getByTestId("preflight-diagnostics")).toContainText("Система попробует разбить текст");
   await expect(page.getByTestId("save-structure-choices")).toHaveText("Сохранить");
   await page.getByTestId("save-structure-choices").click();
   await expect(page.getByTestId("structure-drawer")).toHaveCount(0);
@@ -1031,6 +1106,12 @@ test("@smoke user can upload document inspect structure and generate presentatio
     }),
   );
   await expect(page.getByTestId("generated-file-name")).toHaveText("A3_Presentation.pptx");
+  await expect(page.getByTestId("generation-attempt-count")).toHaveText("Попыток генерации: 2");
+  await expect(page.getByTestId("generation-diagnostics")).toContainText("Warning");
+  await expect(page.getByTestId("generation-diagnostics-summary")).toHaveText("1 warning");
+  await expect(page.getByTestId("generation-diagnostics")).toContainText("Стиль");
+  await expect(page.getByTestId("generation-diagnostics")).toContainText("Цвет текста не совпал");
+  await expect(page.getByTestId("generation-diagnostics")).toContainText("Проверьте цвет текста");
 
   await page.getByTestId("download-presentation").click();
   await expect.poll(async () => {

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from a3presentation.domain.chart import ChartabilityAssessment, ChartSpec
+from a3presentation.domain.diagnostics import GenerationDiagnosticRule, GenerationDiagnosticSeverity, GenerationDiagnosticSource
 from a3presentation.domain.presentation import PresentationPlan, TableBlock
 from a3presentation.domain.template import ComponentGeometry, TemplateManifest
 
@@ -119,10 +120,51 @@ class SlideLayoutReview(BaseModel):
     available_layouts: list[SlideLayoutOption] = Field(default_factory=list)
 
 
+class GenerationDiagnostic(BaseModel):
+    slide_index: int
+    title: str = ""
+    severity: GenerationDiagnosticSeverity
+    rule: GenerationDiagnosticRule
+    label: str = ""
+    action: str = ""
+    details: str
+    source: GenerationDiagnosticSource
+
+
+class GenerationDiagnosticsSummary(BaseModel):
+    total: int = 0
+    blocking: int = 0
+    retryable: int = 0
+    warning: int = 0
+    capacity: int = 0
+    style: int = 0
+
+
+class GenerationDiagnosticRuleMetadata(BaseModel):
+    rule: GenerationDiagnosticRule
+    label: str
+    action: str
+
+
+class GenerationDiagnosticsMetadataResponse(BaseModel):
+    severities: list[GenerationDiagnosticSeverity] = Field(default_factory=list)
+    sources: list[GenerationDiagnosticSource] = Field(default_factory=list)
+    rules: list[GenerationDiagnosticRuleMetadata] = Field(default_factory=list)
+
+
 class GeneratePresentationResponse(BaseModel):
     output_path: str
     file_name: str
     download_url: str
+    warnings: list[str] = Field(default_factory=list)
+    diagnostics: list[GenerationDiagnostic] = Field(default_factory=list)
+    diagnostics_summary: GenerationDiagnosticsSummary = Field(default_factory=GenerationDiagnosticsSummary)
+    attempt_count: int = 1
+
+
+class PresentationDiagnosticsResponse(BaseModel):
+    diagnostics: list[GenerationDiagnostic] = Field(default_factory=list)
+    diagnostics_summary: GenerationDiagnosticsSummary = Field(default_factory=GenerationDiagnosticsSummary)
 
 
 class UploadTemplateResponse(BaseModel):

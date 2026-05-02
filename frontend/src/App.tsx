@@ -1,6 +1,18 @@
 import { ChangeEvent, type CSSProperties, useEffect, useState, useTransition } from "react";
 
-import { buildDownloadUrl, buildPlan, buildPlanWithTemplate, extractTextFromDocument, fetchTemplate, fetchTemplates, generatePresentation, generatePresentationWithTemplate } from "@/api";
+import {
+  buildDownloadUrl,
+  buildPlan,
+  buildPlanWithTemplate,
+  diagnosePresentation,
+  diagnosePresentationWithTemplate,
+  extractTextFromDocument,
+  fetchDiagnosticsMetadata,
+  fetchTemplate,
+  fetchTemplates,
+  generatePresentation,
+  generatePresentationWithTemplate,
+} from "@/api";
 import { ChartPreview } from "@/components/chart-preview";
 import { StructureDrawer } from "@/components/structure-drawer";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,7 +23,14 @@ import type {
   ChartOverride,
   ChartSpec,
   DocumentBlock,
+  GenerationDiagnostic,
+  GenerationDiagnosticRule,
+  GenerationDiagnosticRuleMetadata,
+  GenerationDiagnosticsSummary,
+  GenerationDiagnosticSeverity,
+  GenerationDiagnosticSource,
   GeneratePresentationResponse,
+  PresentationDiagnosticsResponse,
   PlaceholderSpec,
   PrototypeTokenSpec,
   SlideLayoutOption,
@@ -137,6 +156,91 @@ function layoutPurposeLabel(option: {
     return "подходит по типу слайда";
   }
   return null;
+}
+
+function diagnosticSeverityLabel(severity: GenerationDiagnosticSeverity): string {
+  if (severity === "blocking") {
+    return "Блокер";
+  }
+  if (severity === "retryable") {
+    return "Retry";
+  }
+  return "Warning";
+}
+
+function diagnosticSourceLabel(source: GenerationDiagnosticSource): string {
+  if (source === "capacity") {
+    return "Верстка";
+  }
+  return "Стиль";
+}
+
+function diagnosticRuleLabel(
+  diagnostic: GenerationDiagnostic,
+  metadataByRule: Partial<Record<GenerationDiagnosticRule, GenerationDiagnosticRuleMetadata>>,
+): string {
+  return diagnostic.label?.trim() || metadataByRule[diagnostic.rule]?.label || diagnostic.rule.replaceAll("_", " ");
+}
+
+function generationDiagnosticText(
+  diagnostic: GenerationDiagnostic,
+  metadataByRule: Partial<Record<GenerationDiagnosticRule, GenerationDiagnosticRuleMetadata>>,
+): string {
+  const title = diagnostic.title.trim();
+  const slideLabel = diagnostic.slide_index > 0 ? `Слайд ${diagnostic.slide_index}` : "Слайд";
+  const location = title ? `${slideLabel}: ${title}` : slideLabel;
+  return `${location} · ${diagnosticRuleLabel(diagnostic, metadataByRule)}: ${diagnostic.details}`;
+}
+
+function generationDiagnosticAction(
+  diagnostic: GenerationDiagnostic,
+  metadataByRule: Partial<Record<GenerationDiagnosticRule, GenerationDiagnosticRuleMetadata>>,
+): string | null {
+  const action = diagnostic.action?.trim();
+  if (action) {
+    return action;
+  }
+  const metadataAction = metadataByRule[diagnostic.rule]?.action;
+  if (metadataAction) {
+    return metadataAction;
+  }
+  if (diagnostic.severity === "retryable") {
+    return "Система попробует исправить это при генерации.";
+  }
+  if (diagnostic.source === "style") {
+    return "Проверьте стиль в исходном шаблоне.";
+  }
+  return null;
+}
+
+function summarizeDiagnostics(
+  diagnostics: GenerationDiagnostic[] = [],
+  summary?: GenerationDiagnosticsSummary,
+): GenerationDiagnosticsSummary {
+  if (summary) {
+    return summary;
+  }
+  return {
+    total: diagnostics.length,
+    blocking: diagnostics.filter((item) => item.severity === "blocking").length,
+    retryable: diagnostics.filter((item) => item.severity === "retryable").length,
+    warning: diagnostics.filter((item) => item.severity === "warning").length,
+    capacity: diagnostics.filter((item) => item.source === "capacity").length,
+    style: diagnostics.filter((item) => item.source === "style").length,
+  };
+}
+
+function diagnosticSummaryText(
+  diagnostics: GenerationDiagnostic[] = [],
+  summary?: GenerationDiagnosticsSummary,
+): string {
+  const item = summarizeDiagnostics(diagnostics, summary);
+  const parts = [
+    item.blocking ? `${item.blocking} блокер` : "",
+    item.retryable ? `${item.retryable} retry` : "",
+    item.warning ? `${item.warning} warning` : "",
+  ].filter(Boolean);
+  return parts.join(" · ") || "Нет диагностик";
 }
 
 function layoutOptionMeta(option: {
@@ -580,6 +684,9 @@ export function App() {
   const [isPreparingReviewPlan, setIsPreparingReviewPlan] = useState(false);
   const [isGeneratingPresentation, setIsGeneratingPresentation] = useState(false);
   const [generationResult, setGenerationResult] = useState<GeneratePresentationResponse | null>(null);
+  const [preflightDiagnostics, setPreflightDiagnostics] = useState<GenerationDiagnostic[]>([]);
+  const [preflightDiagnosticsSummary, setPreflightDiagnosticsSummary] = useState<GenerationDiagnosticsSummary | undefined>(undefined);
+  const [diagnosticMetadataByRule, setDiagnosticMetadataByRule] = useState<Partial<Record<GenerationDiagnosticRule, GenerationDiagnosticRuleMetadata>>>({});
   const [error, setError] = useState("");
   const [showLoadingNotice, setShowLoadingNotice] = useState(true);
   const [isStructureDrawerOpen, setIsStructureDrawerOpen] = useState(false);
@@ -602,6 +709,18 @@ export function App() {
           setError(err.message);
         });
     });
+  }, []);
+
+  useEffect(() => {
+    fetchDiagnosticsMetadata()
+      .then((metadata) => {
+        setDiagnosticMetadataByRule(
+          Object.fromEntries(metadata.rules.map((item) => [item.rule, item])) as Partial<Record<GenerationDiagnosticRule, GenerationDiagnosticRuleMetadata>>,
+        );
+      })
+      .catch(() => {
+        setDiagnosticMetadataByRule({});
+      });
   }, []);
 
   useEffect(() => {
@@ -649,6 +768,8 @@ export function App() {
 
     setError("");
     setGenerationResult(null);
+    setPreflightDiagnostics([]);
+    setPreflightDiagnosticsSummary(undefined);
     startTransition(() => {
       extractTextFromDocument(file)
         .then((result) => {
@@ -716,6 +837,12 @@ export function App() {
       : generatePresentation(plan);
   }
 
+  function diagnoseCurrentPlan(plan: PresentationPlan): Promise<PresentationDiagnosticsResponse> {
+    return attachedTemplateFile
+      ? diagnosePresentationWithTemplate(plan, attachedTemplateFile)
+      : diagnosePresentation(plan);
+  }
+
   function handleGenerate() {
     if (isGeneratingPresentation || isPreparingReviewPlan) {
       return;
@@ -755,6 +882,8 @@ export function App() {
 
     setError("");
     setGenerationResult(null);
+    setPreflightDiagnostics([]);
+    setPreflightDiagnosticsSummary(undefined);
     setIsPreparingReviewPlan(true);
     startTransition(() => {
       const effectiveChartSelectionByTableId = savedChartSelectionByTableId;
@@ -802,6 +931,18 @@ export function App() {
       buildPlanPromise
         .then((plan: PresentationPlan) => {
           setReviewPlan(plan);
+          return diagnoseCurrentPlan(plan)
+            .then((response) => {
+              setPreflightDiagnostics(response.diagnostics);
+              setPreflightDiagnosticsSummary(response.diagnostics_summary);
+            })
+            .catch(() => {
+              setPreflightDiagnostics([]);
+              setPreflightDiagnosticsSummary(undefined);
+            })
+            .then(() => plan);
+        })
+        .then((plan: PresentationPlan) => {
           if (generateAfter) {
             setIsGeneratingPresentation(true);
             return generateCurrentPlan(plan).then((result) => {
@@ -821,6 +962,8 @@ export function App() {
   function resetReviewPlan() {
     setReviewPlan(null);
     setSlideLayoutReviews([]);
+    setPreflightDiagnostics([]);
+    setPreflightDiagnosticsSummary(undefined);
   }
 
   function clearAttachedDocument() {
@@ -1084,6 +1227,45 @@ export function App() {
             </button>
             <div className="status-title">Презентация готова</div>
             <div className="status-text" data-testid="generated-file-name">{generationResult.file_name}</div>
+            {generationResult.attempt_count && generationResult.attempt_count > 1 ? (
+              <div className="status-text" data-testid="generation-attempt-count">
+                Попыток генерации: {generationResult.attempt_count}
+              </div>
+            ) : null}
+            {generationResult.diagnostics?.length ? (
+              <div className="generation-diagnostics" data-testid="generation-diagnostics">
+                <div className="generation-diagnostics-summary" data-testid="generation-diagnostics-summary">
+                  {diagnosticSummaryText(generationResult.diagnostics, generationResult.diagnostics_summary)}
+                </div>
+                {generationResult.diagnostics.slice(0, 4).map((diagnostic, index) => (
+                  <div
+                    key={`${diagnostic.slide_index}-${diagnostic.source}-${diagnostic.rule}-${index}`}
+                    className={`generation-diagnostic generation-diagnostic-${diagnostic.severity}`}
+                    data-testid={`generation-diagnostic-${index}`}
+                  >
+                    <span className="generation-diagnostic-badge">
+                      {diagnosticSeverityLabel(diagnostic.severity)}
+                    </span>
+                    <span className="generation-diagnostic-source">
+                      {diagnosticSourceLabel(diagnostic.source)}
+                    </span>
+                    <span className="generation-diagnostic-text">
+                      {generationDiagnosticText(diagnostic, diagnosticMetadataByRule)}
+                      {generationDiagnosticAction(diagnostic, diagnosticMetadataByRule) ? (
+                        <span className="generation-diagnostic-action">
+                          {generationDiagnosticAction(diagnostic, diagnosticMetadataByRule)}
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
+                ))}
+                {generationResult.diagnostics.length > 4 ? (
+                  <div className="generation-diagnostic-more">
+                    Еще {generationResult.diagnostics.length - 4}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <button
               type="button"
               className="primary-button status-download"
@@ -1092,6 +1274,44 @@ export function App() {
             >
               Скачать презентацию
             </button>
+          </div>
+        ) : null}
+
+        {!generationResult && preflightDiagnostics.length > 0 ? (
+          <div className="status-panel status-muted" data-testid="preflight-diagnostics">
+            <div className="status-title">Проверка макетов</div>
+            <div className="generation-diagnostics">
+              <div className="generation-diagnostics-summary" data-testid="preflight-diagnostics-summary">
+                {diagnosticSummaryText(preflightDiagnostics, preflightDiagnosticsSummary)}
+              </div>
+              {preflightDiagnostics.slice(0, 4).map((diagnostic, index) => (
+                <div
+                  key={`${diagnostic.slide_index}-${diagnostic.source}-${diagnostic.rule}-${index}`}
+                  className={`generation-diagnostic generation-diagnostic-${diagnostic.severity}`}
+                  data-testid={`preflight-diagnostic-${index}`}
+                >
+                  <span className="generation-diagnostic-badge">
+                    {diagnosticSeverityLabel(diagnostic.severity)}
+                  </span>
+                  <span className="generation-diagnostic-source">
+                    {diagnosticSourceLabel(diagnostic.source)}
+                  </span>
+                  <span className="generation-diagnostic-text">
+                    {generationDiagnosticText(diagnostic, diagnosticMetadataByRule)}
+                    {generationDiagnosticAction(diagnostic, diagnosticMetadataByRule) ? (
+                      <span className="generation-diagnostic-action">
+                        {generationDiagnosticAction(diagnostic, diagnosticMetadataByRule)}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              ))}
+              {preflightDiagnostics.length > 4 ? (
+                <div className="generation-diagnostic-more">
+                  Еще {preflightDiagnostics.length - 4}
+                </div>
+              ) : null}
+            </div>
           </div>
         ) : null}
 

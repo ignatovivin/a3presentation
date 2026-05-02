@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from a3presentation.domain.api import (
@@ -23,12 +23,27 @@ from a3presentation.domain.presentation import (
 )
 from a3presentation.domain.template import (
     ComponentEditability,
+    GenerationMode,
     PlaceholderKind,
     TemplateComponentStyleSpec,
     TemplateManifest,
     TemplateShapeStyleSpec,
 )
-from a3presentation.services.layout_capacity import derive_capacity_profile_for_geometry, runtime_profile_key_for_target
+from a3presentation.services.layout_capacity import (
+    derive_capacity_profile_for_geometry,
+    profile_for_layout,
+    runtime_profile_key_for_target,
+    spacing_policy_for_layout,
+)
+from a3presentation.services.slide_text_policy import slide_content_chunks, slide_text_demand_chars
+from a3presentation.services.text_fit import (
+    FitBox,
+    assign_text_chunks_to_boxes,
+    estimate_capacity_chars,
+    metrics_from_slot,
+    pack_text_chunks_for_boxes,
+    split_oversized_chunks_for_box,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +60,12 @@ class _InventoryTarget:
 
 
 class TemplateRegistry:
+    EMU_PER_PT = 12700
+    DEFAULT_TEXT_MARGIN_X_EMU = 91440
+    DEFAULT_TEXT_MARGIN_Y_EMU = 45720
+    DEFAULT_BODY_FONT_PT = 18.0
+    DEFAULT_LINE_HEIGHT_FACTOR = 1.18
+
     def __init__(self, templates_dir: Path) -> None:
         self._templates_dir = templates_dir.resolve()
 
@@ -219,7 +240,7 @@ class TemplateRegistry:
                 slide.render_target = self._merge_render_targets(existing_render_target, self._auto_layout_render_target_for_slide(slide))
             slide.preferred_layout_key = resolved
             capacity = ranked_options[0].estimated_text_capacity_chars if ranked_options else None
-            expanded_slides.extend(self._split_slide_for_target_capacity(slide, capacity))
+            expanded_slides.extend(self._split_slide_for_target_fit(slide, target, capacity))
         adapted.slides = expanded_slides
         return adapted
 
@@ -388,6 +409,7 @@ class TemplateRegistry:
                 source=target.source,
                 degradation_mode=manifest.inventory.degradation_mode,
             )
+            score += self._source_preference_score(manifest, target)
             option = SlideLayoutOption(
                 key=target.key,
                 name=target.name,
@@ -505,23 +527,354 @@ class TemplateRegistry:
             slides.append(next_slide)
         return slides
 
-    def _slide_content_chunks(self, slide: SlideSpec) -> list[tuple[str, str]]:
-        chunks: list[tuple[str, str]] = []
-        if slide.content_blocks:
-            for block in slide.content_blocks:
-                if block.text and block.text.strip():
-                    chunks.append(("paragraph", block.text.strip()))
-                for item in block.items:
-                    if item and item.strip():
-                        chunks.append(("bullet", item.strip()))
+    def split_slide_for_capacity_retry(
+        self,
+        manifest: TemplateManifest,
+        slide: SlideSpec,
+        retry_capacity_chars: int,
+        *,
+        overflow_details: tuple = (),
+    ) -> list[SlideSpec]:
+        target_key = slide.render_target.key if slide.render_target is not None else slide.preferred_layout_key
+        target = self._target_by_key(manifest, target_key) if target_key else None
+        return self._split_slide_for_target_fit(
+            slide,
+            target,
+            retry_capacity_chars,
+            overflow_details=overflow_details,
+        )
+
+    def _split_slide_for_target_fit(
+        self,
+        slide: SlideSpec,
+        target: _InventoryTarget | None,
+        estimated_capacity_chars: int | None,
+        overflow_details: tuple = (),
+    ) -> list[SlideSpec]:
+        if slide.kind not in {SlideKind.TEXT, SlideKind.BULLETS, SlideKind.TWO_COLUMN}:
+            return [slide]
+        if target is None:
+            return self._split_slide_for_target_capacity(slide, estimated_capacity_chars)
+
+        chunks = self._slide_content_chunks(slide)
         if not chunks:
-            for part in [slide.text or "", slide.notes or ""]:
-                if part.strip():
-                    chunks.append(("paragraph", part.strip()))
-            chunks.extend(("bullet", item.strip()) for item in slide.bullets if item.strip())
-            chunks.extend(("bullet", item.strip()) for item in slide.left_bullets if item.strip())
-            chunks.extend(("bullet", item.strip()) for item in slide.right_bullets if item.strip())
-        return chunks
+            return [slide]
+
+        runtime_profile_key = runtime_profile_key_for_target(
+            target,
+            fallback_layout_key=slide.runtime_profile_key or target.key,
+            slide_kind=slide.kind.value,
+        )
+        profile = profile_for_layout(runtime_profile_key)
+        body_slots = [slot for slot in target.slots if self._slot_participates_in_body_flow(slot)]
+        fit_metrics = [
+            item
+            for item in (
+                self._target_fit_metric(
+                    slot=slot,
+                    layout_key=runtime_profile_key,
+                    min_font_pt=profile.min_font_pt,
+                    max_font_pt=profile.max_font_pt,
+                    overflow_details=overflow_details,
+                )
+                for slot in body_slots
+            )
+            if item is not None
+        ]
+        if not fit_metrics:
+            return self._split_slide_for_target_capacity(slide, estimated_capacity_chars)
+
+        if overflow_details:
+            normal_fit_metrics = [
+                item
+                for item in (
+                    self._target_fit_metric(
+                        slot=slot,
+                        layout_key=runtime_profile_key,
+                        min_font_pt=profile.min_font_pt,
+                        max_font_pt=profile.max_font_pt,
+                    )
+                    for slot in body_slots
+                )
+                if item is not None
+            ]
+            diagnostic_split = self._split_overflow_assigned_batches(
+                slide,
+                chunks,
+                body_slots,
+                normal_fit_metrics,
+                fit_metrics,
+                overflow_details,
+            )
+            if diagnostic_split is not None:
+                return self._slides_with_retry_diagnostics(diagnostic_split, target, overflow_details)
+
+        chunks = self._split_oversized_chunks_for_target_metrics(chunks, fit_metrics)
+        if self._chunks_fit_target_metrics(chunks, fit_metrics):
+            return [slide]
+
+        batches = self._split_chunks_by_target_assignment(chunks, fit_metrics)
+        if batches is None:
+            return self._split_slide_for_target_capacity(slide, estimated_capacity_chars)
+        if len(batches) <= 1:
+            return self._split_slide_for_target_capacity(slide, estimated_capacity_chars)
+        split_slides = [self._slide_from_content_batch(slide, batch, index) for index, batch in enumerate(batches)]
+        return self._slides_with_retry_diagnostics(split_slides, target, overflow_details)
+
+    def _split_chunks_by_target_assignment(
+        self,
+        chunks: list[tuple[str, str]],
+        fit_metrics: list[FitBox],
+    ) -> list[list[tuple[str, str]]] | None:
+        batches: list[list[tuple[str, str]]] = []
+        remaining = list(chunks)
+        while remaining:
+            assignment = assign_text_chunks_to_boxes([text for _, text in remaining], fit_metrics)
+            if assignment.fits:
+                batches.append(remaining)
+                break
+            failed_chunk_index = assignment.failed_chunk_index
+            if failed_chunk_index is None or failed_chunk_index <= 0:
+                return None
+            batches.append(remaining[:failed_chunk_index])
+            remaining = remaining[failed_chunk_index:]
+        return batches
+
+    def _split_overflow_assigned_batches(
+        self,
+        slide: SlideSpec,
+        chunks: list[tuple[str, str]],
+        body_slots: list,
+        normal_fit_metrics: list[FitBox],
+        overflow_fit_metrics: list[FitBox],
+        overflow_details: tuple,
+    ) -> list[SlideSpec] | None:
+        if len(body_slots) != len(normal_fit_metrics) or len(body_slots) != len(overflow_fit_metrics):
+            return None
+        normalized_chunks = self._split_oversized_chunks_for_target_metrics(chunks, overflow_fit_metrics)
+        normal_assignment = assign_text_chunks_to_boxes([text for _, text in normalized_chunks], normal_fit_metrics)
+        if not normal_assignment.fits:
+            return None
+        overflow_assignment = assign_text_chunks_to_boxes([text for _, text in normalized_chunks], overflow_fit_metrics)
+        if overflow_assignment.fits:
+            return [slide]
+
+        overflow_slot_indexes = [
+            index
+            for index, slot in enumerate(body_slots)
+            if any(self._overflow_detail_matches_slot(detail, slot) for detail in overflow_details)
+        ]
+        if not overflow_slot_indexes:
+            return None
+        overflow_slot_index_set = set(overflow_slot_indexes)
+
+        assigned_batches: list[list[tuple[str, str]]] = []
+        cursor = 0
+        for assigned_texts in normal_assignment.batches:
+            next_cursor = cursor + len(assigned_texts)
+            assigned_batches.append(normalized_chunks[cursor:next_cursor])
+            cursor = next_cursor
+
+        slide_batches: list[list[tuple[str, str]]] = []
+        current: list[tuple[str, str]] = []
+        changed = False
+        for index, batch in enumerate(assigned_batches):
+            if not batch:
+                continue
+            if index in overflow_slot_index_set:
+                slot_batches = self._split_chunk_batch_for_fit_box(batch, overflow_fit_metrics[index])
+                changed = changed or len(slot_batches) > 1
+            else:
+                slot_batches = [batch]
+
+            for batch_index, slot_batch in enumerate(slot_batches):
+                if current and index in overflow_slot_index_set and batch_index > 0:
+                    slide_batches.append(current)
+                    current = []
+                candidate = [*current, *slot_batch]
+                if current and not self._chunks_fit_target_metrics(candidate, overflow_fit_metrics):
+                    slide_batches.append(current)
+                    current = list(slot_batch)
+                else:
+                    current = candidate
+        if current:
+            slide_batches.append(current)
+
+        if not changed or len(slide_batches) <= 1:
+            return None
+        return [self._slide_from_content_batch(slide, batch, index) for index, batch in enumerate(slide_batches)]
+
+    def _slides_with_retry_diagnostics(
+        self,
+        slides: list[SlideSpec],
+        target: _InventoryTarget | None,
+        overflow_details: tuple,
+    ) -> list[SlideSpec]:
+        reasons = self._retry_degradation_reasons_for_overflow(overflow_details)
+        if not reasons:
+            return slides
+
+        annotated: list[SlideSpec] = []
+        for slide in slides:
+            next_slide = slide.model_copy(deep=True)
+            render_target = (
+                next_slide.render_target.model_copy(deep=True)
+                if next_slide.render_target is not None
+                else self._render_target_for_inventory_target(target)
+                if target is not None
+                else None
+            )
+            if render_target is not None:
+                render_target.degradation_reasons = list(dict.fromkeys([*render_target.degradation_reasons, *reasons]))
+                if render_target.confidence == "high":
+                    render_target.confidence = "medium"
+                next_slide.render_target = render_target
+            annotated.append(next_slide)
+        return annotated
+
+    def _retry_degradation_reasons_for_overflow(self, overflow_details: tuple) -> list[str]:
+        reasons: list[str] = []
+        for detail in overflow_details or ():
+            retry_reason = getattr(detail, "retry_reason", None)
+            if retry_reason:
+                reasons.append(str(retry_reason))
+                continue
+            shape_name = getattr(detail, "shape_name", None) or "unnamed"
+            placeholder_idx = getattr(detail, "placeholder_idx", None)
+            estimated_height = getattr(detail, "estimated_height", None)
+            available_height = getattr(detail, "available_height", None)
+            reasons.append(
+                "capacity_retry:rendered_text_overflow:"
+                f"shape={shape_name}:idx={placeholder_idx}:height={estimated_height}>{available_height}"
+            )
+        return list(dict.fromkeys(reasons))
+
+    def _split_chunk_batch_for_fit_box(self, batch: list[tuple[str, str]], fit_box: FitBox) -> list[list[tuple[str, str]]]:
+        split_batches: list[list[tuple[str, str]]] = []
+        current: list[tuple[str, str]] = []
+        for chunk in batch:
+            candidate = [*current, chunk]
+            fit_result = assign_text_chunks_to_boxes([text for _, text in candidate], [fit_box])
+            if current and not fit_result.fits:
+                split_batches.append(current)
+                current = [chunk]
+            else:
+                current = candidate
+        if current:
+            split_batches.append(current)
+        return split_batches
+
+    def _target_fit_metric(
+        self,
+        *,
+        slot,
+        layout_key: str,
+        min_font_pt: int,
+        max_font_pt: int,
+        overflow_details: tuple = (),
+    ) -> FitBox | None:
+        metrics = metrics_from_slot(
+            slot,
+            layout_key=layout_key,
+            fallback_font_size_pt=float(max_font_pt),
+        )
+        if metrics is None:
+            return None
+        height_scale = self._overflow_height_scale_for_slot(slot, overflow_details)
+        if height_scale < 1.0:
+            adjusted_available_height = max(int(metrics.available_height_emu * height_scale), 1)
+            metrics = replace(
+                metrics,
+                height_emu=metrics.margin_top_emu + metrics.margin_bottom_emu + adjusted_available_height,
+            )
+        slot_max_font = max(1, int(round(metrics.font_size_pt or max_font_pt)))
+        effective_max_font = max(1, min(int(max_font_pt), slot_max_font))
+        effective_min_font = min(int(min_font_pt), effective_max_font)
+        return FitBox(metrics=metrics, min_font_pt=effective_min_font, max_font_pt=effective_max_font)
+
+    def _overflow_height_scale_for_slot(self, slot, overflow_details: tuple) -> float:
+        scale = 1.0
+        for detail in overflow_details or ():
+            if not self._overflow_detail_matches_slot(detail, slot):
+                continue
+            estimated_height = getattr(detail, "estimated_height", None)
+            available_height = getattr(detail, "available_height", None)
+            if not estimated_height or not available_height or estimated_height <= 0:
+                continue
+            scale = min(scale, max(0.15, (available_height / estimated_height) * 0.86))
+        return scale
+
+    def _overflow_detail_matches_slot(self, detail, slot) -> bool:
+        placeholder_idx = getattr(detail, "placeholder_idx", None)
+        slot_idx = getattr(slot, "idx", None)
+        if placeholder_idx is not None and slot_idx is not None and placeholder_idx == slot_idx:
+            return True
+        shape_name = getattr(detail, "shape_name", None)
+        slot_name = getattr(slot, "shape_name", None) or getattr(slot, "name", None)
+        if shape_name and slot_name and shape_name == slot_name:
+            return True
+        detail_geometry = (
+            getattr(detail, "left", None),
+            getattr(detail, "top", None),
+            getattr(detail, "width", None),
+            getattr(detail, "height", None),
+        )
+        slot_geometry = (
+            getattr(slot, "left_emu", None),
+            getattr(slot, "top_emu", None),
+            getattr(slot, "width_emu", None),
+            getattr(slot, "height_emu", None),
+        )
+        if None not in detail_geometry and None not in slot_geometry:
+            return all(abs(int(actual) - int(expected)) <= 90000 for actual, expected in zip(detail_geometry, slot_geometry))
+        return False
+
+    def _split_oversized_chunks_for_target_metrics(
+        self,
+        chunks: list[tuple[str, str]],
+        fit_metrics: list[FitBox],
+    ) -> list[tuple[str, str]]:
+        normalized: list[tuple[str, str]] = []
+        primary_box = fit_metrics[0]
+        for kind, text in chunks:
+            if self._chunks_fit_target_metrics([(kind, text)], fit_metrics):
+                normalized.append((kind, text))
+                continue
+            normalized.extend(
+                (kind, part)
+                for part in split_oversized_chunks_for_box([text], primary_box)
+            )
+        return normalized
+
+    def _chunks_fit_target_metrics(self, chunks: list[tuple[str, str]], fit_metrics: list[FitBox]) -> bool:
+        return pack_text_chunks_for_boxes([text for _, text in chunks], fit_metrics) is not None
+
+    def _slide_from_content_batch(self, slide: SlideSpec, batch: list[tuple[str, str]], index: int) -> SlideSpec:
+        next_slide = slide.model_copy(deep=True)
+        next_slide.title = slide.title if index == 0 else f"{slide.title} ({index + 1})"
+        next_slide.subtitle = slide.subtitle if index == 0 else None
+        paragraphs = [text for kind, text in batch if kind == "paragraph"]
+        bullets = [text for kind, text in batch if kind == "bullet"]
+        if bullets and not paragraphs:
+            next_slide.kind = SlideKind.BULLETS
+            next_slide.text = None
+            next_slide.notes = None
+            next_slide.bullets = bullets
+            next_slide.left_bullets = []
+            next_slide.right_bullets = []
+            next_slide.content_blocks = [self._list_block(bullets)]
+        else:
+            next_slide.kind = SlideKind.TEXT
+            next_slide.text = self._merge_text_parts(paragraphs + bullets)
+            next_slide.notes = None
+            next_slide.bullets = []
+            next_slide.left_bullets = []
+            next_slide.right_bullets = []
+            next_slide.content_blocks = self._paragraph_blocks_from_parts(next_slide.text or "")
+        return next_slide
+
+    def _slide_content_chunks(self, slide: SlideSpec) -> list[tuple[str, str]]:
+        return slide_content_chunks(slide)
 
     def _auto_layout_key_for_slide(self, slide: SlideSpec) -> str:
         return {
@@ -559,6 +912,8 @@ class TemplateRegistry:
         if supports_current_slide_kind:
             score += 100
             summary_parts.append(slide.kind.value)
+        elif not (preferred_key and key == preferred_key):
+            score -= 140
         if degradation_mode == "direct_shape_binding" and source == "direct_shape_binding":
             score += 160
             summary_parts.append("direct binding")
@@ -596,6 +951,13 @@ class TemplateRegistry:
         if not summary:
             summary = "reserve option"
         return score, estimated_capacity, summary
+
+    def _source_preference_score(self, manifest: TemplateManifest, target: _InventoryTarget) -> int:
+        if manifest.generation_mode == GenerationMode.PROTOTYPE and target.source == RenderTargetType.PROTOTYPE.value:
+            return 140
+        if manifest.generation_mode == GenerationMode.LAYOUT and target.source == RenderTargetType.LAYOUT.value:
+            return 40
+        return 0
 
     def _recommendation_label_for_score(self, score: int) -> str:
         if score >= 120:
@@ -734,16 +1096,130 @@ class TemplateRegistry:
         if not text_slots:
             return None
 
-        lefts = [getattr(slot, "left_emu", None) for slot in text_slots if isinstance(getattr(slot, "left_emu", None), int)]
-        tops = [getattr(slot, "top_emu", None) for slot in text_slots if isinstance(getattr(slot, "top_emu", None), int)]
+        logical_layout_key = self._logical_capacity_layout_key(
+            slide=slide,
+            key=key,
+            representation_hints=representation_hints,
+            editable_roles=editable_roles,
+        )
+        profile = profile_for_layout(logical_layout_key)
+        slot_capacity = self._powerpoint_text_slot_capacity_chars(
+            text_slots,
+            layout_key=logical_layout_key,
+            fallback_max_font_pt=profile.max_font_pt,
+        )
+        if slot_capacity is not None:
+            return slot_capacity
+
+        return self._bounding_box_capacity_chars(
+            slide=slide,
+            key=key,
+            representation_hints=representation_hints,
+            editable_roles=editable_roles,
+            slots=text_slots,
+        )
+
+    def _powerpoint_text_slot_capacity_chars(
+        self,
+        slots: list,
+        *,
+        layout_key: str,
+        fallback_max_font_pt: int,
+    ) -> int | None:
+        body_flow_slots = [slot for slot in slots if self._slot_participates_in_body_flow(slot)]
+        capacities = [
+            self._powerpoint_text_slot_capacity_char_count(
+                slot,
+                layout_key=layout_key,
+                fallback_max_font_pt=fallback_max_font_pt,
+            )
+            for slot in body_flow_slots
+        ]
+        capacities = [capacity for capacity in capacities if capacity is not None and capacity > 0]
+        if not capacities:
+            if body_flow_slots:
+                return 0
+            return None
+        return max(80, int(sum(capacities)))
+
+    def _slot_participates_in_body_flow(self, slot) -> bool:
+        role = getattr(slot, "editable_role", None)
+        if role in {"body", "bullet_list", "bullet_item"}:
+            return True
+        if role in {"title", "subtitle", "footer", "table", "chart", "image"}:
+            return False
+        capabilities = set(getattr(slot, "editable_capabilities", []) or [])
+        return bool(capabilities & {"text", "list_item", "bullet_list"})
+
+    def _powerpoint_text_slot_capacity_char_count(
+        self,
+        slot,
+        *,
+        layout_key: str,
+        fallback_max_font_pt: int,
+    ) -> int | None:
+        metrics = metrics_from_slot(
+            slot,
+            layout_key=layout_key,
+            fallback_font_size_pt=float(fallback_max_font_pt or self.DEFAULT_BODY_FONT_PT),
+        )
+        if metrics is None:
+            return None
+        return estimate_capacity_chars(metrics)
+
+    def _slot_margin_emu(self, slot, side: str) -> int:
+        value = getattr(slot, f"margin_{side}_emu", None)
+        if isinstance(value, int) and value >= 0:
+            return value
+        shape_style = getattr(slot, "shape_style", None)
+        inset = getattr(shape_style, f"inset_{side}_emu", None) if shape_style is not None else None
+        if isinstance(inset, int) and inset >= 0:
+            return inset
+        return self.DEFAULT_TEXT_MARGIN_X_EMU if side in {"left", "right"} else self.DEFAULT_TEXT_MARGIN_Y_EMU
+
+    def _slot_font_size_pt(self, slot, fallback_max_font_pt: int) -> float:
+        text_style = getattr(slot, "text_style", None)
+        if text_style is not None and text_style.font_size_pt:
+            return float(text_style.font_size_pt)
+        paragraph_styles = getattr(slot, "paragraph_styles", None)
+        level_styles = getattr(paragraph_styles, "level_styles", None) if paragraph_styles is not None else None
+        if level_styles:
+            style = level_styles.get("0") or next(iter(level_styles.values()), None)
+            if style is not None and style.font_size_pt:
+                return float(style.font_size_pt)
+        return float(fallback_max_font_pt or self.DEFAULT_BODY_FONT_PT)
+
+    def _slot_line_height_factor(self, slot, layout_key: str) -> float:
+        text_style = getattr(slot, "text_style", None)
+        if text_style is not None and text_style.line_spacing:
+            return max(float(text_style.line_spacing), 0.85)
+        return max(spacing_policy_for_layout(layout_key).body.line_spacing, self.DEFAULT_LINE_HEIGHT_FACTOR)
+
+    def _slot_space_after_pt(self, slot, layout_key: str) -> float:
+        text_style = getattr(slot, "text_style", None)
+        if text_style is not None and text_style.space_after_pt is not None:
+            return max(float(text_style.space_after_pt), 0.0)
+        return float(spacing_policy_for_layout(layout_key).body.space_after_pt)
+
+    def _bounding_box_capacity_chars(
+        self,
+        *,
+        slide: SlideSpec,
+        key: str,
+        representation_hints: list[str],
+        editable_roles: list[str],
+        slots: list,
+    ) -> int | None:
+        lefts = [getattr(slot, "left_emu", None) for slot in slots if isinstance(getattr(slot, "left_emu", None), int)]
+        tops = [getattr(slot, "top_emu", None) for slot in slots if isinstance(getattr(slot, "top_emu", None), int)]
         rights = [
             getattr(slot, "left_emu", 0) + getattr(slot, "width_emu", 0)
-            for slot in text_slots
+            for slot in slots
             if isinstance(getattr(slot, "left_emu", None), int) and isinstance(getattr(slot, "width_emu", None), int)
         ]
         bottoms = [
             getattr(slot, "top_emu", 0) + getattr(slot, "height_emu", 0)
-            for slot in text_slots
+            for slot in slots
             if isinstance(getattr(slot, "top_emu", None), int) and isinstance(getattr(slot, "height_emu", None), int)
         ]
         if not lefts or not tops or not rights or not bottoms:
@@ -792,11 +1268,13 @@ class TemplateRegistry:
         )
 
     def _capacity_fit_score(self, slide: SlideSpec, estimated_capacity_chars: int | None) -> int:
-        if estimated_capacity_chars is None or estimated_capacity_chars <= 0:
+        if estimated_capacity_chars is None:
             return 0
         text_demand = self._slide_text_demand_chars(slide)
         if text_demand <= 0:
             return 0
+        if estimated_capacity_chars <= 0:
+            return -220
         ratio = text_demand / estimated_capacity_chars
         if 0.45 <= ratio <= 1.02:
             return 35
@@ -806,22 +1284,14 @@ class TemplateRegistry:
             return 10
         if 1.18 < ratio <= 1.45:
             return -12
+        if 1.45 < ratio <= 2.0:
+            return -80
+        if ratio > 2.0:
+            return -180
         return -36
 
     def _slide_text_demand_chars(self, slide: SlideSpec) -> int:
-        text_parts: list[str] = []
-        text_parts.extend(item for item in slide.bullets if item)
-        text_parts.extend(item for item in slide.left_bullets if item)
-        text_parts.extend(item for item in slide.right_bullets if item)
-        if slide.text:
-            text_parts.append(slide.text)
-        for block in slide.content_blocks:
-            if block.text:
-                text_parts.append(block.text)
-            text_parts.extend(item for item in block.items if item)
-        if slide.notes:
-            text_parts.append(slide.notes)
-        return sum(len(part.strip()) for part in text_parts if part and part.strip())
+        return slide_text_demand_chars(slide)
 
     def _slide_bullet_count(self, slide: SlideSpec) -> int:
         if slide.bullets:

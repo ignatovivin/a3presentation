@@ -1485,6 +1485,73 @@ button {
   margin-top: 14px;
 }
 
+.generation-diagnostics {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.generation-diagnostics-summary {
+  color: #3d3d3d;
+  font-weight: 500;
+}
+
+.generation-diagnostic {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  background: #fafafa;
+  color: #3d3d3d;
+}
+
+.generation-diagnostic-blocking {
+  border-color: #e1b7b7;
+  background: #fff7f7;
+}
+
+.generation-diagnostic-retryable {
+  border-color: #d6c49b;
+  background: #fffaf0;
+}
+
+.generation-diagnostic-warning {
+  border-color: #d8d8d8;
+  background: #fbfbfb;
+}
+
+.generation-diagnostic-badge,
+.generation-diagnostic-source {
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 18px;
+  color: #696469;
+}
+
+.generation-diagnostic-badge {
+  font-weight: 600;
+  color: #222222;
+}
+
+.generation-diagnostic-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.generation-diagnostic-action {
+  display: block;
+  margin-top: 3px;
+  color: #696469;
+}
+
+.generation-diagnostic-more {
+  color: #696469;
+  font-size: 13px;
+}
+
 .drawer-root {
   position: fixed;
   inset: 0;

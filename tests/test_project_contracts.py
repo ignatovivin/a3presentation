@@ -11,6 +11,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.enum.text import MSO_AUTO_SIZE
 from pptx.util import Pt
 from starlette.datastructures import UploadFile
 
@@ -65,6 +66,7 @@ from a3presentation.services.layout_capacity import (
 )
 from a3presentation.services.planner import TextToPlanService
 from a3presentation.services.pptx_generator import PptxGenerator
+from a3presentation.services.style_audit import audit_presentation_styles
 from a3presentation.services.template_analyzer import TemplateAnalyzer
 from a3presentation.services.template_registry import TemplateRegistry
 from a3presentation.settings import get_settings
@@ -935,6 +937,468 @@ class ProjectContractTests(unittest.TestCase):
             reviews[0].available_layouts[1].estimated_text_capacity_chars or 0,
         )
 
+    def test_template_registry_splits_text_by_real_powerpoint_slot_capacity(self) -> None:
+        manifest = TemplateManifest(
+            template_id="slot_capacity_demo",
+            display_name="Slot Capacity Demo",
+            source_pptx="demo.pptx",
+            default_layout_key="narrow_text",
+            layouts=[
+                LayoutSpec(
+                    key="narrow_text",
+                    name="Narrow Text",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Title",
+                            kind=PlaceholderKind.TITLE,
+                            idx=0,
+                            editable_role="title",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=300000,
+                            width_emu=6200000,
+                            height_emu=600000,
+                        ),
+                        PlaceholderSpec(
+                            name="Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1300000,
+                            width_emu=1800000,
+                            height_emu=850000,
+                            margin_left_emu=140000,
+                            margin_right_emu=140000,
+                            margin_top_emu=90000,
+                            margin_bottom_emu=90000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=20.0, line_spacing=1.18, space_after_pt=6.0),
+                        ),
+                    ],
+                )
+            ],
+        )
+        content_blocks = [
+            SlideContentBlock(
+                kind=SlideContentBlockKind.PARAGRAPH,
+                text=f"Абзац {index}: операционный контекст, ограничения, риски и следующий шаг для команды внедрения.",
+            )
+            for index in range(1, 9)
+        ]
+        plan = PresentationPlan(
+            template_id="slot_capacity_demo",
+            title="Slot Capacity Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Narrow adaptive split",
+                    text=" ".join(block.text or "" for block in content_blocks),
+                    content_blocks=content_blocks,
+                ),
+            ],
+        )
+
+        adapted = self.registry.apply_layout_inventory_to_plan(manifest, plan)
+        reviews = self.registry.build_slide_layout_reviews(manifest, adapted)
+
+        self.assertGreater(len(adapted.slides), 1)
+        self.assertTrue(all(slide.preferred_layout_key == "narrow_text" for slide in adapted.slides))
+        self.assertTrue(all(review.available_layouts[0].estimated_text_capacity_chars for review in reviews))
+        self.assertLess(reviews[0].available_layouts[0].estimated_text_capacity_chars or 0, TEXT_FULL_WIDTH_PROFILE.max_chars)
+
+        single_paragraph_plan = PresentationPlan(
+            template_id="slot_capacity_demo",
+            title="Slot Capacity Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Single oversized paragraph",
+                    text=" ".join(["длинный операционный абзац с ограничениями и ответственными действиями"] * 80),
+                ),
+            ],
+        )
+        single_paragraph_adapted = self.registry.apply_layout_inventory_to_plan(manifest, single_paragraph_plan)
+
+        self.assertGreater(len(single_paragraph_adapted.slides), 1)
+        self.assertTrue(all(slide.preferred_layout_key == "narrow_text" for slide in single_paragraph_adapted.slides))
+
+    def test_template_registry_target_fit_allows_font_shrink_before_splitting(self) -> None:
+        manifest = TemplateManifest(
+            template_id="font_shrink_fit_demo",
+            display_name="Font Shrink Fit Demo",
+            source_pptx="demo.pptx",
+            default_layout_key="adaptive_text",
+            layouts=[
+                LayoutSpec(
+                    key="adaptive_text",
+                    name="Adaptive Text",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Title",
+                            kind=PlaceholderKind.TITLE,
+                            idx=0,
+                            editable_role="title",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=300000,
+                            width_emu=6200000,
+                            height_emu=600000,
+                        ),
+                        PlaceholderSpec(
+                            name="Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1300000,
+                            width_emu=5000000,
+                            height_emu=1800000,
+                            margin_left_emu=140000,
+                            margin_right_emu=140000,
+                            margin_top_emu=90000,
+                            margin_bottom_emu=90000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=20.0, line_spacing=1.18, space_after_pt=6.0),
+                        ),
+                    ],
+                )
+            ],
+        )
+        content_blocks = [
+            SlideContentBlock(
+                kind=SlideContentBlockKind.PARAGRAPH,
+                text="слова для проверки адаптивного уменьшения шрифта и вместимости блока",
+            )
+            for _ in range(3)
+        ]
+        plan = PresentationPlan(
+            template_id="font_shrink_fit_demo",
+            title="Font Shrink Fit Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Shrink before split",
+                    text=" ".join(block.text or "" for block in content_blocks),
+                    content_blocks=content_blocks,
+                ),
+            ],
+        )
+
+        adapted = self.registry.apply_layout_inventory_to_plan(manifest, plan)
+
+        self.assertEqual(len(adapted.slides), 1)
+        self.assertEqual(adapted.slides[0].preferred_layout_key, "adaptive_text")
+
+    def test_template_registry_splits_unbreakable_hard_overflow_text(self) -> None:
+        manifest = TemplateManifest(
+            template_id="hard_overflow_demo",
+            display_name="Hard Overflow Demo",
+            source_pptx="demo.pptx",
+            default_layout_key="tiny_text",
+            layouts=[
+                LayoutSpec(
+                    key="tiny_text",
+                    name="Tiny Text",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Title",
+                            kind=PlaceholderKind.TITLE,
+                            idx=0,
+                            editable_role="title",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=300000,
+                            width_emu=6200000,
+                            height_emu=600000,
+                        ),
+                        PlaceholderSpec(
+                            name="Body",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1300000,
+                            width_emu=1800000,
+                            height_emu=850000,
+                            margin_left_emu=140000,
+                            margin_right_emu=140000,
+                            margin_top_emu=90000,
+                            margin_bottom_emu=90000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=20.0, line_spacing=1.18, space_after_pt=6.0),
+                        ),
+                    ],
+                )
+            ],
+        )
+        hard_token = "A" * 900
+        plan = PresentationPlan(
+            template_id="hard_overflow_demo",
+            title="Hard Overflow Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Unbreakable token",
+                    text=hard_token,
+                ),
+            ],
+        )
+
+        adapted = self.registry.apply_layout_inventory_to_plan(manifest, plan)
+
+        self.assertGreater(len(adapted.slides), 1)
+        self.assertTrue(all(slide.preferred_layout_key == "tiny_text" for slide in adapted.slides))
+        self.assertEqual("".join((slide.text or "") for slide in adapted.slides), hard_token)
+
+    def test_deck_audit_checks_rendered_text_per_body_slot(self) -> None:
+        pptx = Presentation()
+        slide = pptx.slides.add_slide(pptx.slide_layouts[6])
+        first_body = slide.shapes.add_textbox(600000, 1300000, 3600000, 1400000)
+        second_body = slide.shapes.add_textbox(4600000, 1300000, 3600000, 1400000)
+        for shape in (first_body, second_body):
+            text_frame = shape.text_frame
+            text_frame.clear()
+            text_frame.text = "Короткий блок про рынок и операционный фокус."
+            paragraph = text_frame.add_paragraph()
+            paragraph.text = "Следующий шаг команды и владелец результата."
+            for paragraph in text_frame.paragraphs:
+                paragraph.font.size = Pt(18)
+
+        manifest = TemplateManifest(
+            template_id="multi_body_audit_demo",
+            display_name="Multi Body Audit Demo",
+            source_pptx="demo.pptx",
+            default_layout_key="two_body_text",
+            layouts=[
+                LayoutSpec(
+                    key="two_body_text",
+                    name="Two Body Text",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Body Left",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1300000,
+                            width_emu=3600000,
+                            height_emu=1400000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=18.0, line_spacing=1.18),
+                        ),
+                        PlaceholderSpec(
+                            name="Body Right",
+                            kind=PlaceholderKind.BODY,
+                            idx=18,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=4600000,
+                            top_emu=1300000,
+                            width_emu=3600000,
+                            height_emu=1400000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=18.0, line_spacing=1.18),
+                        ),
+                    ],
+                )
+            ],
+        )
+        plan = PresentationPlan(
+            template_id="multi_body_audit_demo",
+            title="Multi Body Audit Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Distributed body text",
+                    text="Distributed body text",
+                    preferred_layout_key="two_body_text",
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "multi-body-audit.pptx"
+            pptx.save(str(output_path))
+            audits = audit_generated_presentation(output_path, plan, manifest)
+
+        violations = find_capacity_violations(audits)
+
+        self.assertEqual(len(audits), 1)
+        self.assertNotIn("rendered_text_overflow", {item.rule for item in violations})
+
+    def test_deck_audit_reports_rendered_text_overflow_target_details(self) -> None:
+        pptx = Presentation()
+        slide = pptx.slides.add_slide(pptx.slide_layouts[6])
+        body = slide.shapes.add_textbox(600000, 1300000, 2200000, 650000)
+        body.name = "Tiny Body Target"
+        text_frame = body.text_frame
+        text_frame.clear()
+        text_frame.text = "Очень длинный фрагмент текста для проверки диагностики переполнения конкретного target shape."
+        for paragraph in text_frame.paragraphs:
+            paragraph.font.size = Pt(20)
+
+        manifest = TemplateManifest(
+            template_id="overflow_diagnostics_demo",
+            display_name="Overflow Diagnostics Demo",
+            source_pptx="demo.pptx",
+            default_layout_key="tiny_text",
+            layouts=[
+                LayoutSpec(
+                    key="tiny_text",
+                    name="Tiny Text",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Tiny Body Target",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1300000,
+                            width_emu=2200000,
+                            height_emu=650000,
+                            text_style=TemplateTextStyleSpec(font_size_pt=20.0, line_spacing=1.18),
+                        ),
+                    ],
+                )
+            ],
+        )
+        plan = PresentationPlan(
+            template_id="overflow_diagnostics_demo",
+            title="Overflow Diagnostics Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Overflow details",
+                    text="Очень длинный фрагмент текста для проверки диагностики переполнения конкретного target shape.",
+                    preferred_layout_key="tiny_text",
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "overflow-diagnostics.pptx"
+            pptx.save(str(output_path))
+            audits = audit_generated_presentation(output_path, plan, manifest)
+
+        violations = find_capacity_violations(audits)
+        overflow = next(item for item in violations if item.rule == "rendered_text_overflow")
+
+        self.assertEqual(len(audits[0].body_text_overflow_details), 1)
+        self.assertIn("shape=Tiny Body Target", overflow.details)
+        self.assertIn("idx=none", overflow.details)
+        self.assertIn("geometry=600000,1300000,2200000,650000", overflow.details)
+        self.assertIn("font=20.0", overflow.details)
+        self.assertIn("Очень длинный фрагмент", overflow.details)
+
+    def test_generator_distributes_body_text_across_multiple_layout_slots(self) -> None:
+        pptx = Presentation()
+        pptx.slides.add_slide(pptx.slide_layouts[6])
+        manifest = TemplateManifest(
+            template_id="multi_body_generation_demo",
+            display_name="Multi Body Generation Demo",
+            source_pptx="template.pptx",
+            default_layout_key="two_body_text",
+            layouts=[
+                LayoutSpec(
+                    key="two_body_text",
+                    name="Two Body Text",
+                    slide_layout_index=0,
+                    supported_slide_kinds=["text"],
+                    placeholders=[
+                        PlaceholderSpec(
+                            name="Body Left",
+                            kind=PlaceholderKind.BODY,
+                            idx=14,
+                            binding="main_text",
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=600000,
+                            top_emu=1300000,
+                            width_emu=3600000,
+                            height_emu=1400000,
+                        ),
+                        PlaceholderSpec(
+                            name="Body Right",
+                            kind=PlaceholderKind.BODY,
+                            idx=18,
+                            binding="secondary_text",
+                            editable_role="body",
+                            editable_capabilities=["text"],
+                            left_emu=4600000,
+                            top_emu=1300000,
+                            width_emu=3600000,
+                            height_emu=1400000,
+                        ),
+                    ],
+                )
+            ],
+        )
+        content_blocks = [
+            SlideContentBlock(
+                kind=SlideContentBlockKind.PARAGRAPH,
+                text="Короткий блок про рынок и операционный фокус.",
+            ),
+            SlideContentBlock(
+                kind=SlideContentBlockKind.PARAGRAPH,
+                text="Следующий шаг команды и владелец результата.",
+            ),
+            SlideContentBlock(
+                kind=SlideContentBlockKind.PARAGRAPH,
+                text="Отдельный риск внедрения и способ контроля.",
+            ),
+            SlideContentBlock(
+                kind=SlideContentBlockKind.PARAGRAPH,
+                text="Финальный критерий приемки результата.",
+            ),
+        ]
+        plan = PresentationPlan(
+            template_id="multi_body_generation_demo",
+            title="Multi Body Generation Demo",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Distributed body text",
+                    content_blocks=content_blocks,
+                    preferred_layout_key="two_body_text",
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            template_path = Path(temp_dir) / "template.pptx"
+            pptx.save(str(template_path))
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+            audits = audit_generated_presentation(output_path, plan, manifest)
+
+        rendered_texts = [
+            shape.text
+            for shape in presentation.slides[0].shapes
+            if getattr(shape, "has_text_frame", False) and shape.text.strip()
+        ]
+        violations = find_capacity_violations(audits)
+
+        self.assertGreaterEqual(len(rendered_texts), 2)
+        self.assertTrue(any("Короткий блок" in text for text in rendered_texts))
+        self.assertTrue(any("Отдельный риск" in text or "Финальный критерий" in text for text in rendered_texts))
+        self.assertNotIn("rendered_text_overflow", {item.rule for item in violations})
+
     def test_template_analyzer_infers_generic_editable_slot_group_metadata_for_tokens(self) -> None:
         self.assertEqual(self.analyzer._infer_slot_group("{{bullet_2}}"), "bullet")
         self.assertEqual(self.analyzer._infer_slot_group_order("{{bullet_2}}"), 2)
@@ -1223,6 +1687,12 @@ class ProjectContractTests(unittest.TestCase):
                 output_dir=Path(temp_dir),
             )
             presentation = Presentation(str(output_path))
+            style_violations = audit_presentation_styles(output_path, plan, analyzed_manifest)
+            body_placeholder.text_style.color = "#000000"
+            expected_style_violations = audit_presentation_styles(output_path, plan, analyzed_manifest)
+            body_placeholder.text_style.color = "#CC3300"
+            layout.background_style.fill_color = "#000000"
+            expected_background_violations = audit_presentation_styles(output_path, plan, analyzed_manifest)
 
         slide = presentation.slides[0]
         shape = next(
@@ -1244,6 +1714,9 @@ class ProjectContractTests(unittest.TestCase):
         self.assertIn('a:latin typeface="Mont Regular"', xml)
         self.assertIn('a:ea typeface="Mont Regular"', xml)
         self.assertIn('a:cs typeface="Mont Regular"', xml)
+        self.assertEqual(style_violations, [])
+        self.assertIn("text_color_mismatch", {item.rule for item in expected_style_violations})
+        self.assertIn("background_fill_color_mismatch", {item.rule for item in expected_background_violations})
 
     def test_generator_applies_manifest_background_xml_for_layout_templates(self) -> None:
         template_id = "deterministic_layout_fixture"
@@ -1752,12 +2225,17 @@ class ProjectContractTests(unittest.TestCase):
                 output_dir=Path(temp_dir),
             )
             presentation = Presentation(str(output_path))
+            style_violations = audit_presentation_styles(output_path, plan, manifest)
+            chart_style.behavior_tokens["rank_color_1"] = "#000000"
+            expected_style_violations = audit_presentation_styles(output_path, plan, manifest)
 
         slide = presentation.slides[0]
         chart_shape = next(shape for shape in slide.shapes if getattr(shape, "has_chart", False))
         chart_xml = chart_shape.chart._chartSpace.xml
         self.assertIn("112233", chart_xml)
         self.assertIn("223344", chart_xml)
+        self.assertEqual(style_violations, [])
+        self.assertIn("chart_series_color_missing", {item.rule for item in expected_style_violations})
 
     def test_generator_applies_component_style_chart_geometry(self) -> None:
         template_id = "deterministic_layout_fixture"
@@ -1999,6 +2477,68 @@ class ProjectContractTests(unittest.TestCase):
         self.assertEqual(shape.text_frame.margin_right, bound_text_token.margin_right_emu)
         self.assertEqual(shape.text_frame.margin_top, bound_text_token.margin_top_emu)
         self.assertEqual(shape.text_frame.margin_bottom, bound_text_token.margin_bottom_emu)
+
+    def test_generator_uses_uploaded_prototype_text_slot_instead_of_auto_layout(self) -> None:
+        template_id = "uploaded_fixture_template"
+        template_path = self.settings.templates_dir / template_id / "template.pptx"
+        manifest = self.registry.get_template(template_id).model_copy(deep=True)
+        prototype = next(
+            item
+            for item in manifest.prototype_slides
+            if any(token.binding in {"body", "main_text", "text", "bullets"} for token in item.tokens)
+        )
+        body_token = next(
+            token
+            for token in prototype.tokens
+            if token.binding in {"body", "main_text", "text", "bullets"}
+        )
+        body_token.left_emu = 1234567
+        body_token.top_emu = 2345678
+        body_token.width_emu = 3456789
+        body_token.height_emu = 1456789
+        body_token.margin_left_emu = 21000
+        body_token.margin_right_emu = 22000
+        body_token.margin_top_emu = 23000
+        body_token.margin_bottom_emu = 24000
+
+        plan = PresentationPlan(
+            template_id=template_id,
+            title="Uploaded Prototype Text",
+            slides=[
+                SlideSpec(
+                    kind=SlideKind.TEXT,
+                    title="Prototype text target",
+                    text="Текст должен попасть в shape пользовательского prototype slide, а не в auto layout.",
+                    preferred_layout_key=prototype.key,
+                    render_target=SlideRenderTarget(
+                        type=RenderTargetType.PROTOTYPE,
+                        key=prototype.key,
+                    ),
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = self.generator.generate(
+                template_path=template_path,
+                manifest=manifest,
+                plan=plan,
+                output_dir=Path(temp_dir),
+            )
+            presentation = Presentation(str(output_path))
+
+        slide = presentation.slides[0]
+        shape = next(shape for shape in slide.shapes if shape.name == body_token.shape_name)
+        self.assertIn("Текст должен попасть", shape.text)
+        self.assertEqual(shape.left, body_token.left_emu)
+        self.assertEqual(shape.top, body_token.top_emu)
+        self.assertEqual(shape.width, body_token.width_emu)
+        self.assertEqual(shape.height, body_token.height_emu)
+        self.assertEqual(shape.text_frame.margin_left, body_token.margin_left_emu)
+        self.assertEqual(shape.text_frame.margin_right, body_token.margin_right_emu)
+        self.assertEqual(shape.text_frame.margin_top, body_token.margin_top_emu)
+        self.assertEqual(shape.text_frame.margin_bottom, body_token.margin_bottom_emu)
+        self.assertEqual(shape.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
     def test_generator_resolves_uploaded_layout_from_render_target_without_preferred_layout_key(self) -> None:
         template_id = "uploaded_fixture_template"
@@ -3595,6 +4135,9 @@ class ProjectContractTests(unittest.TestCase):
                 output_dir=Path(temp_dir),
             )
             presentation = Presentation(str(output_path))
+            style_violations = audit_presentation_styles(output_path, plan, manifest)
+            manifest.component_styles["table"].behavior_tokens["header_fill_color"] = "#000000"
+            expected_style_violations = audit_presentation_styles(output_path, plan, manifest)
 
         slide = presentation.slides[1]
         table = next(shape.table for shape in slide.shapes if getattr(shape, "has_table", False))
@@ -3603,6 +4146,8 @@ class ProjectContractTests(unittest.TestCase):
         self.assertIn('a:srgbClr val="C6DFFF"', table.cell(0, 0)._tc.tcPr.xml)
         self.assertIn("a:noFill", table.cell(1, 1)._tc.tcPr.xml)
         self.assertIn("a:noFill", table.cell(2, 0)._tc.tcPr.xml)
+        self.assertEqual(style_violations, [])
+        self.assertIn("table_header_fill_color_mismatch", {item.rule for item in expected_style_violations})
 
     def test_deck_audit_validates_chart_layout_geometry(self) -> None:
         plan = PresentationPlan(

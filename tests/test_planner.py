@@ -1415,7 +1415,7 @@ class TextToPlanServiceTests(unittest.TestCase):
             self.assertIsNotNone(body_runs[0].font.size)
             self.assertGreaterEqual(body_runs[0].font.size.pt, TEXT_FULL_WIDTH_PROFILE.min_font_pt)
             self.assertLessEqual(body_runs[0].font.size.pt, self._body_font_size_pt())
-            self.assertNotEqual(placeholders[14].text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
+            self.assertEqual(placeholders[14].text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
     def test_generator_applies_explicit_font_size_to_sparse_bullet_slide(self) -> None:
         plan = PresentationPlan(
@@ -1453,7 +1453,7 @@ class TextToPlanServiceTests(unittest.TestCase):
             self.assertTrue(all(run.font.size is not None for run in body_runs))
             self.assertGreaterEqual(body_runs[0].font.size.pt, LIST_FULL_WIDTH_PROFILE.min_font_pt)
             self.assertLessEqual(body_runs[0].font.size.pt, self._body_font_size_pt())
-            self.assertNotEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
+            self.assertEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
     def test_generator_shrinks_dense_bullet_container_to_avoid_overflow(self) -> None:
         plan = PresentationPlan(
@@ -1494,7 +1494,7 @@ class TextToPlanServiceTests(unittest.TestCase):
             self.assertTrue(body_runs)
             self.assertLessEqual(body_runs[0].font.size.pt, 18.0)
             self.assertGreaterEqual(body_runs[0].font.size.pt, LIST_FULL_WIDTH_PROFILE.min_font_pt)
-            self.assertNotEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
+            self.assertEqual(body.text_frame.auto_size, MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE)
 
     def test_generator_styles_qa_and_callout_blocks_differently(self) -> None:
         generator = PptxGenerator()

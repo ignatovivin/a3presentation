@@ -136,7 +136,7 @@ class QualityContractTests(unittest.TestCase):
             display_name="Uploaded Fixture Template",
         )
         manifest.generation_mode = GenerationMode.LAYOUT
-        layout = next(item for item in manifest.layouts if item.key == "титульный_слайд")
+        layout = next(item for item in manifest.layouts if "text" in item.supported_slide_kinds)
         plan = PresentationPlan(
             template_id=template_id,
             title="Uploaded Layout Quality",

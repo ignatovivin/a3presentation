@@ -18,6 +18,7 @@ from a3presentation.services.layout_capacity import (
     runtime_profile_key_for_target,
 )
 from a3presentation.services.pptx_generator import PptxGenerator
+from a3presentation.services.text_fit import estimate_text_height_emu, metrics_from_shape
 from a3presentation.services.chart_render_contract import (
     PRIMARY_AXIS,
     SECONDARY_AXIS,
@@ -48,6 +49,30 @@ RUNTIME_EXPANDED_LAYOUT_KEYS = {
 
 
 @dataclass(frozen=True)
+class TextOverflowDetail:
+    shape_name: str | None
+    shape_id: int | None
+    placeholder_idx: int | None
+    left: int | None
+    top: int | None
+    width: int | None
+    height: int | None
+    estimated_height: int
+    available_height: int
+    font_size_pt: float
+    text_excerpt: str
+
+    @property
+    def retry_reason(self) -> str:
+        slot_label = self.shape_name or "unnamed"
+        idx = "none" if self.placeholder_idx is None else str(self.placeholder_idx)
+        return (
+            f"capacity_retry:rendered_text_overflow:"
+            f"shape={slot_label}:idx={idx}:height={self.estimated_height}>{self.available_height}"
+        )
+
+
+@dataclass(frozen=True)
 class SlideAudit:
     slide_index: int
     title: str
@@ -74,6 +99,9 @@ class SlideAudit:
     body_top: int | None = None
     body_height: int | None = None
     body_left: int | None = None
+    estimated_body_text_height: int | None = None
+    available_body_text_height: int | None = None
+    body_text_overflow_details: tuple[TextOverflowDetail, ...] = ()
     footer_top: int | None = None
     footer_left: int | None = None
     expected_footer_width: int | None = None
@@ -118,6 +146,8 @@ class SlideAudit:
     expected_subtitle_font_pt: float | None = None
     table_overlay_overflow_count: int = 0
     table_overlay_overflow_details: tuple[str, ...] = ()
+    table_cell_overflow_count: int = 0
+    table_cell_overflow_details: tuple[str, ...] = ()
     runtime_profile_key: str = ""
     geometry: LayoutGeometryPolicy | None = None
     target_type: str | None = None
@@ -243,7 +273,7 @@ def audit_generated_presentation(
         subtitle_geometry_idx = _geometry_idx_for_role(slide_spec, manifest, PlaceholderKind.SUBTITLE, subtitle_idx)
         body_geometry_idx = _geometry_idx_for_role(slide_spec, manifest, PlaceholderKind.BODY, body_idx)
         footer_geometry_idx = _geometry_idx_for_role(slide_spec, manifest, PlaceholderKind.FOOTER, footer_idx)
-        body_candidates = _shapes_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.BODY, body_idx)
+        body_candidates = _body_shapes_for_slide(slide, placeholders, slide_spec, manifest, body_idx)
         body = _preferred_text_shape(body_candidates)
         footer = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.FOOTER, footer_idx)
         title = _shape_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.TITLE, title_idx)
@@ -331,6 +361,7 @@ def audit_generated_presentation(
         has_table = any(getattr(shape, "has_table", False) for shape in slide.shapes)
         has_chart = any(getattr(shape, "has_chart", False) for shape in slide.shapes)
         table_overlay_overflows = _table_overlay_overflows(slide) if slide_spec.kind == SlideKind.TABLE else ()
+        table_cell_overflows = _table_cell_overflows(slide) if slide_spec.kind == SlideKind.TABLE else ()
         image_shape = _content_image_shape(slide, placeholders)
         has_image = image_shape is not None
         chart_shape = next((shape for shape in slide.shapes if getattr(shape, "has_chart", False)), None)
@@ -373,6 +404,13 @@ def audit_generated_presentation(
                 fallback_font_size = effective_profile.max_font_pt
             if fallback_font_size is not None:
                 fallback_body_font_sizes = (float(fallback_font_size),)
+        estimated_body_text_height, available_body_text_height, body_text_overflow_details = _body_text_height_fit(
+            body_candidates,
+            expected_body_spec,
+            manifest,
+            effective_profile,
+            runtime_profile_key or effective_profile.layout_key,
+        )
         render_target = slide_spec.render_target
         audits.append(
             SlideAudit(
@@ -402,6 +440,9 @@ def audit_generated_presentation(
                 body_top=getattr(body, "top", None) if body is not None else None,
                 body_height=getattr(body, "height", None) if body is not None else None,
                 body_left=getattr(body, "left", None) if body is not None else None,
+                estimated_body_text_height=estimated_body_text_height,
+                available_body_text_height=available_body_text_height,
+                body_text_overflow_details=body_text_overflow_details,
                 footer_top=getattr(footer, "top", None) if footer is not None else None,
                 footer_left=getattr(footer, "left", None) if footer is not None else None,
                 auxiliary_widths=auxiliary_widths,
@@ -454,6 +495,8 @@ def audit_generated_presentation(
                 ),
                 table_overlay_overflow_count=len(table_overlay_overflows),
                 table_overlay_overflow_details=table_overlay_overflows,
+                table_cell_overflow_count=len(table_cell_overflows),
+                table_cell_overflow_details=table_cell_overflows,
                 geometry=resolved_geometry,
                 target_type=render_target.type.value if render_target is not None else None,
                 target_source=render_target.source if render_target is not None else None,
@@ -497,6 +540,50 @@ def _table_overlay_overflows(slide) -> tuple[str, ...]:
                 f"{name}: required={required_height} available={available_height} text_len={len(text)} font={font_pt:.1f}"
             )
     return tuple(overflows)
+
+
+def _table_cell_overflows(slide) -> tuple[str, ...]:
+    overflows: list[str] = []
+    for shape in slide.shapes:
+        if not getattr(shape, "has_table", False):
+            continue
+        table = shape.table
+        for row_index, row in enumerate(table.rows):
+            row_height = int(getattr(row, "height", 0) or 0)
+            for col_index, cell in enumerate(row.cells):
+                text = "\n".join(paragraph.text.strip() for paragraph in cell.text_frame.paragraphs if paragraph.text.strip())
+                if not text:
+                    continue
+                col_width = int(getattr(table.columns[col_index], "width", 0) or 0)
+                margin_left = int(getattr(cell, "margin_left", 0) or 0)
+                margin_right = int(getattr(cell, "margin_right", 0) or 0)
+                margin_top = int(getattr(cell, "margin_top", 0) or 0)
+                margin_bottom = int(getattr(cell, "margin_bottom", 0) or 0)
+                available_width = max(col_width - margin_left - margin_right, 1)
+                available_height = max(row_height - margin_top - margin_bottom, 1)
+                font_pt = _table_cell_font_size_pt(cell)
+                char_width_emu = max(int(font_pt * 12700 * 0.52), 1)
+                chars_per_line = max(4, int(available_width / char_width_emu))
+                explicit_lines = text.splitlines() or [text]
+                line_count = sum(max(1, (len(line) + chars_per_line - 1) // chars_per_line) for line in explicit_lines)
+                required_height = int(line_count * font_pt * 12700 * 1.18)
+                if required_height > int(available_height * 1.12):
+                    overflows.append(
+                        f"row={row_index} col={col_index}: required={required_height} "
+                        f"available={available_height} text_len={len(text)} font={font_pt:.1f}"
+                    )
+    return tuple(overflows)
+
+
+def _table_cell_font_size_pt(cell) -> float:
+    font_sizes: set[float] = set()
+    for paragraph in cell.text_frame.paragraphs:
+        for run in paragraph.runs:
+            if run.font.size is not None:
+                font_sizes.add(run.font.size.pt)
+        if not font_sizes and getattr(paragraph, "font", None) is not None and paragraph.font.size is not None:
+            font_sizes.add(paragraph.font.size.pt)
+    return min(font_sizes) if font_sizes else 8.0
 
 
 def _expected_render_chart_series_count(chart_spec: ChartSpec | None) -> int | None:
@@ -575,6 +662,97 @@ def _text_frame_font_sizes(shape) -> tuple[float, ...]:
     return tuple(sorted(font_sizes))
 
 
+def _body_text_height_fit(
+    body_candidates: list[object],
+    expected_body_spec,
+    manifest: TemplateManifest | None,
+    effective_profile: LayoutCapacityProfile,
+    runtime_profile_key: str,
+) -> tuple[int | None, int | None, tuple[TextOverflowDetail, ...]]:
+    worst_estimated_height = None
+    worst_available_height = None
+    worst_ratio = -1.0
+    overflow_details: list[TextOverflowDetail] = []
+    fallback_font_size = _expected_body_font_size(expected_body_spec, manifest, effective_profile)
+
+    for candidate in body_candidates:
+        if not getattr(candidate, "has_text_frame", False):
+            continue
+        paragraphs = [
+            paragraph.text.strip()
+            for paragraph in candidate.text_frame.paragraphs
+            if paragraph.text.strip()
+        ]
+        if not paragraphs:
+            continue
+        candidate_font_sizes = _text_frame_font_sizes(candidate)
+        active_font_size = min(candidate_font_sizes) if candidate_font_sizes else fallback_font_size
+        body_metrics = metrics_from_shape(
+            candidate,
+            layout_key=runtime_profile_key or effective_profile.layout_key,
+            fallback_font_size_pt=float(active_font_size),
+        )
+        if body_metrics is None or body_metrics.available_height_emu <= 0:
+            continue
+        estimated_height = estimate_text_height_emu(
+            paragraphs,
+            body_metrics,
+            font_size_pt=float(active_font_size),
+        )
+        ratio = estimated_height / body_metrics.available_height_emu
+        if estimated_height > int(body_metrics.available_height_emu * 1.10):
+            overflow_details.append(
+                TextOverflowDetail(
+                    shape_name=getattr(candidate, "name", None),
+                    shape_id=_shape_identity(candidate),
+                    placeholder_idx=_placeholder_idx_for_shape(candidate),
+                    left=getattr(candidate, "left", None),
+                    top=getattr(candidate, "top", None),
+                    width=getattr(candidate, "width", None),
+                    height=getattr(candidate, "height", None),
+                    estimated_height=estimated_height,
+                    available_height=body_metrics.available_height_emu,
+                    font_size_pt=float(active_font_size),
+                    text_excerpt=_text_excerpt(" ".join(paragraphs)),
+                )
+            )
+        if ratio > worst_ratio:
+            worst_ratio = ratio
+            worst_estimated_height = estimated_height
+            worst_available_height = body_metrics.available_height_emu
+
+    return worst_estimated_height, worst_available_height, tuple(sorted(overflow_details, key=lambda item: item.estimated_height / max(item.available_height, 1), reverse=True))
+
+
+def _expected_body_font_size(
+    expected_body_spec,
+    manifest: TemplateManifest | None,
+    effective_profile: LayoutCapacityProfile,
+) -> float:
+    expected_body_font_size = getattr(getattr(expected_body_spec, "text_style", None), "font_size_pt", None)
+    if expected_body_font_size is None and manifest is not None and manifest.theme.master_text_styles.get("body") is not None:
+        expected_body_font_size = manifest.theme.master_text_styles.get("body").font_size_pt
+    if expected_body_font_size is None:
+        expected_body_font_size = effective_profile.max_font_pt
+    return float(expected_body_font_size)
+
+
+def _placeholder_idx_for_shape(shape) -> int | None:
+    if not getattr(shape, "is_placeholder", False):
+        return None
+    try:
+        return int(shape.placeholder_format.idx)
+    except (TypeError, ValueError):
+        return None
+
+
+def _text_excerpt(text: str, limit: int = 96) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
+
+
 def _font_sizes_match(font_sizes: tuple[float, ...], expected: float) -> bool:
     return bool(font_sizes) and all(abs(size - expected) <= CHART_TITLE_FONT_TOLERANCE_PT for size in font_sizes)
 
@@ -647,6 +825,27 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                     details=f"fill_ratio={audit.fill_ratio:.2f} max={audit.profile.max_fill_ratio:.2f}",
                 )
             )
+        if (
+            audit.kind in {SlideKind.TEXT.value, SlideKind.BULLETS.value, SlideKind.TWO_COLUMN.value}
+            and audit.estimated_body_text_height is not None
+            and audit.available_body_text_height is not None
+            and audit.estimated_body_text_height > int(audit.available_body_text_height * 1.10)
+        ):
+            overflow_details = audit.body_text_overflow_details
+            rendered_details = _rendered_text_overflow_details(overflow_details)
+            if not rendered_details:
+                rendered_details = (
+                    f"estimated_height={audit.estimated_body_text_height} "
+                    f"available_height={audit.available_body_text_height}"
+                )
+            violations.append(
+                CapacityViolation(
+                    slide_index=audit.slide_index,
+                    title=audit.title,
+                    rule="rendered_text_overflow",
+                    details=rendered_details,
+                )
+            )
 
         if audit.kind == SlideKind.TABLE.value:
             if not audit.has_table:
@@ -674,6 +873,15 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
                         title=audit.title,
                         rule="table_overlay_text_overflow",
                         details="; ".join(audit.table_overlay_overflow_details[:4]),
+                    )
+                )
+            if audit.table_cell_overflow_count:
+                violations.append(
+                    CapacityViolation(
+                        slide_index=audit.slide_index,
+                        title=audit.title,
+                        rule="table_cell_text_overflow",
+                        details="; ".join(audit.table_cell_overflow_details[:4]),
                     )
                 )
         elif audit.has_table:
@@ -1228,6 +1436,24 @@ def find_capacity_violations(audits: list[SlideAudit]) -> list[CapacityViolation
     return violations
 
 
+def _rendered_text_overflow_details(details: tuple[TextOverflowDetail, ...]) -> str:
+    if not details:
+        return ""
+    rendered: list[str] = []
+    for item in details[:3]:
+        shape_label = item.shape_name or "unnamed"
+        idx = "none" if item.placeholder_idx is None else str(item.placeholder_idx)
+        rendered.append(
+            (
+                f"shape={shape_label} id={item.shape_id} idx={idx} "
+                f"geometry={item.left},{item.top},{item.width},{item.height} "
+                f"font={item.font_size_pt:.1f} estimated_height={item.estimated_height} "
+                f"available_height={item.available_height} text='{item.text_excerpt}'"
+            )
+        )
+    return "; ".join(rendered)
+
+
 def _minimum_placeholder_body_fill_ratio(audit: SlideAudit) -> float:
     if audit.layout_key == "dense_text_full_width":
         return 0.55
@@ -1344,11 +1570,30 @@ def _shape_spec_for_role(
     manifest: TemplateManifest | None,
     kind: PlaceholderKind,
 ):
+    specs = _shape_specs_for_role(slide_spec, manifest, kind)
+    return specs[0] if specs else None
+
+
+def _shape_specs_for_role(
+    slide_spec: SlideSpec,
+    manifest: TemplateManifest | None,
+    kind: PlaceholderKind,
+) -> list:
     if manifest is None:
-        return None
+        return []
     layout = _layout_target_for_spec(slide_spec, manifest)
     if layout is not None:
-        typed = [placeholder for placeholder in layout.placeholders if placeholder.kind == kind and placeholder.idx is not None]
+        typed = [
+            placeholder
+            for placeholder in layout.placeholders
+            if placeholder.kind == kind and placeholder.idx is not None
+        ]
+        if kind == PlaceholderKind.BODY:
+            typed = [
+                placeholder
+                for placeholder in layout.placeholders
+                if _layout_placeholder_is_body_target(placeholder)
+            ]
         if manifest.generation_mode.value == "layout" and typed:
             explicit_typed = [
                 placeholder
@@ -1361,22 +1606,36 @@ def _shape_spec_for_role(
                 }
             ]
             if explicit_typed:
-                return explicit_typed[0]
+                return explicit_typed
         preferred_indices = _preferred_placeholder_indices_for_role(slide_spec, kind, manifest)
-        for preferred_idx in preferred_indices:
-            preferred = next((placeholder for placeholder in layout.placeholders if placeholder.idx == preferred_idx), None)
-            if preferred is not None:
-                return preferred
+        preferred_specs = [
+            placeholder
+            for preferred_idx in preferred_indices
+            for placeholder in layout.placeholders
+            if placeholder.idx == preferred_idx
+        ]
+        if preferred_specs:
+            return preferred_specs
         if typed:
-            return typed[0]
+            return typed
     prototype = _prototype_slide_for_spec(slide_spec, manifest)
     if prototype is not None:
         bindings = _prototype_bindings_for_role(kind, slide_spec.kind)
-        for binding in bindings:
-            token = next((item for item in prototype.tokens if item.binding == binding and item.shape_name), None)
-            if token is not None:
-                return token
-    return None
+        tokens = [item for item in prototype.tokens if item.binding in bindings and item.shape_name]
+        if tokens:
+            return tokens
+    return []
+
+
+def _layout_placeholder_is_body_target(placeholder) -> bool:
+    role = getattr(placeholder, "editable_role", None)
+    if role in {"body", "bullet_list", "bullet_item"}:
+        return True
+    if role in {"title", "subtitle", "footer", "table", "chart", "image"}:
+        return False
+    if placeholder.kind == PlaceholderKind.BODY and getattr(placeholder, "idx", None) is not None:
+        return True
+    return False
 
 
 def _preferred_placeholder_indices_for_role(
@@ -1471,6 +1730,32 @@ def _shape_for_role(slide, placeholders: dict[int, object], slide_spec: SlideSpe
     return _preferred_text_shape(shapes)
 
 
+def _body_shapes_for_slide(
+    slide,
+    placeholders: dict[int, object],
+    slide_spec: SlideSpec,
+    manifest: TemplateManifest | None,
+    fallback_body_idx: int | None,
+) -> list[object]:
+    explicit_specs = _shape_specs_for_role(slide_spec, manifest, PlaceholderKind.BODY)
+    if not explicit_specs:
+        return _shapes_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.BODY, fallback_body_idx)
+
+    matches: list[object] = []
+    seen_ids: set[int] = set()
+    for shape_spec in explicit_specs:
+        spec_matches = _shapes_for_shape_spec(slide, placeholders, shape_spec)
+        for shape in spec_matches:
+            identity = _shape_identity(shape)
+            if identity in seen_ids:
+                continue
+            seen_ids.add(identity)
+            matches.append(shape)
+    if matches:
+        return matches
+    return _shapes_for_role(slide, placeholders, slide_spec, manifest, PlaceholderKind.BODY, fallback_body_idx)
+
+
 def _shapes_for_role(
     slide,
     placeholders: dict[int, object],
@@ -1484,6 +1769,13 @@ def _shapes_for_role(
     shape_spec = _shape_spec_for_role(slide_spec, manifest, kind)
     if shape_spec is None:
         return []
+    return _shapes_for_shape_spec(slide, placeholders, shape_spec)
+
+
+def _shapes_for_shape_spec(slide, placeholders: dict[int, object], shape_spec) -> list[object]:
+    placeholder_idx = getattr(shape_spec, "idx", None)
+    if placeholder_idx is not None and placeholder_idx in placeholders:
+        return [placeholders[placeholder_idx]]
     shape_name = getattr(shape_spec, "shape_name", None)
     named_matches = []
     if shape_name:
@@ -1494,6 +1786,13 @@ def _shapes_for_role(
     if geometry_matches:
         return geometry_matches
     return named_matches
+
+
+def _shape_identity(shape) -> int:
+    try:
+        return int(getattr(shape, "shape_id"))
+    except (TypeError, ValueError):
+        return id(shape)
 
 
 def _shapes_matching_geometry(slide, shape_spec) -> list[object]:

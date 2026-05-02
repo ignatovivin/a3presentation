@@ -5,6 +5,8 @@ import type {
   DocumentBlock,
   ExtractTextResponse,
   GeneratePresentationResponse,
+  GenerationDiagnosticsMetadataResponse,
+  PresentationDiagnosticsResponse,
   PlanWithTemplateResponse,
   PresentationPlan,
   TableBlock,
@@ -120,6 +122,11 @@ export async function fetchTemplates(): Promise<TemplateSummary[]> {
   return readJson<TemplateSummary[]>(response);
 }
 
+export async function fetchDiagnosticsMetadata(): Promise<GenerationDiagnosticsMetadataResponse> {
+  const response = await fetch(buildApiUrl("/diagnostics/metadata"));
+  return readJson<GenerationDiagnosticsMetadataResponse>(response);
+}
+
 export async function fetchTemplate(templateId: string): Promise<TemplateDetailsResponse> {
   const response = await fetch(buildApiUrl(`/templates/${templateId}`));
   return readJson<TemplateDetailsResponse>(response);
@@ -189,6 +196,32 @@ export async function generatePresentationWithTemplate(
     body: formData,
   });
   return readJson<GeneratePresentationResponse>(response);
+}
+
+export async function diagnosePresentation(plan: PresentationPlan): Promise<PresentationDiagnosticsResponse> {
+  const response = await fetch(buildApiUrl("/presentations/diagnose"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(plan),
+  });
+  return readJson<PresentationDiagnosticsResponse>(response);
+}
+
+export async function diagnosePresentationWithTemplate(
+  plan: PresentationPlan,
+  templateFile: File,
+): Promise<PresentationDiagnosticsResponse> {
+  const formData = new FormData();
+  formData.set("plan_json", JSON.stringify(plan));
+  formData.set("template_file", templateFile);
+
+  const response = await fetch(buildApiUrl("/presentations/diagnose-with-template"), {
+    method: "POST",
+    body: formData,
+  });
+  return readJson<PresentationDiagnosticsResponse>(response);
 }
 
 export async function analyzeTemplate(templateId: string, displayName?: string): Promise<AnalyzeTemplateResponse> {
